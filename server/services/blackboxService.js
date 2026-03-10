@@ -206,6 +206,24 @@ const EVENT_SOURCE_URL_PATHS = [
   'meta.event_source_url'
 ];
 
+const FBC_PATHS = [
+  'fbc',
+  'attribution.fbc',
+  'meta.fbc'
+];
+
+const FBP_PATHS = [
+  'fbp',
+  'attribution.fbp',
+  'meta.fbp'
+];
+
+const FBCLID_PATHS = [
+  'fbclid',
+  'attribution.fbclid',
+  'meta.fbclid'
+];
+
 const COUNTRY_PATHS = [
   'country_code',
   'country',
@@ -493,6 +511,26 @@ function safePayloadJson(payload) {
   }
 }
 
+function parsePayloadJsonObject(rawJson) {
+  const raw = safeString(rawJson, MAX_RAW_JSON_CHARS + 64);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function firstNonEmptyString(values, maxLength = MAX_STRING_LENGTH) {
+  if (!Array.isArray(values)) return '';
+  for (const value of values) {
+    const normalized = safeString(value, maxLength);
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
 function resolveEventTimestamp(payload) {
   const value = pickFirstValue(payload, TIMESTAMP_PATHS);
   const parsed = normalizeTimestamp(value) || new Date();
@@ -632,7 +670,22 @@ function summarizeCoverage(coverage) {
   return paths.length ? paths.join(', ') : 'none';
 }
 
+function classifyCoverageStatus(coverage) {
+  if (!coverage) return 'no_purchase_signal';
+  const hasPixel = Boolean(coverage.hasPixelPurchase);
+  const hasGtm = Boolean(coverage.hasGtmPurchase);
+  const hasWebhook = Boolean(coverage.hasWebhookPurchase);
+  const hasUnknown = Boolean(coverage.hasUnknownPurchase);
+
+  if (hasPixel && hasGtm) return 'full';
+  if (!hasPixel && !hasGtm && hasWebhook) return 'webhook_only';
+  if (!hasPixel && !hasGtm && hasUnknown) return 'unknown_only';
+  if (!hasPixel && !hasGtm) return 'no_purchase_signal';
+  return 'partial';
+}
+
 function makeOrderCandidate(order, approxEvent, coverage, status) {
+  const attributionDiagnostics = approxEvent ? resolveAttributionDiagnostics(approxEvent) : null;
   return {
     order_id: safeString(order.order_id, 120),
     date: order.date || null,
@@ -646,7 +699,12 @@ function makeOrderCandidate(order, approxEvent, coverage, status) {
     approx_last_begin_checkout_at: approxEvent?.event_ts || null,
     approx_last_checkout_button: approxEvent?.checkout_button || approxEvent?.checkout_source || null,
     approx_last_identity_key: approxEvent ? (identityKeyFromEvent(approxEvent) || null) : null,
+    approx_attribution_status: attributionDiagnostics?.attribution_status || null,
+    approx_attribution_signal_count: attributionDiagnostics?.attribution_signal_count || 0,
+    approx_attribution_missing_core_fields: attributionDiagnostics?.attribution_missing_core_fields || [],
+    approx_attribution_missing_core_summary: attributionDiagnostics?.attribution_missing_core_summary || '',
     delivery_status: status,
+    coverage_status: classifyCoverageStatus(coverage),
     has_pixel_purchase: Boolean(coverage?.hasPixelPurchase),
     has_gtm_purchase: Boolean(coverage?.hasGtmPurchase),
     has_webhook_purchase: Boolean(coverage?.hasWebhookPurchase),
@@ -654,6 +712,53 @@ function makeOrderCandidate(order, approxEvent, coverage, status) {
     purchase_path_summary: summarizeCoverage(coverage),
     purchase_events: Number(coverage?.eventCount || 0),
     last_purchase_event_ts: coverage?.lastPurchaseAt || null
+  };
+}
+
+function buildCheckoutAttributionOverview(beginEvents, maxItems = DEFAULT_GHOST_SESSION_LIMIT) {
+  const missingCoreCounts = new Map();
+  const weakRows = [];
+
+  let attributedCount = 0;
+  let partialCount = 0;
+  let missingCount = 0;
+
+  for (const event of beginEvents) {
+    const normalized = mapRowForApi(event);
+    switch (normalized.attribution_status) {
+      case 'attributed':
+        attributedCount += 1;
+        break;
+      case 'partial':
+        partialCount += 1;
+        break;
+      case 'missing':
+        missingCount += 1;
+        break;
+    }
+
+    normalized.attribution_missing_core_fields.forEach((field) => {
+      missingCoreCounts.set(field, (missingCoreCounts.get(field) || 0) + 1);
+    });
+
+    if (normalized.attribution_status !== 'attributed') {
+      weakRows.push(normalized);
+    }
+  }
+
+  weakRows.sort((a, b) => parseSqliteDateTimeToMs(b.event_ts) - parseSqliteDateTimeToMs(a.event_ts));
+
+  const topMissingCore = [...missingCoreCounts.entries()]
+    .map(([field, count]) => ({ field, count }))
+    .sort((a, b) => b.count - a.count || a.field.localeCompare(b.field));
+
+  return {
+    total: beginEvents.length,
+    attributed_count: attributedCount,
+    partial_count: partialCount,
+    missing_count: missingCount,
+    top_missing_core: topMissingCore,
+    weak_rows: weakRows.slice(0, maxItems)
   };
 }
 
@@ -848,15 +953,22 @@ function getGhostOrders(store, range, options = {}) {
       event_ts,
       checkout_button,
       checkout_source,
+      page_url,
       country_code,
       region_code,
       page_path,
+      landing_page,
+      event_source_url,
+      utm_source,
+      utm_medium,
+      utm_campaign,
       session_id,
       client_id,
       ip_hash,
       cart_token,
       checkout_token,
-      event_id
+      event_id,
+      payload_json
     FROM blackbox_events
     WHERE store = ?
       AND date(event_ts) BETWEEN ? AND ?
@@ -898,11 +1010,13 @@ function getGhostOrders(store, range, options = {}) {
   const partialMissOrders = [];
   const noTelemetryOrders = [];
   const unknownSourceOrders = [];
+  const purchaseGapOrders = [];
 
   let ordersWithAnyPurchase = 0;
   let ordersWithPixelPurchase = 0;
   let ordersWithGtmPurchase = 0;
   let ordersWithWebhookPurchase = 0;
+  let ordersWithFullPurchaseCoverage = 0;
 
   for (const order of orderRows) {
     const orderId = safeString(order.order_id, 120);
@@ -915,7 +1029,9 @@ function getGhostOrders(store, range, options = {}) {
       if (!hasPurchaseTelemetry) {
         noTelemetryOrders.push(makeOrderCandidate(order, approxEvent, null, 'no_telemetry'));
       } else {
-        hardGhostOrders.push(makeOrderCandidate(order, approxEvent, null, 'hard_ghost'));
+        const candidate = makeOrderCandidate(order, approxEvent, null, 'hard_ghost');
+        hardGhostOrders.push(candidate);
+        purchaseGapOrders.push(candidate);
       }
       continue;
     }
@@ -929,18 +1045,29 @@ function getGhostOrders(store, range, options = {}) {
     const hasGtm = coverage.hasGtmPurchase;
     const hasWebhook = coverage.hasWebhookPurchase;
 
+    if (hasPixel && hasGtm) {
+      ordersWithFullPurchaseCoverage += 1;
+      continue;
+    }
+
     if (!hasPixel && !hasGtm && hasWebhook) {
-      recoveredWebhookOnlyOrders.push(makeOrderCandidate(order, approxEvent, coverage, 'recovered_webhook_only'));
+      const candidate = makeOrderCandidate(order, approxEvent, coverage, 'recovered_webhook_only');
+      recoveredWebhookOnlyOrders.push(candidate);
+      purchaseGapOrders.push(candidate);
       continue;
     }
 
     if (hasPixel !== hasGtm) {
-      partialMissOrders.push(makeOrderCandidate(order, approxEvent, coverage, 'partial_miss'));
+      const candidate = makeOrderCandidate(order, approxEvent, coverage, 'partial_miss');
+      partialMissOrders.push(candidate);
+      purchaseGapOrders.push(candidate);
       continue;
     }
 
     if (!hasPixel && !hasGtm && coverage.hasUnknownPurchase) {
-      unknownSourceOrders.push(makeOrderCandidate(order, approxEvent, coverage, 'unknown_purchase_source'));
+      const candidate = makeOrderCandidate(order, approxEvent, coverage, 'unknown_purchase_source');
+      unknownSourceOrders.push(candidate);
+      purchaseGapOrders.push(candidate);
     }
   }
 
@@ -952,23 +1079,29 @@ function getGhostOrders(store, range, options = {}) {
     ordersWithPixelPurchase,
     ordersWithGtmPurchase,
     ordersWithWebhookPurchase,
+    ordersWithFullPurchaseCoverage,
     hardGhostOrdersTotal: hardGhostOrders.length,
     recoveredWebhookOnlyTotal: recoveredWebhookOnlyOrders.length,
     partialMissTotal: partialMissOrders.length,
     noTelemetryTotal: noTelemetryOrders.length,
     unknownSourceTotal: unknownSourceOrders.length,
+    purchaseGapOrdersTotal: purchaseGapOrders.length,
     hardGhostOrders: hardGhostOrders.slice(0, maxItems),
     recoveredWebhookOnlyOrders: recoveredWebhookOnlyOrders.slice(0, maxItems),
     partialMissOrders: partialMissOrders.slice(0, maxItems),
     noTelemetryOrders: noTelemetryOrders.slice(0, maxItems),
-    unknownSourceOrders: unknownSourceOrders.slice(0, maxItems)
+    unknownSourceOrders: unknownSourceOrders.slice(0, maxItems),
+    purchaseGapOrders: purchaseGapOrders.slice(0, maxItems)
   };
 }
 
 function mapRowForApi(row) {
   const mapped = { ...row };
+  const attributionDiagnostics = resolveAttributionDiagnostics(row);
   mapped.is_begin_checkout = isBeginCheckoutEvent(row.event_name);
   mapped.is_purchase = isPurchaseEvent(row.event_name);
+  Object.assign(mapped, attributionDiagnostics);
+  delete mapped.payload_json;
   return mapped;
 }
 
@@ -983,11 +1116,118 @@ function parseQueryParamsFromUrl(rawUrl) {
   const url = safeString(rawUrl, 1800);
   if (!url) return null;
   try {
-    const parsed = new URL(url);
+    const parsed = url.startsWith('/') || url.startsWith('?')
+      ? new URL(url, 'https://blackbox.local')
+      : new URL(url);
     return parsed.searchParams;
   } catch (_error) {
-    return null;
+    const queryIndex = url.indexOf('?');
+    if (queryIndex === -1) return null;
+    try {
+      return new URLSearchParams(url.slice(queryIndex + 1));
+    } catch (_error2) {
+      return null;
+    }
   }
+}
+
+function resolveAttributionDiagnostics(row) {
+  const payload = parsePayloadJsonObject(row?.payload_json);
+
+  const pageUrl = firstNonEmptyString([
+    row?.page_url,
+    pickFirstString(payload, PAGE_URL_PATHS, 1600)
+  ], 1600);
+
+  const landingPage = firstNonEmptyString([
+    row?.landing_page,
+    pickFirstString(payload, LANDING_PAGE_PATHS, 1200)
+  ], 1200);
+
+  const eventSourceUrl = firstNonEmptyString([
+    row?.event_source_url,
+    pickFirstString(payload, EVENT_SOURCE_URL_PATHS, 1200)
+  ], 1200);
+
+  const fbc = pickFirstString(payload, FBC_PATHS, 800);
+  const fbp = pickFirstString(payload, FBP_PATHS, 800);
+  const fbclidFromPayload = pickFirstString(payload, FBCLID_PATHS, 800);
+
+  const urlParams = [
+    parseQueryParamsFromUrl(eventSourceUrl),
+    parseQueryParamsFromUrl(landingPage),
+    parseQueryParamsFromUrl(pageUrl)
+  ].filter(Boolean);
+
+  const pickQueryParam = (key) => {
+    for (const params of urlParams) {
+      const value = safeString(params.get(key), 800);
+      if (value) return value;
+    }
+    return '';
+  };
+
+  const fbclid = firstNonEmptyString([fbclidFromPayload, pickQueryParam('fbclid')], 800);
+  const utmSource = firstNonEmptyString([
+    row?.utm_source,
+    pickFirstString(payload, UTM_SOURCE_PATHS, 240),
+    pickQueryParam('utm_source')
+  ], 240);
+  const utmMedium = firstNonEmptyString([
+    row?.utm_medium,
+    pickFirstString(payload, UTM_MEDIUM_PATHS, 240),
+    pickQueryParam('utm_medium')
+  ], 240);
+  const utmCampaign = firstNonEmptyString([
+    row?.utm_campaign,
+    pickFirstString(payload, UTM_CAMPAIGN_PATHS, 240),
+    pickQueryParam('utm_campaign')
+  ], 240);
+
+  const hasEventSourceUrl = Boolean(eventSourceUrl);
+  const hasLandingContext = Boolean(landingPage || utmSource || utmMedium || utmCampaign);
+  const hasClickId = Boolean(fbc || fbclid);
+  const hasBrowserId = Boolean(fbp);
+
+  let status = 'missing';
+  if (hasEventSourceUrl && hasLandingContext && (hasClickId || hasBrowserId)) {
+    status = 'attributed';
+  } else if (hasEventSourceUrl || hasLandingContext || hasClickId || hasBrowserId) {
+    status = 'partial';
+  }
+
+  const missingCoreFields = [];
+  if (!hasEventSourceUrl) missingCoreFields.push('event_source_url');
+  if (!hasLandingContext) missingCoreFields.push('landing_context');
+  if (!hasClickId) missingCoreFields.push('click_id');
+  if (!hasBrowserId) missingCoreFields.push('fbp');
+
+  const signalCount = [hasEventSourceUrl, hasLandingContext, hasClickId, hasBrowserId].filter(Boolean).length;
+
+  return {
+    attribution_status: status,
+    attribution_signal_count: signalCount,
+    attribution_missing_core_fields: missingCoreFields,
+    attribution_missing_core_summary: missingCoreFields.join(', '),
+    has_event_source_url: hasEventSourceUrl,
+    has_landing_context: hasLandingContext,
+    has_click_id: hasClickId,
+    has_browser_id: hasBrowserId,
+    has_fbc: Boolean(fbc),
+    has_fbclid: Boolean(fbclid),
+    has_fbp: Boolean(fbp),
+    has_utm_source: Boolean(utmSource),
+    has_utm_medium: Boolean(utmMedium),
+    has_utm_campaign: Boolean(utmCampaign),
+    fbc: fbc || null,
+    fbclid: fbclid || null,
+    fbp: fbp || null,
+    landing_page_resolved: landingPage || null,
+    event_source_url_resolved: eventSourceUrl || null,
+    utm_source_resolved: utmSource || null,
+    utm_medium_resolved: utmMedium || null,
+    utm_campaign_resolved: utmCampaign || null
+  };
 }
 
 function extractUtmParams(payload, pageUrl) {
@@ -1447,6 +1687,7 @@ export function listBlackboxEvents(store, filters = {}) {
       utm_source,
       utm_medium,
       utm_campaign,
+      payload_json,
       created_at
     FROM blackbox_events
     WHERE ${whereSql}
@@ -1510,17 +1751,26 @@ export function getBlackboxOverview(store, options = {}) {
       event_name,
       event_ts,
       source,
+      channel,
       session_id,
       client_id,
+      event_id,
       order_id,
       cart_token,
       checkout_token,
       checkout_button,
       checkout_source,
+      page_url,
       page_path,
+      landing_page,
+      event_source_url,
+      utm_source,
+      utm_medium,
+      utm_campaign,
       country_code,
       region_code,
-      ip_hash
+      ip_hash,
+      payload_json
     FROM blackbox_events
     WHERE ${whereSql}
     ORDER BY event_ts ASC, id ASC
@@ -1532,6 +1782,7 @@ export function getBlackboxOverview(store, options = {}) {
   const identitySet = new Set(rows.map(identityKeyFromEvent).filter(Boolean));
 
   const duplicateDiagnostics = detectDuplicateBeginCheckout(beginEvents, duplicateWindowSeconds);
+  const checkoutAttribution = buildCheckoutAttributionOverview(beginEvents, ghostSessionLimit);
   const ghostSessions = detectGhostSessions(rows, ghostSessionLimit);
   const ghostOrderData = getGhostOrders(normalizedStore, range, options);
 
@@ -1542,6 +1793,9 @@ export function getBlackboxOverview(store, options = {}) {
       sampled_events: rows.length,
       sampled_sessions: identitySet.size,
       begin_checkout_events: beginEvents.length,
+      begin_checkout_attributed: checkoutAttribution.attributed_count,
+      begin_checkout_partial: checkoutAttribution.partial_count,
+      begin_checkout_missing: checkoutAttribution.missing_count,
       purchase_events: purchaseEvents.length,
       duplicate_begin_checkout_events: duplicateDiagnostics.duplicateEventCount,
       duplicate_begin_checkout_rate: beginEvents.length
@@ -1550,9 +1804,11 @@ export function getBlackboxOverview(store, options = {}) {
       ghost_sessions_without_purchase: ghostSessions.length,
       shopify_orders_in_range: ghostOrderData.totalOrders,
       orders_with_blackbox_purchase: ghostOrderData.ordersWithAnyPurchase,
+      orders_with_full_purchase_coverage: ghostOrderData.ordersWithFullPurchaseCoverage,
       orders_with_pixel_purchase: ghostOrderData.ordersWithPixelPurchase,
       orders_with_gtm_purchase: ghostOrderData.ordersWithGtmPurchase,
       orders_with_webhook_purchase: ghostOrderData.ordersWithWebhookPurchase,
+      orders_with_purchase_gap: ghostOrderData.purchaseGapOrdersTotal,
       blackbox_purchase_events_in_range: ghostOrderData.purchaseTelemetryEvents,
       blackbox_purchase_stream_active: ghostOrderData.hasPurchaseTelemetry,
       hard_ghost_orders: ghostOrderData.hardGhostOrdersTotal,
@@ -1567,13 +1823,15 @@ export function getBlackboxOverview(store, options = {}) {
       top_buttons: duplicateDiagnostics.topButtons,
       groups: duplicateDiagnostics.duplicateGroups.slice(0, 50)
     },
+    checkout_attribution: checkoutAttribution,
     ghost_sessions: ghostSessions,
     ghost_orders: ghostOrderData.hardGhostOrders,
     hard_ghost_orders: ghostOrderData.hardGhostOrders,
     recovered_webhook_only_orders: ghostOrderData.recoveredWebhookOnlyOrders,
     partial_miss_orders: ghostOrderData.partialMissOrders,
     no_telemetry_orders: ghostOrderData.noTelemetryOrders,
-    unknown_source_orders: ghostOrderData.unknownSourceOrders
+    unknown_source_orders: ghostOrderData.unknownSourceOrders,
+    purchase_gap_orders: ghostOrderData.purchaseGapOrders
   };
 }
 
@@ -1614,6 +1872,13 @@ export function exportBlackboxEventsCsv(store, filters = {}) {
     'utm_source',
     'utm_medium',
     'utm_campaign',
+    'attribution_status',
+    'attribution_signal_count',
+    'attribution_missing_core_summary',
+    'has_event_source_url',
+    'has_landing_context',
+    'has_click_id',
+    'has_browser_id',
     'created_at'
   ];
 

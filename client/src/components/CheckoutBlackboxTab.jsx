@@ -54,6 +54,67 @@ function formatSessionIdentity(row) {
   return row?.session_id || row?.client_id || row?.ip_hash || '—';
 }
 
+function coverageStatusLabel(value) {
+  switch (value) {
+    case 'full': return 'Full';
+    case 'partial': return 'Partial';
+    case 'webhook_only': return 'Webhook only';
+    case 'unknown_only': return 'Unknown purchase';
+    case 'no_purchase_signal': return 'No purchase signal';
+    default: return value || '—';
+  }
+}
+
+function deliveryStatusLabel(value) {
+  switch (value) {
+    case 'hard_ghost': return 'Missing both';
+    case 'recovered_webhook_only': return 'Recovered by webhook';
+    case 'partial_miss': return 'Pixel/GTM mismatch';
+    case 'unknown_purchase_source': return 'Unknown purchase source';
+    case 'no_telemetry': return 'No purchase telemetry';
+    default: return value || '—';
+  }
+}
+
+function attributionBadgeClass(status) {
+  switch (status) {
+    case 'attributed': return 'bg-emerald-100 text-emerald-700';
+    case 'partial': return 'bg-amber-100 text-amber-800';
+    case 'missing': return 'bg-rose-100 text-rose-700';
+    default: return 'bg-gray-100 text-gray-700';
+  }
+}
+
+function coverageBadgeClass(status) {
+  switch (status) {
+    case 'full': return 'bg-emerald-100 text-emerald-700';
+    case 'partial': return 'bg-amber-100 text-amber-800';
+    case 'webhook_only': return 'bg-sky-100 text-sky-700';
+    case 'no_purchase_signal': return 'bg-rose-100 text-rose-700';
+    case 'unknown_only': return 'bg-gray-100 text-gray-700';
+    default: return 'bg-gray-100 text-gray-700';
+  }
+}
+
+function PillList({ items, emptyLabel = '—' }) {
+  if (!Array.isArray(items) || !items.length) {
+    return <span className="text-xs text-gray-500">{emptyLabel}</span>;
+  }
+
+  return (
+    <div className="flex flex-wrap gap-1">
+      {items.map((item) => (
+        <span
+          key={item}
+          className="inline-flex rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-[11px] font-medium text-gray-700"
+        >
+          {item}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 async function fetchJson(url) {
   const res = await fetch(url, { cache: 'no-store' });
   const raw = await res.text();
@@ -81,46 +142,268 @@ function StatCard({ label, value, hint }) {
   );
 }
 
-function OrderCandidatesTable({ title, hint, rows, emptyLabel }) {
+function TopMissingFieldsTable({ rows }) {
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-      <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
-      <p className="mt-1 text-xs text-gray-500">{hint}</p>
-      <div className="mt-3 max-h-80 overflow-auto">
+      <h3 className="text-lg font-semibold text-gray-900">Top Missing Attribution Fields</h3>
+      <p className="mt-1 text-xs text-gray-500">
+        Counted across sampled <code>begin_checkout</code> events in this range.
+      </p>
+      <div className="mt-3 max-h-72 overflow-auto">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
+              <th className="py-2 pr-4">Field</th>
+              <th className="py-2">Missing Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? rows.map((row) => (
+              <tr key={row.field} className="border-b border-gray-100">
+                <td className="py-2 pr-4 font-mono text-xs text-gray-700">{row.field}</td>
+                <td className="py-2 font-medium text-gray-900">{formatNumber(row.count)}</td>
+              </tr>
+            )) : (
+              <tr>
+                <td className="py-3 text-sm text-gray-500" colSpan={2}>No missing-field patterns in this range.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function DuplicatePathsTable({ rows }) {
+  return (
+    <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+      <h3 className="text-lg font-semibold text-gray-900">Top Duplicate Checkout Paths</h3>
+      <p className="mt-1 text-xs text-gray-500">
+        Ranked by repeated <code>begin_checkout</code> clusters inside the duplicate window.
+      </p>
+      <div className="mt-3 max-h-72 overflow-auto">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
+              <th className="py-2 pr-4">Button / Source</th>
+              <th className="py-2">Duplicate Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? rows.map((row) => (
+              <tr key={row.checkout_button} className="border-b border-gray-100">
+                <td className="py-2 pr-4 font-mono text-xs text-gray-700">{row.checkout_button}</td>
+                <td className="py-2 font-medium text-gray-900">{formatNumber(row.count)}</td>
+              </tr>
+            )) : (
+              <tr>
+                <td className="py-3 text-sm text-gray-500" colSpan={2}>No duplicate checkout paths in this range.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function WeakCheckoutTable({ rows }) {
+  return (
+    <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+      <h3 className="text-lg font-semibold text-gray-900">Weak / Missing Checkout Attribution</h3>
+      <p className="mt-1 text-xs text-gray-500">
+        Checkout starts that reached the platform but did not carry a complete attribution snapshot.
+      </p>
+      <div className="mt-3 max-h-[28rem] overflow-auto">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
+              <th className="py-2 pr-3">Time</th>
+              <th className="py-2 pr-3">Status</th>
+              <th className="py-2 pr-3">Missing</th>
+              <th className="py-2 pr-3">Button / Source</th>
+              <th className="py-2 pr-3">Identity</th>
+              <th className="py-2">Path</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? rows.map((row) => (
+              <tr key={row.id} className="border-b border-gray-100 align-top">
+                <td className="py-2 pr-3 text-xs text-gray-700">{formatTimestamp(row.event_ts)}</td>
+                <td className="py-2 pr-3">
+                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${attributionBadgeClass(row.attribution_status)}`}>
+                    {row.attribution_status}
+                  </span>
+                  <div className="mt-1 text-[11px] text-gray-500">
+                    signals: {formatNumber(row.attribution_signal_count || 0)}/4
+                  </div>
+                </td>
+                <td className="py-2 pr-3 text-xs text-gray-700">
+                  <PillList items={row.attribution_missing_core_fields} />
+                </td>
+                <td className="py-2 pr-3 text-xs text-gray-700">
+                  <div>{row.checkout_button || '—'}</div>
+                  <div className="text-gray-500">{row.checkout_source || '—'}</div>
+                </td>
+                <td className="py-2 pr-3 text-xs text-gray-700">
+                  <div className="font-mono">{formatSessionIdentity(row)}</div>
+                  <div className="text-gray-500">{row.country_code || '—'} {row.region_code ? `• ${row.region_code}` : ''}</div>
+                </td>
+                <td className="py-2 text-xs text-gray-700">
+                  <div>{row.page_path || '—'}</div>
+                  <div className="max-w-sm truncate text-gray-500" title={row.event_source_url_resolved || row.page_url || ''}>
+                    {row.event_source_url_resolved || row.page_url || '—'}
+                  </div>
+                </td>
+              </tr>
+            )) : (
+              <tr>
+                <td className="py-3 text-sm text-gray-500" colSpan={6}>No weak checkout attribution events in this range.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function PurchaseGapTable({ rows, emptyLabel }) {
+  return (
+    <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+      <h3 className="text-lg font-semibold text-gray-900">Purchase Coverage Gaps</h3>
+      <p className="mt-1 text-xs text-gray-500">
+        Shopify orders where platform purchase coverage is incomplete across pixel / GTM paths.
+      </p>
+      <div className="mt-3 max-h-[28rem] overflow-auto">
         <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
               <th className="py-2 pr-3">Order</th>
               <th className="py-2 pr-3">Created</th>
-              <th className="py-2 pr-3">Geo</th>
               <th className="py-2 pr-3">Coverage</th>
-              <th className="py-2">Approx Last Checkout</th>
+              <th className="py-2 pr-3">Last Checkout</th>
+              <th className="py-2 pr-3">Checkout Attribution</th>
+              <th className="py-2">Geo</th>
             </tr>
           </thead>
           <tbody>
             {rows.length ? rows.map((row) => (
-              <tr key={`${row.order_id}-${row.delivery_status || 'candidate'}`} className="border-b border-gray-100 align-top">
+              <tr key={`${row.order_id}-${row.delivery_status || 'gap'}`} className="border-b border-gray-100 align-top">
                 <td className="py-2 pr-3 text-xs text-gray-700">
                   <div className="font-mono">{row.order_id}</div>
                   <div>{row.currency || ''} {row.order_total || ''}</div>
+                  <div className="mt-1 text-[11px] text-gray-500">{deliveryStatusLabel(row.delivery_status)}</div>
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">{formatTimestamp(row.order_created_at || row.date)}</td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
-                  <div>{row.country_code || '—'}</div>
-                  <div className="text-gray-500">{[row.city, row.state].filter(Boolean).join(', ') || '—'}</div>
+                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${coverageBadgeClass(row.coverage_status)}`}>
+                    {coverageStatusLabel(row.coverage_status)}
+                  </span>
+                  <div className="mt-1 font-mono text-[11px] text-gray-500">{row.purchase_path_summary || 'none'}</div>
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
-                  <div className="font-mono">{row.purchase_path_summary || 'none'}</div>
-                  <div className="text-gray-500">events: {formatNumber(row.purchase_events || 0)}</div>
-                </td>
-                <td className="py-2 text-xs text-gray-700">
                   <div>{formatTimestamp(row.approx_last_begin_checkout_at)}</div>
                   <div className="text-gray-500">{row.approx_last_checkout_button || '—'}</div>
+                </td>
+                <td className="py-2 pr-3 text-xs text-gray-700">
+                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${attributionBadgeClass(row.approx_attribution_status)}`}>
+                    {row.approx_attribution_status || '—'}
+                  </span>
+                  <div className="mt-1 text-[11px] text-gray-500">
+                    {row.approx_attribution_signal_count ? `signals: ${row.approx_attribution_signal_count}/4` : 'no linked checkout'}
+                  </div>
+                  <div className="mt-1">
+                    <PillList items={row.approx_attribution_missing_core_fields} />
+                  </div>
+                </td>
+                <td className="py-2 text-xs text-gray-700">
+                  <div>{row.country_code || '—'}</div>
+                  <div className="text-gray-500">{[row.city, row.state].filter(Boolean).join(', ') || '—'}</div>
                 </td>
               </tr>
             )) : (
               <tr>
-                <td className="py-3 text-sm text-gray-500" colSpan={5}>{emptyLabel}</td>
+                <td className="py-3 text-sm text-gray-500" colSpan={6}>{emptyLabel}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function RawEventsTable({ rows, total }) {
+  return (
+    <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+      <h3 className="text-lg font-semibold text-gray-900">Raw Diagnostics Stream</h3>
+      <p className="mt-1 text-xs text-gray-500">
+        {formatNumber(total)} matching events in range. Showing top {formatNumber(rows.length)}.
+      </p>
+      <div className="mt-3 overflow-auto">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
+              <th className="py-2 pr-3">Time</th>
+              <th className="py-2 pr-3">Event</th>
+              <th className="py-2 pr-3">Attribution</th>
+              <th className="py-2 pr-3">Identity</th>
+              <th className="py-2 pr-3">Button / Source</th>
+              <th className="py-2 pr-3">Order</th>
+              <th className="py-2">Path</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? rows.map((row) => (
+              <tr key={row.id} className="border-b border-gray-100 align-top">
+                <td className="py-2 pr-3 text-xs text-gray-700">{formatTimestamp(row.event_ts)}</td>
+                <td className="py-2 pr-3">
+                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
+                    row.is_purchase
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : row.is_begin_checkout
+                        ? 'bg-orange-100 text-orange-700'
+                        : 'bg-gray-100 text-gray-700'
+                  }`}
+                  >
+                    {row.event_name}
+                  </span>
+                </td>
+                <td className="py-2 pr-3 text-xs text-gray-700">
+                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${attributionBadgeClass(row.attribution_status)}`}>
+                    {row.attribution_status}
+                  </span>
+                  <div className="mt-1 text-[11px] text-gray-500">
+                    {row.attribution_signal_count || 0}/4
+                  </div>
+                  <div className="mt-1 max-w-44">
+                    <PillList items={row.attribution_missing_core_fields} emptyLabel="" />
+                  </div>
+                </td>
+                <td className="py-2 pr-3 text-xs text-gray-700">
+                  <div className="font-mono">{formatSessionIdentity(row)}</div>
+                  <div className="text-gray-500">{row.source || '—'}</div>
+                </td>
+                <td className="py-2 pr-3 text-xs text-gray-700">
+                  <div>{row.checkout_button || '—'}</div>
+                  <div className="text-gray-500">{row.checkout_source || '—'}</div>
+                </td>
+                <td className="py-2 pr-3 text-xs text-gray-700">
+                  <div className="font-mono">{row.order_id || '—'}</div>
+                  <div className="text-gray-500">{row.event_id || '—'}</div>
+                </td>
+                <td className="py-2 text-xs text-gray-700">
+                  <div>{row.page_path || '—'}</div>
+                  <div className="max-w-sm truncate text-gray-500" title={row.event_source_url_resolved || row.page_url || ''}>
+                    {row.event_source_url_resolved || row.page_url || '—'}
+                  </div>
+                </td>
+              </tr>
+            )) : (
+              <tr>
+                <td className="py-3 text-sm text-gray-500" colSpan={7}>No events matched this filter set.</td>
               </tr>
             )}
           </tbody>
@@ -170,6 +453,7 @@ export default function CheckoutBlackboxTab({ store }) {
         sessionHint,
         _ts: cacheBust
       };
+
       const overviewQuery = buildQueryString(common);
       const eventsQuery = buildQueryString({
         ...common,
@@ -189,7 +473,7 @@ export default function CheckoutBlackboxTab({ store }) {
       setSourceOptions(eventsResponse.data?.options?.sources || []);
       setLastRefreshedAt(new Date().toISOString());
     } catch (loadError) {
-      setError(loadError?.message || 'Failed to load Blackbox data');
+      setError(loadError?.message || 'Failed to load Checkout Blackbox data');
     } finally {
       setLoading(false);
       isRefreshingRef.current = false;
@@ -227,14 +511,11 @@ export default function CheckoutBlackboxTab({ store }) {
     window.open(`/api/blackbox/export.csv?${query}`, '_blank', 'noopener,noreferrer');
   }, [baseQuery, eventName, sessionHint, source]);
 
-  const duplicateGroups = overview?.duplicates?.groups || [];
-  const topDuplicateButtons = overview?.duplicates?.top_buttons || [];
-  const ghostSessions = overview?.ghost_sessions || [];
-  const hardGhostOrders = overview?.hard_ghost_orders || overview?.ghost_orders || [];
-  const recoveredWebhookOrders = overview?.recovered_webhook_only_orders || [];
-  const partialMissOrders = overview?.partial_miss_orders || [];
-  const noTelemetryOrders = overview?.no_telemetry_orders || [];
   const summary = overview?.summary || {};
+  const duplicates = overview?.duplicates || {};
+  const checkoutAttribution = overview?.checkout_attribution || {};
+  const purchaseGapOrders = overview?.purchase_gap_orders || [];
+  const noTelemetryOrders = overview?.no_telemetry_orders || [];
   const purchaseStreamActive = summary.blackbox_purchase_stream_active !== undefined
     ? Boolean(summary.blackbox_purchase_stream_active)
     : Number(summary.purchase_events || 0) > 0;
@@ -244,9 +525,9 @@ export default function CheckoutBlackboxTab({ store }) {
       <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h2 className="text-2xl font-semibold text-gray-900">Checkout Blackbox</h2>
+            <h2 className="text-2xl font-semibold text-gray-900">Checkout Attribution Diagnostics</h2>
             <p className="mt-1 text-sm text-gray-600">
-              Dedicated diagnostics for checkout duplication and ghost purchase patterns.
+              Clean operator view for checkout path duplication, missing attribution context, and missing purchase coverage.
             </p>
             <p className="mt-1 text-xs text-gray-500">
               Ingest endpoint: <code>/api/blackbox/ingest</code> (store-scoped, isolated from Session Intelligence).
@@ -254,7 +535,7 @@ export default function CheckoutBlackboxTab({ store }) {
           </div>
           <div className="flex flex-wrap gap-2">
             <button
-              onClick={loadData}
+              onClick={() => loadData()}
               disabled={loading}
               className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -333,12 +614,8 @@ export default function CheckoutBlackboxTab({ store }) {
         </div>
 
         <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
-          <div>
-            Last refreshed: {lastRefreshedAt ? formatTimestamp(lastRefreshedAt) : '—'}
-          </div>
-          <div>
-            Auto-refresh: every {Math.round(AUTO_REFRESH_INTERVAL_MS / 1000)}s
-          </div>
+          <div>Last refreshed: {lastRefreshedAt ? formatTimestamp(lastRefreshedAt) : '—'}</div>
+          <div>Auto-refresh: every {Math.round(AUTO_REFRESH_INTERVAL_MS / 1000)}s</div>
           <div>
             Showing up to{' '}
             <select
@@ -362,257 +639,67 @@ export default function CheckoutBlackboxTab({ store }) {
 
         {!error && !purchaseStreamActive ? (
           <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-            No Blackbox purchase stream detected in this date range. Hard ghost counts are strict and no-telemetry orders are separated below.
+            No purchase telemetry stream was detected in this date range. Checkout attribution diagnostics are still valid, but purchase-gap sections should be read as “stream missing” rather than “order ghosted.”
           </div>
         ) : null}
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <StatCard
-          label="Begin Checkout Events"
+          label="Begin Checkout"
           value={formatNumber(summary.begin_checkout_events)}
           hint={`Sampled sessions: ${formatNumber(summary.sampled_sessions)}`}
         />
         <StatCard
-          label="Purchase Events"
-          value={formatNumber(summary.purchase_events)}
-          hint={`Sampled events: ${formatNumber(summary.sampled_events)}`}
+          label="Attributed Checkout"
+          value={formatNumber(summary.begin_checkout_attributed)}
+          hint={`Rate: ${formatPercent(summary.begin_checkout_events ? (summary.begin_checkout_attributed / summary.begin_checkout_events) : 0)}`}
         />
         <StatCard
-          label="Duplicate Begin Checkout"
+          label="Weak / Missing Checkout"
+          value={formatNumber((summary.begin_checkout_partial || 0) + (summary.begin_checkout_missing || 0))}
+          hint={`Partial: ${formatNumber(summary.begin_checkout_partial)} • Missing: ${formatNumber(summary.begin_checkout_missing)}`}
+        />
+        <StatCard
+          label="Duplicate Checkout"
           value={formatNumber(summary.duplicate_begin_checkout_events)}
           hint={`Rate: ${formatPercent(summary.duplicate_begin_checkout_rate || 0)}`}
         />
         <StatCard
-          label="Ghost Sessions"
-          value={formatNumber(summary.ghost_sessions_without_purchase)}
-          hint="Begin checkout seen but no purchase in sampled stream"
+          label="Orders with Full Purchase Coverage"
+          value={formatNumber(summary.orders_with_full_purchase_coverage)}
+          hint={`Shopify orders: ${formatNumber(summary.shopify_orders_in_range)}`}
         />
         <StatCard
-          label="Shopify Orders"
-          value={formatNumber(summary.shopify_orders_in_range)}
-          hint={`Observed Blackbox purchases: ${formatNumber(summary.orders_with_blackbox_purchase)}`}
-        />
-        <StatCard
-          label="Hard Ghost Orders"
-          value={formatNumber(summary.hard_ghost_orders ?? summary.ghost_orders_without_blackbox_purchase)}
-          hint="Shopify order with no pixel + no GTM + no webhook purchase signal"
-        />
-        <StatCard
-          label="Recovered (Webhook Only)"
-          value={formatNumber(summary.recovered_webhook_only_orders)}
-          hint="Order recovered by webhook when pixel and GTM purchase were both missing"
-        />
-        <StatCard
-          label="Partial Miss Orders"
-          value={formatNumber(summary.partial_miss_orders)}
-          hint="Exactly one side fired (pixel xor GTM)"
-        />
-        <StatCard
-          label="No Telemetry Orders"
-          value={formatNumber(summary.no_telemetry_orders)}
-          hint="Orders in range with no purchase telemetry stream available"
+          label="Orders with Purchase Gaps"
+          value={formatNumber(summary.orders_with_purchase_gap)}
+          hint={`No telemetry only: ${formatNumber(summary.no_telemetry_orders)}`}
         />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
-        <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-          <h3 className="text-lg font-semibold text-gray-900">Top Duplicate Button Paths</h3>
-          <p className="mt-1 text-xs text-gray-500">
-            Ranked by duplicated begin_checkout events inside the configured duplicate window.
-          </p>
-          <div className="mt-3 overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
-                  <th className="py-2 pr-4">Button / Source</th>
-                  <th className="py-2">Duplicate Count</th>
-                </tr>
-              </thead>
-              <tbody>
-                {topDuplicateButtons.length ? topDuplicateButtons.map((row) => (
-                  <tr key={row.checkout_button} className="border-b border-gray-100">
-                    <td className="py-2 pr-4 font-mono text-xs text-gray-700">{row.checkout_button}</td>
-                    <td className="py-2 font-medium text-gray-900">{formatNumber(row.count)}</td>
-                  </tr>
-                )) : (
-                  <tr>
-                    <td className="py-3 text-sm text-gray-500" colSpan={2}>No duplicate clusters in this range.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-          <h3 className="text-lg font-semibold text-gray-900">Recent Duplicate Clusters</h3>
-          <p className="mt-1 text-xs text-gray-500">
-            Most recent repeated begin_checkout clusters by identity + cart/checkout flow key.
-          </p>
-          <div className="mt-3 max-h-72 overflow-auto">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
-                  <th className="py-2 pr-3">Time</th>
-                  <th className="py-2 pr-3">Count</th>
-                  <th className="py-2">Button</th>
-                </tr>
-              </thead>
-              <tbody>
-                {duplicateGroups.length ? duplicateGroups.slice(0, 20).map((row, index) => (
-                  <tr key={`${row.identity_key}-${row.flow_key}-${index}`} className="border-b border-gray-100 align-top">
-                    <td className="py-2 pr-3 text-xs text-gray-700">{formatTimestamp(row.last_event_ts)}</td>
-                    <td className="py-2 pr-3 font-semibold text-gray-900">{formatNumber(row.count)}</td>
-                    <td className="py-2 text-xs text-gray-700">
-                      <div className="font-mono">{row.checkout_button || row.checkout_source || 'unknown'}</div>
-                      <div className="text-gray-500">{row.page_path || '—'}</div>
-                    </td>
-                  </tr>
-                )) : (
-                  <tr>
-                    <td className="py-3 text-sm text-gray-500" colSpan={3}>No duplicate groups detected.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <DuplicatePathsTable rows={duplicates.top_buttons || []} />
+        <TopMissingFieldsTable rows={checkoutAttribution.top_missing_core || []} />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
-        <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-          <h3 className="text-lg font-semibold text-gray-900">Ghost Session Candidates</h3>
-          <p className="mt-1 text-xs text-gray-500">
-            Sessions with begin_checkout but no purchase in this sampled window.
-          </p>
-          <div className="mt-3 max-h-80 overflow-auto">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
-                  <th className="py-2 pr-3">Last Seen</th>
-                  <th className="py-2 pr-3">Begin Events</th>
-                  <th className="py-2 pr-3">Identity</th>
-                  <th className="py-2">Last Button</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ghostSessions.length ? ghostSessions.map((row) => (
-                  <tr key={row.identity_key} className="border-b border-gray-100 align-top">
-                    <td className="py-2 pr-3 text-xs text-gray-700">{formatTimestamp(row.last_event_ts)}</td>
-                    <td className="py-2 pr-3 font-medium text-gray-900">{formatNumber(row.begin_checkout_events)}</td>
-                    <td className="py-2 pr-3 text-xs text-gray-600">
-                      <div className="font-mono">{row.identity_key}</div>
-                      <div>{row.country_code || '—'} {row.region_code ? `• ${row.region_code}` : ''}</div>
-                    </td>
-                    <td className="py-2 text-xs text-gray-700">{row.last_checkout_button || '—'}</td>
-                  </tr>
-                )) : (
-                  <tr>
-                    <td className="py-3 text-sm text-gray-500" colSpan={4}>No ghost session candidates in this range.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+        <WeakCheckoutTable rows={checkoutAttribution.weak_rows || []} />
+        <PurchaseGapTable
+          rows={purchaseGapOrders}
+          emptyLabel="No purchase coverage gaps in this range."
+        />
+      </div>
+
+      {noTelemetryOrders.length ? (
+        <div className="grid gap-4 xl:grid-cols-1">
+          <PurchaseGapTable
+            rows={noTelemetryOrders}
+            emptyLabel="No no-telemetry orders in this range."
+          />
         </div>
+      ) : null}
 
-        <OrderCandidatesTable
-          title="Hard Ghost Order Candidates"
-          hint="Strict definition: Shopify order with no pixel purchase and no GTM purchase (and no webhook recovery signal)."
-          rows={hardGhostOrders}
-          emptyLabel="No hard ghost order candidates in this range."
-        />
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-2">
-        <OrderCandidatesTable
-          title="Recovered (Webhook Only) Orders"
-          hint="Webhook purchase signal exists, but both pixel and GTM purchase signals are missing."
-          rows={recoveredWebhookOrders}
-          emptyLabel="No webhook-only recovered orders in this range."
-        />
-        <OrderCandidatesTable
-          title="Partial Miss Orders"
-          hint="Only one of pixel or GTM purchase signals fired for the order."
-          rows={partialMissOrders}
-          emptyLabel="No partial miss orders in this range."
-        />
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-1">
-        <OrderCandidatesTable
-          title="No Telemetry Orders"
-          hint="Orders where this range has no purchase telemetry stream to classify delivery path."
-          rows={noTelemetryOrders}
-          emptyLabel="No no-telemetry orders in this range."
-        />
-      </div>
-
-      <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-        <h3 className="text-lg font-semibold text-gray-900">Raw Blackbox Events</h3>
-        <p className="mt-1 text-xs text-gray-500">
-          {formatNumber(eventsTotal)} matching events in range. Showing top {formatNumber(events.length)}.
-        </p>
-        <div className="mt-3 overflow-auto">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
-                <th className="py-2 pr-3">Time</th>
-                <th className="py-2 pr-3">Event</th>
-                <th className="py-2 pr-3">Identity</th>
-                <th className="py-2 pr-3">Button / Source</th>
-                <th className="py-2 pr-3">Order</th>
-                <th className="py-2 pr-3">Geo</th>
-                <th className="py-2">Path</th>
-              </tr>
-            </thead>
-            <tbody>
-              {events.length ? events.map((row) => (
-                <tr key={row.id} className="border-b border-gray-100 align-top">
-                  <td className="py-2 pr-3 text-xs text-gray-700">{formatTimestamp(row.event_ts)}</td>
-                  <td className="py-2 pr-3">
-                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
-                      row.is_purchase
-                        ? 'bg-emerald-100 text-emerald-700'
-                        : row.is_begin_checkout
-                          ? 'bg-orange-100 text-orange-700'
-                          : 'bg-gray-100 text-gray-700'
-                    }`}
-                    >
-                      {row.event_name}
-                    </span>
-                  </td>
-                  <td className="py-2 pr-3 text-xs text-gray-700">
-                    <div className="font-mono">{formatSessionIdentity(row)}</div>
-                    <div className="text-gray-500">{row.source || '—'}</div>
-                  </td>
-                  <td className="py-2 pr-3 text-xs text-gray-700">
-                    <div>{row.checkout_button || '—'}</div>
-                    <div className="text-gray-500">{row.checkout_source || '—'}</div>
-                  </td>
-                  <td className="py-2 pr-3 text-xs text-gray-700">
-                    <div className="font-mono">{row.order_id || '—'}</div>
-                    <div className="text-gray-500">{row.event_id || '—'}</div>
-                  </td>
-                  <td className="py-2 pr-3 text-xs text-gray-700">
-                    <div>{row.country_code || '—'} {row.region_code ? `• ${row.region_code}` : ''}</div>
-                    <div className="text-gray-500">{row.ip_hash || '—'}</div>
-                  </td>
-                  <td className="py-2 text-xs text-gray-700">
-                    <div>{row.page_path || '—'}</div>
-                    <div className="max-w-sm truncate text-gray-500" title={row.page_url || ''}>{row.page_url || '—'}</div>
-                  </td>
-                </tr>
-              )) : (
-                <tr>
-                  <td className="py-3 text-sm text-gray-500" colSpan={7}>No events matched this filter set.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <RawEventsTable rows={events} total={eventsTotal} />
     </div>
   );
 }
