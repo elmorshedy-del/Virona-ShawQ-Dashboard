@@ -6,6 +6,7 @@ const EVENT_LIMIT_OPTIONS = [100, 200, 500];
 const DEFAULT_EVENT_LIMIT = 200;
 const CSV_EXPORT_LIMIT = 5000;
 const AUTO_REFRESH_INTERVAL_MS = 30 * 1000;
+const ATTRIBUTION_GRACE_HOURS = 2;
 
 function getIsoDate(date) {
   return date.toISOString().slice(0, 10);
@@ -50,30 +51,8 @@ function formatTimestamp(value) {
   return parsed.toLocaleString();
 }
 
-function formatSessionIdentity(row) {
+function formatIdentity(row) {
   return row?.session_id || row?.client_id || row?.ip_hash || '—';
-}
-
-function coverageStatusLabel(value) {
-  switch (value) {
-    case 'full': return 'Full';
-    case 'partial': return 'Partial';
-    case 'webhook_only': return 'Webhook only';
-    case 'unknown_only': return 'Unknown purchase';
-    case 'no_purchase_signal': return 'No purchase signal';
-    default: return value || '—';
-  }
-}
-
-function deliveryStatusLabel(value) {
-  switch (value) {
-    case 'hard_ghost': return 'Missing both';
-    case 'recovered_webhook_only': return 'Recovered by webhook';
-    case 'partial_miss': return 'Pixel/GTM mismatch';
-    case 'unknown_purchase_source': return 'Unknown purchase source';
-    case 'no_telemetry': return 'No purchase telemetry';
-    default: return value || '—';
-  }
 }
 
 function attributionBadgeClass(status) {
@@ -81,55 +60,57 @@ function attributionBadgeClass(status) {
     case 'attributed': return 'bg-emerald-100 text-emerald-700';
     case 'partial': return 'bg-amber-100 text-amber-800';
     case 'missing': return 'bg-rose-100 text-rose-700';
+    case 'none': return 'bg-gray-100 text-gray-600';
     default: return 'bg-gray-100 text-gray-700';
   }
 }
 
-function coverageBadgeClass(status) {
+function transitionBadgeClass(status) {
   switch (status) {
-    case 'full': return 'bg-emerald-100 text-emerald-700';
-    case 'partial': return 'bg-amber-100 text-amber-800';
-    case 'webhook_only': return 'bg-sky-100 text-sky-700';
-    case 'no_purchase_signal': return 'bg-rose-100 text-rose-700';
-    case 'unknown_only': return 'bg-gray-100 text-gray-700';
+    case 'dropped_at_checkout': return 'bg-rose-100 text-rose-700';
+    case 'weak_upstream': return 'bg-amber-100 text-amber-800';
+    case 'no_upstream_signal': return 'bg-sky-100 text-sky-700';
     default: return 'bg-gray-100 text-gray-700';
   }
 }
 
-function PillList({ items, emptyLabel = '—' }) {
-  if (!Array.isArray(items) || !items.length) {
-    return <span className="text-xs text-gray-500">{emptyLabel}</span>;
+function transitionLabel(status) {
+  switch (status) {
+    case 'dropped_at_checkout': return 'Dropped at checkout';
+    case 'weak_upstream': return 'Weak upstream';
+    case 'no_upstream_signal': return 'No upstream signal';
+    default: return status || '—';
   }
+}
 
+function signalBadgeClass(value) {
+  return value ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-gray-50 text-gray-500 border-gray-200';
+}
+
+function SignalPill({ label, value }) {
   return (
-    <div className="flex flex-wrap gap-1">
-      {items.map((item) => (
-        <span
-          key={item}
-          className="inline-flex rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-[11px] font-medium text-gray-700"
-        >
-          {item}
-        </span>
-      ))}
-    </div>
+    <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${signalBadgeClass(value)}`}>
+      {label}: {value ? 'yes' : 'no'}
+    </span>
   );
 }
 
-async function fetchJson(url) {
-  const res = await fetch(url, { cache: 'no-store' });
-  const raw = await res.text();
+function fetchJson(url) {
+  return fetch(url, { cache: 'no-store' })
+    .then((res) => res.text().then((raw) => ({ res, raw })))
+    .then(({ res, raw }) => {
+      let data = null;
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch (_error) {
+        throw new Error(`Non-JSON response from ${url}`);
+      }
 
-  let data = null;
-  try {
-    data = raw ? JSON.parse(raw) : {};
-  } catch (_error) {
-    throw new Error(`Non-JSON response from ${url}`);
-  }
-
-  if (!res.ok || !data?.success) {
-    throw new Error(data?.error || `Request failed (${res.status})`);
-  }
-  return data;
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || `Request failed (${res.status})`);
+      }
+      return data;
+    });
 }
 
 function StatCard({ label, value, hint }) {
@@ -142,45 +123,12 @@ function StatCard({ label, value, hint }) {
   );
 }
 
-function TopMissingFieldsTable({ rows }) {
-  return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-      <h3 className="text-lg font-semibold text-gray-900">Top Missing Attribution Fields</h3>
-      <p className="mt-1 text-xs text-gray-500">
-        Counted across sampled <code>begin_checkout</code> events in this range.
-      </p>
-      <div className="mt-3 max-h-72 overflow-auto">
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
-              <th className="py-2 pr-4">Field</th>
-              <th className="py-2">Missing Count</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length ? rows.map((row) => (
-              <tr key={row.field} className="border-b border-gray-100">
-                <td className="py-2 pr-4 font-mono text-xs text-gray-700">{row.field}</td>
-                <td className="py-2 font-medium text-gray-900">{formatNumber(row.count)}</td>
-              </tr>
-            )) : (
-              <tr>
-                <td className="py-3 text-sm text-gray-500" colSpan={2}>No missing-field patterns in this range.</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
 function DuplicatePathsTable({ rows }) {
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
       <h3 className="text-lg font-semibold text-gray-900">Top Duplicate Checkout Paths</h3>
       <p className="mt-1 text-xs text-gray-500">
-        Ranked by repeated <code>begin_checkout</code> clusters inside the duplicate window.
+        Repeated <code>begin_checkout</code> clusters inside the duplicate window.
       </p>
       <div className="mt-3 max-h-72 overflow-auto">
         <table className="min-w-full text-sm">
@@ -208,47 +156,81 @@ function DuplicatePathsTable({ rows }) {
   );
 }
 
-function WeakCheckoutTable({ rows }) {
+function MisattributedCheckoutsTable({ rows }) {
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-      <h3 className="text-lg font-semibold text-gray-900">Weak / Missing Checkout Attribution</h3>
+      <h3 className="text-lg font-semibold text-gray-900">Unresolved Misattributed Checkouts</h3>
       <p className="mt-1 text-xs text-gray-500">
-        Checkout starts that reached the platform but did not carry a complete attribution snapshot.
+        Only checkouts older than {ATTRIBUTION_GRACE_HOURS} hours are shown. Primary status is based on attribution IDs surviving (<code>fbc/fbclid</code> or <code>fbp</code>). Page context stays visible as supporting evidence.
       </p>
-      <div className="mt-3 max-h-[28rem] overflow-auto">
+      <div className="mt-3 max-h-[36rem] overflow-auto">
         <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
-              <th className="py-2 pr-3">Time</th>
-              <th className="py-2 pr-3">Status</th>
-              <th className="py-2 pr-3">Missing</th>
-              <th className="py-2 pr-3">Button / Source</th>
+              <th className="py-2 pr-3">Checkout Time</th>
               <th className="py-2 pr-3">Identity</th>
-              <th className="py-2">Path</th>
+              <th className="py-2 pr-3">Checkout Path</th>
+              <th className="py-2 pr-3">Checkout IDs</th>
+              <th className="py-2 pr-3">Upstream Snapshot</th>
+              <th className="py-2 pr-3">Diagnosis</th>
+              <th className="py-2">Page</th>
             </tr>
           </thead>
           <tbody>
             {rows.length ? rows.map((row) => (
               <tr key={row.id} className="border-b border-gray-100 align-top">
-                <td className="py-2 pr-3 text-xs text-gray-700">{formatTimestamp(row.event_ts)}</td>
-                <td className="py-2 pr-3">
-                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${attributionBadgeClass(row.attribution_status)}`}>
-                    {row.attribution_status}
-                  </span>
-                  <div className="mt-1 text-[11px] text-gray-500">
-                    signals: {formatNumber(row.attribution_signal_count || 0)}/4
-                  </div>
+                <td className="py-2 pr-3 text-xs text-gray-700">
+                  <div>{formatTimestamp(row.event_ts)}</div>
+                  <div className="text-gray-500">{row.country_code || '—'} {row.region_code ? `• ${row.region_code}` : ''}</div>
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
-                  <PillList items={row.attribution_missing_core_fields} />
+                  <div className="font-mono">{formatIdentity(row)}</div>
+                  <div className="text-gray-500">{row.source || '—'}</div>
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
                   <div>{row.checkout_button || '—'}</div>
                   <div className="text-gray-500">{row.checkout_source || '—'}</div>
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
-                  <div className="font-mono">{formatSessionIdentity(row)}</div>
-                  <div className="text-gray-500">{row.country_code || '—'} {row.region_code ? `• ${row.region_code}` : ''}</div>
+                  <div>
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${attributionBadgeClass(row.attribution_status)}`}>
+                      {row.attribution_status}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    <SignalPill label="fbc" value={row.has_fbc || row.has_fbclid} />
+                    <SignalPill label="fbp" value={row.has_fbp} />
+                    <SignalPill label="ctx" value={row.has_event_source_url || row.has_landing_context} />
+                  </div>
+                  <div className="mt-1 text-[11px] text-gray-500">
+                    ID signals: {row.attribution_id_signal_count || 0}/2
+                  </div>
+                </td>
+                <td className="py-2 pr-3 text-xs text-gray-700">
+                  <div>
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${attributionBadgeClass(row.upstream_attribution_status)}`}>
+                      {row.upstream_attribution_status}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-gray-500">{formatTimestamp(row.upstream_event_ts)}</div>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    <SignalPill label="fbc" value={row.upstream_has_fbc || row.upstream_has_click_id} />
+                    <SignalPill label="fbp" value={row.upstream_has_fbp} />
+                    <SignalPill label="ctx" value={row.upstream_has_event_source_url || row.upstream_has_landing_context} />
+                  </div>
+                  <div className="mt-1 text-[11px] text-gray-500">
+                    Source event: {row.upstream_event_name || '—'}
+                  </div>
+                </td>
+                <td className="py-2 pr-3 text-xs text-gray-700">
+                  <div>
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${transitionBadgeClass(row.attribution_transition)}`}>
+                      {transitionLabel(row.attribution_transition)}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-gray-500">
+                    {row.attribution_id_signal_count || 0}/2 ID signals at checkout
+                  </div>
                 </td>
                 <td className="py-2 text-xs text-gray-700">
                   <div>{row.page_path || '—'}</div>
@@ -259,73 +241,7 @@ function WeakCheckoutTable({ rows }) {
               </tr>
             )) : (
               <tr>
-                <td className="py-3 text-sm text-gray-500" colSpan={6}>No weak checkout attribution events in this range.</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function PurchaseGapTable({ rows, emptyLabel }) {
-  return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-      <h3 className="text-lg font-semibold text-gray-900">Purchase Coverage Gaps</h3>
-      <p className="mt-1 text-xs text-gray-500">
-        Shopify orders where platform purchase coverage is incomplete across pixel / GTM paths.
-      </p>
-      <div className="mt-3 max-h-[28rem] overflow-auto">
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
-              <th className="py-2 pr-3">Order</th>
-              <th className="py-2 pr-3">Created</th>
-              <th className="py-2 pr-3">Coverage</th>
-              <th className="py-2 pr-3">Last Checkout</th>
-              <th className="py-2 pr-3">Checkout Attribution</th>
-              <th className="py-2">Geo</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length ? rows.map((row) => (
-              <tr key={`${row.order_id}-${row.delivery_status || 'gap'}`} className="border-b border-gray-100 align-top">
-                <td className="py-2 pr-3 text-xs text-gray-700">
-                  <div className="font-mono">{row.order_id}</div>
-                  <div>{row.currency || ''} {row.order_total || ''}</div>
-                  <div className="mt-1 text-[11px] text-gray-500">{deliveryStatusLabel(row.delivery_status)}</div>
-                </td>
-                <td className="py-2 pr-3 text-xs text-gray-700">{formatTimestamp(row.order_created_at || row.date)}</td>
-                <td className="py-2 pr-3 text-xs text-gray-700">
-                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${coverageBadgeClass(row.coverage_status)}`}>
-                    {coverageStatusLabel(row.coverage_status)}
-                  </span>
-                  <div className="mt-1 font-mono text-[11px] text-gray-500">{row.purchase_path_summary || 'none'}</div>
-                </td>
-                <td className="py-2 pr-3 text-xs text-gray-700">
-                  <div>{formatTimestamp(row.approx_last_begin_checkout_at)}</div>
-                  <div className="text-gray-500">{row.approx_last_checkout_button || '—'}</div>
-                </td>
-                <td className="py-2 pr-3 text-xs text-gray-700">
-                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${attributionBadgeClass(row.approx_attribution_status)}`}>
-                    {row.approx_attribution_status || '—'}
-                  </span>
-                  <div className="mt-1 text-[11px] text-gray-500">
-                    {row.approx_attribution_signal_count ? `signals: ${row.approx_attribution_signal_count}/4` : 'no linked checkout'}
-                  </div>
-                  <div className="mt-1">
-                    <PillList items={row.approx_attribution_missing_core_fields} />
-                  </div>
-                </td>
-                <td className="py-2 text-xs text-gray-700">
-                  <div>{row.country_code || '—'}</div>
-                  <div className="text-gray-500">{[row.city, row.state].filter(Boolean).join(', ') || '—'}</div>
-                </td>
-              </tr>
-            )) : (
-              <tr>
-                <td className="py-3 text-sm text-gray-500" colSpan={6}>{emptyLabel}</td>
+                <td className="py-3 text-sm text-gray-500" colSpan={7}>No unresolved misattributed checkouts in this range.</td>
               </tr>
             )}
           </tbody>
@@ -351,48 +267,34 @@ function RawEventsTable({ rows, total }) {
               <th className="py-2 pr-3">Attribution</th>
               <th className="py-2 pr-3">Identity</th>
               <th className="py-2 pr-3">Button / Source</th>
-              <th className="py-2 pr-3">Order</th>
-              <th className="py-2">Path</th>
+              <th className="py-2">Page</th>
             </tr>
           </thead>
           <tbody>
             {rows.length ? rows.map((row) => (
               <tr key={row.id} className="border-b border-gray-100 align-top">
                 <td className="py-2 pr-3 text-xs text-gray-700">{formatTimestamp(row.event_ts)}</td>
-                <td className="py-2 pr-3">
-                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
-                    row.is_purchase
-                      ? 'bg-emerald-100 text-emerald-700'
-                      : row.is_begin_checkout
-                        ? 'bg-orange-100 text-orange-700'
-                        : 'bg-gray-100 text-gray-700'
-                  }`}
-                  >
-                    {row.event_name}
-                  </span>
+                <td className="py-2 pr-3 text-xs text-gray-700">
+                  <div className="font-medium text-gray-900">{row.event_name}</div>
+                  <div className="text-gray-500">{row.source || '—'}</div>
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
                   <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${attributionBadgeClass(row.attribution_status)}`}>
                     {row.attribution_status}
                   </span>
-                  <div className="mt-1 text-[11px] text-gray-500">
-                    {row.attribution_signal_count || 0}/4
-                  </div>
-                  <div className="mt-1 max-w-44">
-                    <PillList items={row.attribution_missing_core_fields} emptyLabel="" />
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    <SignalPill label="fbc" value={row.has_fbc || row.has_fbclid} />
+                    <SignalPill label="fbp" value={row.has_fbp} />
+                    <SignalPill label="ctx" value={row.has_event_source_url || row.has_landing_context} />
                   </div>
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
-                  <div className="font-mono">{formatSessionIdentity(row)}</div>
-                  <div className="text-gray-500">{row.source || '—'}</div>
+                  <div className="font-mono">{formatIdentity(row)}</div>
+                  <div className="text-gray-500">{row.country_code || '—'} {row.region_code ? `• ${row.region_code}` : ''}</div>
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
                   <div>{row.checkout_button || '—'}</div>
                   <div className="text-gray-500">{row.checkout_source || '—'}</div>
-                </td>
-                <td className="py-2 pr-3 text-xs text-gray-700">
-                  <div className="font-mono">{row.order_id || '—'}</div>
-                  <div className="text-gray-500">{row.event_id || '—'}</div>
                 </td>
                 <td className="py-2 text-xs text-gray-700">
                   <div>{row.page_path || '—'}</div>
@@ -403,7 +305,7 @@ function RawEventsTable({ rows, total }) {
               </tr>
             )) : (
               <tr>
-                <td className="py-3 text-sm text-gray-500" colSpan={7}>No events matched this filter set.</td>
+                <td className="py-3 text-sm text-gray-500" colSpan={6}>No events matched this filter set.</td>
               </tr>
             )}
           </tbody>
@@ -433,7 +335,8 @@ export default function CheckoutBlackboxTab({ store }) {
   const baseQuery = useMemo(() => ({
     store: storeId,
     startDate: range.startDate,
-    endDate: range.endDate
+    endDate: range.endDate,
+    attributionGraceHours: ATTRIBUTION_GRACE_HOURS
   }), [storeId, range.endDate, range.startDate]);
 
   const loadData = useCallback(async (options = {}) => {
@@ -513,24 +416,17 @@ export default function CheckoutBlackboxTab({ store }) {
 
   const summary = overview?.summary || {};
   const duplicates = overview?.duplicates || {};
-  const checkoutAttribution = overview?.checkout_attribution || {};
-  const purchaseGapOrders = overview?.purchase_gap_orders || [];
-  const noTelemetryOrders = overview?.no_telemetry_orders || [];
-  const purchaseStreamActive = summary.blackbox_purchase_stream_active !== undefined
-    ? Boolean(summary.blackbox_purchase_stream_active)
-    : Number(summary.purchase_events || 0) > 0;
+  const misattribution = overview?.misattribution || {};
+  const unresolvedRows = misattribution.rows || [];
 
   return (
     <div className="space-y-6">
       <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h2 className="text-2xl font-semibold text-gray-900">Checkout Attribution Diagnostics</h2>
+            <h2 className="text-2xl font-semibold text-gray-900">Misattributed Checkout Monitor</h2>
             <p className="mt-1 text-sm text-gray-600">
-              Clean operator view for checkout path duplication, missing attribution context, and missing purchase coverage.
-            </p>
-            <p className="mt-1 text-xs text-gray-500">
-              Ingest endpoint: <code>/api/blackbox/ingest</code> (store-scoped, isolated from Session Intelligence).
+              Clean operator view for linked checkouts that stayed weak after a grace window: did attribution IDs survive, did they drop at checkout, and which button path triggered them.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -615,7 +511,7 @@ export default function CheckoutBlackboxTab({ store }) {
 
         <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
           <div>Last refreshed: {lastRefreshedAt ? formatTimestamp(lastRefreshedAt) : '—'}</div>
-          <div>Auto-refresh: every {Math.round(AUTO_REFRESH_INTERVAL_MS / 1000)}s</div>
+          <div>Grace window: {ATTRIBUTION_GRACE_HOURS}h</div>
           <div>
             Showing up to{' '}
             <select
@@ -636,68 +532,40 @@ export default function CheckoutBlackboxTab({ store }) {
             {error}
           </div>
         ) : null}
-
-        {!error && !purchaseStreamActive ? (
-          <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-            No purchase telemetry stream was detected in this date range. Checkout attribution diagnostics are still valid, but purchase-gap sections should be read as “stream missing” rather than “order ghosted.”
-          </div>
-        ) : null}
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <StatCard
           label="Begin Checkout"
           value={formatNumber(summary.begin_checkout_events)}
-          hint={`Sampled sessions: ${formatNumber(summary.sampled_sessions)}`}
+          hint={`With attribution IDs: ${formatPercent(summary.begin_checkout_events ? (summary.begin_checkout_attributed / summary.begin_checkout_events) : 0)}`}
         />
         <StatCard
-          label="Attributed Checkout"
-          value={formatNumber(summary.begin_checkout_attributed)}
-          hint={`Rate: ${formatPercent(summary.begin_checkout_events ? (summary.begin_checkout_attributed / summary.begin_checkout_events) : 0)}`}
+          label="Unresolved Misattributed"
+          value={formatNumber(summary.unresolved_misattributed_checkouts)}
+          hint={`Older than ${ATTRIBUTION_GRACE_HOURS}h`}
         />
         <StatCard
-          label="Weak / Missing Checkout"
-          value={formatNumber((summary.begin_checkout_partial || 0) + (summary.begin_checkout_missing || 0))}
-          hint={`Partial: ${formatNumber(summary.begin_checkout_partial)} • Missing: ${formatNumber(summary.begin_checkout_missing)}`}
+          label="Dropped at Checkout"
+          value={formatNumber(summary.dropped_at_checkout_count)}
+          hint="Upstream looked better than checkout"
         />
         <StatCard
-          label="Duplicate Checkout"
-          value={formatNumber(summary.duplicate_begin_checkout_events)}
-          hint={`Rate: ${formatPercent(summary.duplicate_begin_checkout_rate || 0)}`}
+          label="Weak Upstream"
+          value={formatNumber(summary.weak_upstream_count)}
+          hint="Already weak before checkout"
         />
         <StatCard
-          label="Orders with Full Purchase Coverage"
-          value={formatNumber(summary.orders_with_full_purchase_coverage)}
-          hint={`Shopify orders: ${formatNumber(summary.shopify_orders_in_range)}`}
-        />
-        <StatCard
-          label="Orders with Purchase Gaps"
-          value={formatNumber(summary.orders_with_purchase_gap)}
-          hint={`No telemetry only: ${formatNumber(summary.no_telemetry_orders)}`}
+          label="Recovered Later"
+          value={formatNumber(summary.recovered_late_checkouts)}
+          hint="Auto-cleared from unresolved list"
         />
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid gap-4 xl:grid-cols-[1.7fr_1fr]">
+        <MisattributedCheckoutsTable rows={unresolvedRows} />
         <DuplicatePathsTable rows={duplicates.top_buttons || []} />
-        <TopMissingFieldsTable rows={checkoutAttribution.top_missing_core || []} />
       </div>
-
-      <div className="grid gap-4 xl:grid-cols-2">
-        <WeakCheckoutTable rows={checkoutAttribution.weak_rows || []} />
-        <PurchaseGapTable
-          rows={purchaseGapOrders}
-          emptyLabel="No purchase coverage gaps in this range."
-        />
-      </div>
-
-      {noTelemetryOrders.length ? (
-        <div className="grid gap-4 xl:grid-cols-1">
-          <PurchaseGapTable
-            rows={noTelemetryOrders}
-            emptyLabel="No no-telemetry orders in this range."
-          />
-        </div>
-      ) : null}
 
       <RawEventsTable rows={events} total={eventsTotal} />
     </div>

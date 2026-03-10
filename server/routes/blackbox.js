@@ -123,6 +123,7 @@ router.get('/overview', (req, res) => {
       endDate: req.query.endDate || req.query.end,
       lookbackDays: req.query.lookbackDays || req.query.lookback,
       duplicateWindowSeconds: req.query.duplicateWindowSeconds,
+      attributionGraceHours: req.query.attributionGraceHours,
       ghostSessionLimit: req.query.ghostSessionLimit,
       ghostOrderLimit: req.query.ghostOrderLimit,
       analysisLimit: req.query.analysisLimit

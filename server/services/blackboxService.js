@@ -15,6 +15,10 @@ const MAX_DUPLICATE_WINDOW_SECONDS = 300;
 const DEFAULT_GHOST_SESSION_LIMIT = 50;
 const DEFAULT_GHOST_ORDER_LIMIT = 50;
 const MAX_GHOST_LIMIT = 300;
+const DEFAULT_ATTRIBUTION_GRACE_HOURS = 2;
+const MAX_ATTRIBUTION_GRACE_HOURS = 24;
+const DEFAULT_ATTRIBUTION_UPSTREAM_WINDOW_HOURS = 6;
+const DEFAULT_ATTRIBUTION_RECOVERY_WINDOW_HOURS = 12;
 const DEFAULT_APPROX_LOOKBACK_HOURS = 6;
 const MAX_APPROX_LOOKBACK_HOURS = 24;
 const MAX_RAW_JSON_CHARS = 20000;
@@ -63,6 +67,7 @@ const EVENT_NAME_ALIASES = new Map([
   ['checkout_start', 'begin_checkout'],
   ['checkout_initiated', 'begin_checkout'],
   ['begin_checkout_stape', 'begin_checkout'],
+  ['begin_checkout_emitted', 'begin_checkout'],
   ['add_to_cart_stape', 'add_to_cart'],
   ['view_item_stape', 'view_item'],
   ['purchase_stape', 'purchase'],
@@ -106,6 +111,8 @@ const EVENT_NAME_PATHS = [
 
 const EVENT_ID_PATHS = [
   'event_id',
+  'checkout_attempt_id',
+  'case_id',
   'event.event_id',
   'event.id',
   'id'
@@ -130,10 +137,14 @@ const SESSION_ID_PATHS = [
 
 const CLIENT_ID_PATHS = [
   'client_id',
+  'external_id',
+  'journey_id',
   'session.client_id',
   'context.client_id',
   'context.clientId',
-  'user_data.external_id'
+  'user_data.external_id',
+  'payload.external_id',
+  'payload.identity.external_id'
 ];
 
 const CHECKOUT_TOKEN_PATHS = [
@@ -181,6 +192,7 @@ const PAGE_URL_PATHS = [
 
 const PAGE_PATH_PATHS = [
   'page_path',
+  'payload.page_path',
   'context.page_path',
   'context.pagePath',
   'meta.page_path'
@@ -195,6 +207,7 @@ const REFERRER_PATHS = [
 
 const LANDING_PAGE_PATHS = [
   'landing_page',
+  'payload.landing_page',
   'attribution.landing_page',
   'attribution.landing_page_last',
   'meta.landing_page'
@@ -202,24 +215,28 @@ const LANDING_PAGE_PATHS = [
 
 const EVENT_SOURCE_URL_PATHS = [
   'event_source_url',
+  'payload.event_source_url',
   'context.event_source_url',
   'meta.event_source_url'
 ];
 
 const FBC_PATHS = [
   'fbc',
+  'payload.fbc',
   'attribution.fbc',
   'meta.fbc'
 ];
 
 const FBP_PATHS = [
   'fbp',
+  'payload.fbp',
   'attribution.fbp',
   'meta.fbp'
 ];
 
 const FBCLID_PATHS = [
   'fbclid',
+  'payload.fbclid',
   'attribution.fbclid',
   'meta.fbclid'
 ];
@@ -248,35 +265,41 @@ const USER_AGENT_PATHS = [
 ];
 
 const SOURCE_PATHS = [
+  'source_system',
   'source',
   'context.source',
   'meta.source'
 ];
 
 const CHANNEL_PATHS = [
+  'payload.channel',
   'channel',
   'meta.channel'
 ];
 
 const UTM_SOURCE_PATHS = [
   'utm_source',
+  'payload.utm_source',
   'attribution.utm_source',
   'context.utm_source'
 ];
 
 const UTM_MEDIUM_PATHS = [
   'utm_medium',
+  'payload.utm_medium',
   'attribution.utm_medium',
   'context.utm_medium'
 ];
 
 const UTM_CAMPAIGN_PATHS = [
   'utm_campaign',
+  'payload.utm_campaign',
   'attribution.utm_campaign',
   'context.utm_campaign'
 ];
 
 const TIMESTAMP_PATHS = [
+  'observed_at',
   'timestamp',
   'event_ts',
   'event.timestamp',
@@ -762,6 +785,187 @@ function buildCheckoutAttributionOverview(beginEvents, maxItems = DEFAULT_GHOST_
   };
 }
 
+function attributionScore(status) {
+  switch (status) {
+    case 'attributed':
+      return 2;
+    case 'partial':
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function eventTimeMs(event) {
+  return parseSqliteDateTimeToMs(event?.event_ts);
+}
+
+function shareNonEmptyValue(a, b, field) {
+  const left = safeString(a?.[field], 200);
+  const right = safeString(b?.[field], 200);
+  return Boolean(left && right && left === right);
+}
+
+function eventsAreRelated(baseEvent, candidateEvent) {
+  if (!baseEvent || !candidateEvent) return false;
+  if (shareNonEmptyValue(baseEvent, candidateEvent, 'checkout_token')) return true;
+  if (shareNonEmptyValue(baseEvent, candidateEvent, 'cart_token')) return true;
+  if (shareNonEmptyValue(baseEvent, candidateEvent, 'event_id')) return true;
+
+  const baseIdentity = identityKeyFromEvent(baseEvent);
+  const candidateIdentity = identityKeyFromEvent(candidateEvent);
+  return Boolean(baseIdentity && candidateIdentity && baseIdentity === candidateIdentity);
+}
+
+function relationStrength(baseEvent, candidateEvent) {
+  let score = 0;
+  if (shareNonEmptyValue(baseEvent, candidateEvent, 'checkout_token')) score += 100;
+  if (shareNonEmptyValue(baseEvent, candidateEvent, 'cart_token')) score += 80;
+  if (shareNonEmptyValue(baseEvent, candidateEvent, 'event_id')) score += 60;
+
+  const baseIdentity = identityKeyFromEvent(baseEvent);
+  const candidateIdentity = identityKeyFromEvent(candidateEvent);
+  if (baseIdentity && candidateIdentity && baseIdentity === candidateIdentity) score += 40;
+  if (shareNonEmptyValue(baseEvent, candidateEvent, 'page_path')) score += 10;
+
+  return score;
+}
+
+function findBestRelatedPreviousEvent(baseEvent, candidates, windowMs) {
+  const baseTs = eventTimeMs(baseEvent);
+  if (!Number.isFinite(baseTs) || !Array.isArray(candidates) || !candidates.length) return null;
+
+  let best = null;
+  let bestScore = -1;
+  let bestTs = -1;
+
+  for (const candidate of candidates) {
+    const candidateTs = eventTimeMs(candidate);
+    if (!Number.isFinite(candidateTs) || candidateTs > baseTs || candidateTs < (baseTs - windowMs)) continue;
+    if (!eventsAreRelated(baseEvent, candidate)) continue;
+
+    const score = relationStrength(baseEvent, candidate);
+    if (score > bestScore || (score === bestScore && candidateTs > bestTs)) {
+      best = candidate;
+      bestScore = score;
+      bestTs = candidateTs;
+    }
+  }
+
+  return best;
+}
+
+function findBestRelatedLaterEvent(baseEvent, candidates, windowMs) {
+  const baseTs = eventTimeMs(baseEvent);
+  if (!Number.isFinite(baseTs) || !Array.isArray(candidates) || !candidates.length) return null;
+
+  let best = null;
+  let bestScore = -1;
+  let bestTs = Number.POSITIVE_INFINITY;
+
+  for (const candidate of candidates) {
+    const candidateTs = eventTimeMs(candidate);
+    if (!Number.isFinite(candidateTs) || candidateTs < baseTs || candidateTs > (baseTs + windowMs)) continue;
+    if (!eventsAreRelated(baseEvent, candidate)) continue;
+
+    const score = relationStrength(baseEvent, candidate);
+    if (score > bestScore || (score === bestScore && candidateTs < bestTs)) {
+      best = candidate;
+      bestScore = score;
+      bestTs = candidateTs;
+    }
+  }
+
+  return best;
+}
+
+function buildMisattributedCheckoutDiagnostics(events, options = {}) {
+  const graceHours = clampInt(
+    options.attributionGraceHours,
+    DEFAULT_ATTRIBUTION_GRACE_HOURS,
+    1,
+    MAX_ATTRIBUTION_GRACE_HOURS
+  );
+  const maxItems = clampInt(options.maxItems, DEFAULT_GHOST_SESSION_LIMIT, 1, MAX_GHOST_LIMIT);
+  const upstreamWindowMs = DEFAULT_ATTRIBUTION_UPSTREAM_WINDOW_HOURS * 60 * 60 * 1000;
+  const recoveryWindowMs = DEFAULT_ATTRIBUTION_RECOVERY_WINDOW_HOURS * 60 * 60 * 1000;
+  const graceCutoffMs = Date.now() - (graceHours * 60 * 60 * 1000);
+
+  const normalizedEvents = events.map(mapRowForApi);
+  const beginEvents = normalizedEvents.filter((event) => isBeginCheckoutEvent(event.event_name));
+  const addToCartEvents = normalizedEvents.filter((event) => normalizeEventName(event.event_name) === 'add_to_cart');
+  const laterAttributedCandidates = normalizedEvents.filter((event) => {
+    if (attributionScore(event.attribution_status) < 2) return false;
+    const normalizedName = normalizeEventName(event.event_name);
+    return normalizedName === 'add_to_cart' || normalizedName === 'begin_checkout' || normalizedName === 'purchase';
+  });
+
+  const unresolvedRows = [];
+  let droppedAtCheckoutCount = 0;
+  let weakUpstreamCount = 0;
+  let noUpstreamSignalCount = 0;
+  let recoveredLaterCount = 0;
+
+  for (const beginEvent of beginEvents) {
+    const beginTs = eventTimeMs(beginEvent);
+    if (!Number.isFinite(beginTs) || beginTs > graceCutoffMs) continue;
+
+    const beginScore = attributionScore(beginEvent.attribution_status);
+    if (beginScore >= 2) continue;
+
+    const previousAtc = findBestRelatedPreviousEvent(beginEvent, addToCartEvents, upstreamWindowMs);
+    const laterAttributed = findBestRelatedLaterEvent(beginEvent, laterAttributedCandidates, recoveryWindowMs);
+
+    if (laterAttributed && eventTimeMs(laterAttributed) > beginTs) {
+      recoveredLaterCount += 1;
+      continue;
+    }
+
+    const upstreamStatus = previousAtc?.attribution_status || 'none';
+    const upstreamScore = previousAtc ? attributionScore(previousAtc.attribution_status) : -1;
+
+    let transition = 'no_upstream_signal';
+    if (previousAtc) {
+      if (upstreamScore > beginScore) transition = 'dropped_at_checkout';
+      else transition = 'weak_upstream';
+    }
+
+    if (transition === 'dropped_at_checkout') droppedAtCheckoutCount += 1;
+    else if (transition === 'weak_upstream') weakUpstreamCount += 1;
+    else noUpstreamSignalCount += 1;
+
+    unresolvedRows.push({
+      ...beginEvent,
+      upstream_event_name: previousAtc?.event_name || null,
+      upstream_event_ts: previousAtc?.event_ts || null,
+      upstream_attribution_status: upstreamStatus,
+      upstream_signal_count: previousAtc?.attribution_signal_count || 0,
+      upstream_has_fbc: Boolean(previousAtc?.has_fbc),
+      upstream_has_fbp: Boolean(previousAtc?.has_fbp),
+      upstream_has_click_id: Boolean(previousAtc?.has_click_id),
+      upstream_has_event_source_url: Boolean(previousAtc?.has_event_source_url),
+      upstream_has_landing_context: Boolean(previousAtc?.has_landing_context),
+      upstream_page_path: previousAtc?.page_path || null,
+      attribution_transition: transition,
+      resolved_later: false,
+      late_recovery_event_name: null,
+      late_recovery_event_ts: null
+    });
+  }
+
+  unresolvedRows.sort((a, b) => eventTimeMs(b) - eventTimeMs(a));
+
+  return {
+    grace_hours: graceHours,
+    unresolved_count: unresolvedRows.length,
+    recovered_later_count: recoveredLaterCount,
+    dropped_at_checkout_count: droppedAtCheckoutCount,
+    weak_upstream_count: weakUpstreamCount,
+    no_upstream_signal_count: noUpstreamSignalCount,
+    rows: unresolvedRows.slice(0, maxItems)
+  };
+}
+
 function detectDuplicateBeginCheckout(beginEvents, duplicateWindowSeconds) {
   const grouped = new Map();
   for (const event of beginEvents) {
@@ -1097,6 +1301,29 @@ function getGhostOrders(store, range, options = {}) {
 
 function mapRowForApi(row) {
   const mapped = { ...row };
+  const payload = parsePayloadJsonObject(row?.payload_json);
+
+  if (!mapped.source) mapped.source = pickFirstString(payload, SOURCE_PATHS, 120) || null;
+  if (!mapped.channel) mapped.channel = pickFirstString(payload, CHANNEL_PATHS, 120) || null;
+  if (!mapped.session_id) mapped.session_id = pickFirstString(payload, SESSION_ID_PATHS, 120) || null;
+  if (!mapped.client_id) mapped.client_id = pickFirstString(payload, CLIENT_ID_PATHS, 120) || null;
+  if (!mapped.event_id) mapped.event_id = pickFirstString(payload, EVENT_ID_PATHS, 160) || null;
+  if (!mapped.order_id) mapped.order_id = pickFirstString(payload, ORDER_ID_PATHS, 120) || null;
+  if (!mapped.cart_token) mapped.cart_token = pickFirstString(payload, CART_TOKEN_PATHS, 160) || null;
+  if (!mapped.checkout_token) mapped.checkout_token = pickFirstString(payload, CHECKOUT_TOKEN_PATHS, 160) || null;
+  if (!mapped.checkout_button) mapped.checkout_button = pickFirstString(payload, CHECKOUT_BUTTON_PATHS, 160) || null;
+  if (!mapped.checkout_source) mapped.checkout_source = pickFirstString(payload, CHECKOUT_SOURCE_PATHS, 160) || null;
+  if (!mapped.page_url) mapped.page_url = pickFirstString(payload, PAGE_URL_PATHS, 1600) || null;
+  if (!mapped.page_path) mapped.page_path = resolvePagePath(mapped.page_url, pickFirstString(payload, PAGE_PATH_PATHS, 600)) || null;
+  if (!mapped.referrer) mapped.referrer = pickFirstString(payload, REFERRER_PATHS, 1200) || null;
+  if (!mapped.landing_page) mapped.landing_page = pickFirstString(payload, LANDING_PAGE_PATHS, 1200) || null;
+  if (!mapped.event_source_url) mapped.event_source_url = pickFirstString(payload, EVENT_SOURCE_URL_PATHS, 1200) || null;
+  if (!mapped.country_code) mapped.country_code = pickFirstString(payload, COUNTRY_PATHS, 16) || null;
+  if (!mapped.region_code) mapped.region_code = pickFirstString(payload, REGION_PATHS, 32) || null;
+  if (!mapped.utm_source) mapped.utm_source = pickFirstString(payload, UTM_SOURCE_PATHS, 240) || null;
+  if (!mapped.utm_medium) mapped.utm_medium = pickFirstString(payload, UTM_MEDIUM_PATHS, 240) || null;
+  if (!mapped.utm_campaign) mapped.utm_campaign = pickFirstString(payload, UTM_CAMPAIGN_PATHS, 240) || null;
+
   const attributionDiagnostics = resolveAttributionDiagnostics(row);
   mapped.is_begin_checkout = isBeginCheckoutEvent(row.event_name);
   mapped.is_purchase = isPurchaseEvent(row.event_name);
@@ -1188,11 +1415,12 @@ function resolveAttributionDiagnostics(row) {
   const hasLandingContext = Boolean(landingPage || utmSource || utmMedium || utmCampaign);
   const hasClickId = Boolean(fbc || fbclid);
   const hasBrowserId = Boolean(fbp);
+  const hasAttributionIds = Boolean(hasClickId || hasBrowserId);
 
   let status = 'missing';
-  if (hasEventSourceUrl && hasLandingContext && (hasClickId || hasBrowserId)) {
+  if (hasAttributionIds) {
     status = 'attributed';
-  } else if (hasEventSourceUrl || hasLandingContext || hasClickId || hasBrowserId) {
+  } else if (hasEventSourceUrl || hasLandingContext) {
     status = 'partial';
   }
 
@@ -1203,16 +1431,19 @@ function resolveAttributionDiagnostics(row) {
   if (!hasBrowserId) missingCoreFields.push('fbp');
 
   const signalCount = [hasEventSourceUrl, hasLandingContext, hasClickId, hasBrowserId].filter(Boolean).length;
+  const idSignalCount = [hasClickId, hasBrowserId].filter(Boolean).length;
 
   return {
     attribution_status: status,
     attribution_signal_count: signalCount,
+    attribution_id_signal_count: idSignalCount,
     attribution_missing_core_fields: missingCoreFields,
     attribution_missing_core_summary: missingCoreFields.join(', '),
     has_event_source_url: hasEventSourceUrl,
     has_landing_context: hasLandingContext,
     has_click_id: hasClickId,
     has_browser_id: hasBrowserId,
+    has_attribution_ids: hasAttributionIds,
     has_fbc: Boolean(fbc),
     has_fbclid: Boolean(fbclid),
     has_fbp: Boolean(fbp),
@@ -1783,6 +2014,10 @@ export function getBlackboxOverview(store, options = {}) {
 
   const duplicateDiagnostics = detectDuplicateBeginCheckout(beginEvents, duplicateWindowSeconds);
   const checkoutAttribution = buildCheckoutAttributionOverview(beginEvents, ghostSessionLimit);
+  const misattribution = buildMisattributedCheckoutDiagnostics(rows, {
+    attributionGraceHours: options.attributionGraceHours,
+    maxItems: ghostSessionLimit
+  });
   const ghostSessions = detectGhostSessions(rows, ghostSessionLimit);
   const ghostOrderData = getGhostOrders(normalizedStore, range, options);
 
@@ -1796,6 +2031,11 @@ export function getBlackboxOverview(store, options = {}) {
       begin_checkout_attributed: checkoutAttribution.attributed_count,
       begin_checkout_partial: checkoutAttribution.partial_count,
       begin_checkout_missing: checkoutAttribution.missing_count,
+      unresolved_misattributed_checkouts: misattribution.unresolved_count,
+      recovered_late_checkouts: misattribution.recovered_later_count,
+      dropped_at_checkout_count: misattribution.dropped_at_checkout_count,
+      weak_upstream_count: misattribution.weak_upstream_count,
+      no_upstream_signal_count: misattribution.no_upstream_signal_count,
       purchase_events: purchaseEvents.length,
       duplicate_begin_checkout_events: duplicateDiagnostics.duplicateEventCount,
       duplicate_begin_checkout_rate: beginEvents.length
@@ -1818,6 +2058,7 @@ export function getBlackboxOverview(store, options = {}) {
       unknown_source_orders: ghostOrderData.unknownSourceTotal,
       ghost_orders_without_blackbox_purchase: ghostOrderData.hardGhostOrdersTotal
     },
+    misattribution,
     duplicates: {
       window_seconds: duplicateWindowSeconds,
       top_buttons: duplicateDiagnostics.topButtons,
