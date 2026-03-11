@@ -125,30 +125,42 @@ function StatCard({ label, value, hint }) {
   );
 }
 
-function DuplicatePathsTable({ rows }) {
+function MisattributedPathBreakdownTable({ rows, total }) {
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-      <h3 className="text-lg font-semibold text-gray-900">Top Duplicate Checkout Paths</h3>
+      <h3 className="text-lg font-semibold text-gray-900">Misattributed Purchase Paths</h3>
       <p className="mt-1 text-xs text-gray-500">
-        Repeated <code>begin_checkout</code> clusters inside the duplicate window.
+        Share of unresolved misattributed purchases by resolved checkout button/source. This is purchase-centric, not checkout-volume-centric.
       </p>
       <div className="mt-3 max-h-72 overflow-auto">
         <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
               <th className="py-2 pr-4">Button / Source</th>
-              <th className="py-2">Duplicate Count</th>
+              <th className="py-2 pr-4">Share</th>
+              <th className="py-2">Count</th>
             </tr>
           </thead>
           <tbody>
             {rows.length ? rows.map((row) => (
-              <tr key={row.checkout_button} className="border-b border-gray-100">
-                <td className="py-2 pr-4 font-mono text-xs text-gray-700">{row.checkout_button}</td>
-                <td className="py-2 font-medium text-gray-900">{formatNumber(row.count)}</td>
+              <tr key={`${row.checkout_button}-${row.checkout_source}`} className="border-b border-gray-100 align-top">
+                <td className="py-2 pr-4 text-xs text-gray-700">
+                  <div className="font-mono">{row.checkout_button || 'unknown'}</div>
+                  <div className="text-gray-500">{row.checkout_source || 'unknown'}</div>
+                </td>
+                <td className="py-2 pr-4 text-xs text-gray-700">
+                  <div className="font-medium text-gray-900">{formatPercent(row.share || 0, 0)}</div>
+                  <div className="text-gray-500">{formatNumber(row.count)} / {formatNumber(total)}</div>
+                </td>
+                <td className="py-2 text-xs text-gray-700">
+                  <div>After checkout: {formatNumber(row.dropped_after_checkout_count || 0)}</div>
+                  <div>At checkout: {formatNumber(row.dropped_at_checkout_count || 0)}</div>
+                  <div className="text-gray-500">Weak/no context: {formatNumber(row.weak_or_missing_context_count || 0)}</div>
+                </td>
               </tr>
             )) : (
               <tr>
-                <td className="py-3 text-sm text-gray-500" colSpan={2}>No duplicate checkout paths in this range.</td>
+                <td className="py-3 text-sm text-gray-500" colSpan={3}>No unresolved misattributed purchase paths in this range.</td>
               </tr>
             )}
           </tbody>
@@ -194,11 +206,17 @@ function MisattributedPurchasesTable({ rows }) {
                   <div>{formatTimestamp(row.purchase_event_ts)}</div>
                   <div className="text-gray-500">{row.purchase_source || '—'} {row.purchase_channel ? `• ${row.purchase_channel}` : ''}</div>
                   <div className="mt-1 font-mono">{row.purchase_identity || '—'}</div>
+                  <div className="mt-1 text-[11px] text-gray-500">
+                    Secondary copies: {formatNumber(row.purchase_duplicate_copy_count || 0)}
+                    {row.purchase_contextless_copy_count ? ` • stripped: ${formatNumber(row.purchase_contextless_copy_count)}` : ''}
+                  </div>
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
                   <div>{row.resolved_checkout_button || row.checkout_button || '—'}</div>
                   <div className="text-gray-500">{row.resolved_checkout_source || row.checkout_source || '—'}</div>
-                  <div className="mt-1 text-[11px] text-gray-400">{formatTimestamp(row.checkout_event_ts)}</div>
+                  <div className="mt-1 text-[11px] text-gray-400">
+                    {row.checkout_event_name || '—'} • {formatTimestamp(row.checkout_event_ts)}
+                  </div>
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
                   <div>
@@ -255,6 +273,9 @@ function MisattributedPurchasesTable({ rows }) {
                   </div>
                   <div className="mt-1 text-gray-500">
                     Purchase IDs: {row.purchase_signal_count || 0}/2
+                  </div>
+                  <div className="mt-1 text-[11px] text-gray-500">
+                    {row.order_reason || '—'}
                   </div>
                 </td>
                 <td className="py-2 text-xs text-gray-700">
@@ -440,9 +461,9 @@ export default function CheckoutBlackboxTab({ store }) {
   }, [baseQuery, eventName, sessionHint, source]);
 
   const summary = overview?.summary || {};
-  const duplicates = overview?.duplicates || {};
   const misattribution = overview?.misattribution || {};
   const unresolvedRows = misattribution.rows || [];
+  const pathBreakdown = misattribution.path_breakdown || [];
 
   return (
     <div className="space-y-6">
@@ -563,12 +584,12 @@ export default function CheckoutBlackboxTab({ store }) {
         <StatCard
           label="Eligible Orders"
           value={formatNumber(summary.eligible_orders_older_than_grace)}
-          hint={`Attributed purchases: ${formatNumber(summary.attributed_purchases_older_than_grace)}`}
+          hint={`Attributed purchases: ${formatNumber(summary.attributed_purchases_older_than_grace)} (${formatPercent(summary.eligible_orders_older_than_grace ? (summary.attributed_purchases_older_than_grace / summary.eligible_orders_older_than_grace) : 0, 0)})`}
         />
         <StatCard
           label="Unresolved Misattributed"
           value={formatNumber(summary.unresolved_misattributed_purchases)}
-          hint={`Older than ${ATTRIBUTION_GRACE_HOURS}h`}
+          hint={`Older than ${ATTRIBUTION_GRACE_HOURS}h • ${formatPercent(summary.eligible_orders_older_than_grace ? (summary.unresolved_misattributed_purchases / summary.eligible_orders_older_than_grace) : 0, 0)}`}
         />
         <StatCard
           label="Dropped After Checkout"
@@ -589,7 +610,7 @@ export default function CheckoutBlackboxTab({ store }) {
 
       <div className="grid gap-4 xl:grid-cols-[1.7fr_1fr]">
         <MisattributedPurchasesTable rows={unresolvedRows} />
-        <DuplicatePathsTable rows={duplicates.top_buttons || []} />
+        <MisattributedPathBreakdownTable rows={pathBreakdown} total={summary.unresolved_misattributed_purchases || 0} />
       </div>
 
       <RawEventsTable rows={events} total={eventsTotal} />
