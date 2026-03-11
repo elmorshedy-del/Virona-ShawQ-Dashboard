@@ -188,8 +188,13 @@ function MisattributedCheckoutsTable({ rows }) {
                   <div className="text-gray-500">{row.source || '—'}</div>
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
-                  <div>{row.checkout_button || '—'}</div>
-                  <div className="text-gray-500">{row.checkout_source || '—'}</div>
+                  <div>{row.resolved_checkout_button || row.checkout_button || '—'}</div>
+                  <div className="text-gray-500">{row.resolved_checkout_source || row.checkout_source || '—'}</div>
+                  {row.resolved_checkout_context_from === 'related_previous' ? (
+                    <div className="mt-1 text-[11px] text-gray-400">
+                      from {row.resolved_checkout_context_event_name || 'earlier event'}
+                    </div>
+                  ) : null}
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
                   <div>
