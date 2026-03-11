@@ -880,6 +880,60 @@ function findBestRelatedLaterEvent(baseEvent, candidates, windowMs) {
   return best;
 }
 
+function buildCheckoutContextLookupKeys(row) {
+  const keys = new Set();
+  const pagePath = safeString(row?.page_path, 300);
+
+  const addKeys = (prefix, rawValue, maxLength = 200) => {
+    const value = safeString(rawValue, maxLength);
+    if (!value) return;
+    keys.add(`${prefix}:${value}`);
+    if (pagePath) keys.add(`${prefix}:${value}|page:${pagePath}`);
+  };
+
+  addKeys('checkout', row?.checkout_token, 160);
+  addKeys('cart', row?.cart_token, 160);
+  addKeys('event', row?.event_id, 160);
+
+  const identity = identityKeyFromEvent(row);
+  if (identity) {
+    keys.add(`identity:${identity}`);
+    if (pagePath) keys.add(`identity:${identity}|page:${pagePath}`);
+  }
+
+  return [...keys];
+}
+
+function resolveBestIndexedCheckoutContext(baseEvent, candidateIndex, windowMs) {
+  if (!baseEvent || !(candidateIndex instanceof Map) || !candidateIndex.size) return null;
+
+  const baseTs = eventTimeMs(baseEvent);
+  if (!Number.isFinite(baseTs)) return null;
+
+  let best = null;
+  let bestScore = -1;
+  let bestTs = -1;
+
+  const seenIds = new Set();
+  for (const key of buildCheckoutContextLookupKeys(baseEvent)) {
+    const candidate = candidateIndex.get(key);
+    if (!candidate || seenIds.has(candidate.id)) continue;
+    seenIds.add(candidate.id);
+
+    const candidateTs = eventTimeMs(candidate);
+    if (!Number.isFinite(candidateTs) || candidateTs > baseTs || candidateTs < (baseTs - windowMs)) continue;
+
+    const score = relationStrength(baseEvent, candidate);
+    if (score > bestScore || (score === bestScore && candidateTs > bestTs)) {
+      best = candidate;
+      bestScore = score;
+      bestTs = candidateTs;
+    }
+  }
+
+  return best;
+}
+
 function attachResolvedCheckoutContext(rows, windowMs = DEFAULT_BUTTON_CONTEXT_WINDOW_HOURS * 60 * 60 * 1000) {
   if (!Array.isArray(rows) || !rows.length) return [];
 
@@ -889,9 +943,8 @@ function attachResolvedCheckoutContext(rows, windowMs = DEFAULT_BUTTON_CONTEXT_W
     const bTs = eventTimeMs(b);
     return aTs - bTs;
   });
-
-  const candidates = ascending.filter((row) => row.checkout_button || row.checkout_source);
   const resolvedById = new Map();
+  const candidateIndex = new Map();
 
   for (const row of ascending) {
     let resolvedButton = row.checkout_button || null;
@@ -901,7 +954,7 @@ function attachResolvedCheckoutContext(rows, windowMs = DEFAULT_BUTTON_CONTEXT_W
     let resolvedEventTs = row.event_ts || null;
 
     if (!resolvedButton && !resolvedSource) {
-      const candidate = findBestRelatedPreviousEvent(row, candidates, windowMs);
+      const candidate = resolveBestIndexedCheckoutContext(row, candidateIndex, windowMs);
       if (candidate) {
         resolvedButton = candidate.checkout_button || null;
         resolvedSource = candidate.checkout_source || null;
@@ -919,6 +972,12 @@ function attachResolvedCheckoutContext(rows, windowMs = DEFAULT_BUTTON_CONTEXT_W
       resolved_checkout_context_event_name: resolvedEventName,
       resolved_checkout_context_event_ts: resolvedEventTs
     });
+
+    if (row.checkout_button || row.checkout_source) {
+      for (const key of buildCheckoutContextLookupKeys(row)) {
+        candidateIndex.set(key, row);
+      }
+    }
   }
 
   return normalizedRows.map((row) => resolvedById.get(row.id) || row);
