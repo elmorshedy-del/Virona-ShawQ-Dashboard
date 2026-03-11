@@ -356,13 +356,39 @@ const RELIGHT_PRESET_DEFAULTS = {
 
 const AUTO_SHADOW_PRESET = {
   preset: 'studio',
-  subjectBoost: 0.14,
-  backgroundExposure: -0.02,
-  warmth: 0.04,
-  shadowOpacity: 0.36,
-  shadowBlurPx: 54,
+  subjectBoost: 0.18,
+  backgroundExposure: -0.08,
+  warmth: 0.06,
+  shadowOpacity: 0.48,
+  shadowBlurPx: 62,
   shadowOffsetX: 0,
-  shadowOffsetY: 42
+  shadowOffsetY: 48
+};
+
+const GROUND_SHADOW_OPTIONS = {
+  soft: {
+    label: 'Soft',
+    ...AUTO_SHADOW_PRESET,
+    subjectBoost: 0.12,
+    backgroundExposure: -0.04,
+    shadowOpacity: 0.34,
+    shadowBlurPx: 68,
+    shadowOffsetY: 42
+  },
+  studio: {
+    label: 'Studio',
+    ...AUTO_SHADOW_PRESET
+  },
+  dramatic: {
+    label: 'Dramatic',
+    ...AUTO_SHADOW_PRESET,
+    subjectBoost: 0.22,
+    backgroundExposure: -0.16,
+    warmth: 0.02,
+    shadowOpacity: 0.56,
+    shadowBlurPx: 54,
+    shadowOffsetY: 54
+  }
 };
 
 const BACKGROUND_PRESET_OPTIONS = [
@@ -394,6 +420,8 @@ export default function PhotoMagicEditor({ store }) {
   const [sourceLabel, setSourceLabel] = useState('');
   const [sourceStage, setSourceStage] = useState('Original');
   const [sourceHistory, setSourceHistory] = useState([]);
+  const [photoHistory, setPhotoHistory] = useState([]);
+  const [photoOriginalSource, setPhotoOriginalSource] = useState(null);
   const [viewportMode, setViewportMode] = useState('source');
   const [compareSplit, setCompareSplit] = useState(56);
   const [lastRenderSummary, setLastRenderSummary] = useState('Idle');
@@ -451,6 +479,7 @@ export default function PhotoMagicEditor({ store }) {
   const [relightUrl, setRelightUrl] = useState(null);
   const [relightMaskUrl, setRelightMaskUrl] = useState(null);
   const [relightMaskOutputId, setRelightMaskOutputId] = useState(null);
+  const [groundShadowStyle, setGroundShadowStyle] = useState('studio');
 
   const [expandAspectRatio, setExpandAspectRatio] = useState('4:5');
   const [expandAnchor, setExpandAnchor] = useState('center');
@@ -760,27 +789,129 @@ export default function PhotoMagicEditor({ store }) {
       sourceStageLabel = 'Original',
       sourceName = payload?.filename || 'untitled',
       nextTool = 'remove_bg',
-      resetHistory = true
+      resetHistory = true,
+      summary = null
     } = options;
 
+    const snapshot = {
+      imageId: payload.image_id,
+      imageMeta: {
+        width: payload.width,
+        height: payload.height,
+        filename: payload.filename,
+        mime: payload.mime,
+        size: payload.size
+      },
+      imageSrc: previewUrl,
+      sourceLabel: sourceName || payload.filename || 'untitled',
+      sourceStage: sourceStageLabel,
+      sourceHistory: resetHistory ? [sourceStageLabel] : [...sourceHistory, sourceStageLabel].slice(-4),
+      tool: nextTool,
+      summary: summary || `Source ready ${payload.width || '?'}x${payload.height || '?'}`
+    };
+
     setImageId(payload.image_id);
-    setImageMeta({
-      width: payload.width,
-      height: payload.height,
-      filename: payload.filename,
-      mime: payload.mime,
-      size: payload.size
-    });
-    setImageSrc(previewUrl);
-    setSourceLabel(sourceName || payload.filename || 'untitled');
-    setSourceStage(sourceStageLabel);
-    setSourceHistory((prev) => (resetHistory ? [sourceStageLabel] : [...prev, sourceStageLabel].slice(-4)));
+    setImageMeta(snapshot.imageMeta);
+    setImageSrc(snapshot.imageSrc);
+    setSourceLabel(snapshot.sourceLabel);
+    setSourceStage(snapshot.sourceStage);
+    setSourceHistory(snapshot.sourceHistory);
     setEditorMode('photo');
     setPrecisionMode(false);
     setViewportMode('source');
     setTool(nextTool);
-    setLastRenderSummary(`Source ready ${payload.width || '?'}x${payload.height || '?'}`);
+    setLastRenderSummary(snapshot.summary);
+    return snapshot;
+  }, [sourceHistory]);
+
+  const capturePhotoSnapshot = useCallback(() => {
+    if (!imageId || !imageSrc) return null;
+    return {
+      imageId,
+      imageMeta,
+      imageSrc,
+      sourceLabel,
+      sourceStage,
+      sourceHistory: [...sourceHistory],
+      tool,
+      summary: lastRenderSummary
+    };
+  }, [imageId, imageMeta, imageSrc, lastRenderSummary, sourceHistory, sourceLabel, sourceStage, tool]);
+
+  const clearPhotoOutputsForRestore = useCallback(() => {
+    setCutoutUrl(null);
+    setMaskUrl(null);
+    setCutoutOutputId(null);
+    setMaskOutputId(null);
+    setBackgroundUrl(null);
+    setSelectionCutoutUrl(null);
+    setSelectionMaskUrl(null);
+    setSelectionCutoutOutputId(null);
+    setSelectionMaskOutputId(null);
+    setSelectionMeta(null);
+    setEraseUrl(null);
+    setRelightUrl(null);
+    setRelightMaskUrl(null);
+    setRelightMaskOutputId(null);
+    setExpandUrl(null);
+    setExpandMaskUrl(null);
+    setExpandMaskOutputId(null);
+    setEnhanceUrl(null);
+    setPoints([]);
+    setViewportMode('source');
+    undoStackRef.current = [];
+    setMaskMetrics({ hasMask: false, paintedPixels: 0, coverage: 0 });
+    const canvas = maskCanvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      ctx?.clearRect(0, 0, canvas.width, canvas.height);
+    }
   }, []);
+
+  const pushPhotoUndo = useCallback(() => {
+    const snapshot = capturePhotoSnapshot();
+    if (!snapshot) return;
+    setPhotoHistory((prev) => [...prev, snapshot].slice(-12));
+  }, [capturePhotoSnapshot]);
+
+  const undoPhotoEdit = useCallback(() => {
+    setPhotoHistory((prev) => {
+      const next = [...prev];
+      const snapshot = next.pop();
+      if (snapshot) {
+        clearPhotoOutputsForRestore();
+        setEditorMode('photo');
+        setImageId(snapshot.imageId);
+        setImageMeta(snapshot.imageMeta || null);
+        setImageSrc(snapshot.imageSrc || null);
+        setSourceLabel(snapshot.sourceLabel || '');
+        setSourceStage(snapshot.sourceStage || 'Original');
+        setSourceHistory(Array.isArray(snapshot.sourceHistory) ? snapshot.sourceHistory : []);
+        setTool(snapshot.tool || 'remove_bg');
+        setViewportMode('source');
+        setPrecisionMode(false);
+        setLastRenderSummary(snapshot.summary || 'Restored previous source state');
+      }
+      return next;
+    });
+  }, [clearPhotoOutputsForRestore]);
+
+  const resetPhotoSource = useCallback(() => {
+    if (!photoOriginalSource) return;
+    clearPhotoOutputsForRestore();
+    setEditorMode('photo');
+    setImageId(photoOriginalSource.imageId);
+    setImageMeta(photoOriginalSource.imageMeta || null);
+    setImageSrc(photoOriginalSource.imageSrc || null);
+    setSourceLabel(photoOriginalSource.sourceLabel || '');
+    setSourceStage(photoOriginalSource.sourceStage || 'Original');
+    setSourceHistory(Array.isArray(photoOriginalSource.sourceHistory) ? photoOriginalSource.sourceHistory : []);
+    setTool(photoOriginalSource.tool || 'remove_bg');
+    setViewportMode('source');
+    setPrecisionMode(false);
+    setPhotoHistory([]);
+    setLastRenderSummary('Reset to original source');
+  }, [clearPhotoOutputsForRestore, photoOriginalSource]);
 
   const applyVideoSourcePayload = useCallback((payload, options = {}) => {
     const {
@@ -1316,13 +1447,17 @@ export default function PhotoMagicEditor({ store }) {
           })
         });
 
-        applySourcePayload(data, {
+        const snapshot = applySourcePayload(data, {
           previewUrl: URL.createObjectURL(file),
           sourceStageLabel,
           sourceName: sourceName || data.filename || file?.name || 'untitled',
           nextTool,
           resetHistory
         });
+        if (resetHistory) {
+          setPhotoHistory([]);
+          setPhotoOriginalSource(snapshot);
+        }
       } catch (nextError) {
         console.error(nextError);
         const message = nextError?.message || 'Upload failed';
@@ -1399,13 +1534,15 @@ export default function PhotoMagicEditor({ store }) {
         })
       });
 
-      applySourcePayload(data, {
+      const snapshot = applySourcePayload(data, {
         previewUrl: data.preview_url,
         sourceStageLabel: 'Shopify product',
         sourceName: product?.name || data.filename || 'Product photo',
         nextTool: 'remove_bg',
         resetHistory: true
       });
+      setPhotoHistory([]);
+      setPhotoOriginalSource(snapshot);
       setShowShopifyImportModal(false);
     } catch (nextError) {
       console.error(nextError);
@@ -1435,6 +1572,7 @@ export default function PhotoMagicEditor({ store }) {
         const extension = normalizedType.includes('jpeg') ? 'jpg' : 'png';
         const file = new File([blob], `${slugify(stageLabel)}.${extension}`, { type: normalizedType });
 
+        pushPhotoUndo();
         await uploadImage(file, {
           sourceStageLabel: stageLabel,
           sourceName: file.name,
@@ -1453,7 +1591,7 @@ export default function PhotoMagicEditor({ store }) {
         logDebug(runId, 'Route', 'complete', 'failed', message);
       }
     },
-    [logDebug, startDebugRun, uploadImage]
+    [logDebug, pushPhotoUndo, startDebugRun, uploadImage]
   );
 
   const onPickFile = useCallback(() => {
@@ -1694,6 +1832,7 @@ export default function PhotoMagicEditor({ store }) {
 
     setError(null);
     setIsRunning(true);
+    const groundShadowPreset = GROUND_SHADOW_OPTIONS[groundShadowStyle] || GROUND_SHADOW_OPTIONS.studio;
     const runId = startDebugRun('Lighting Stage', 'Applying grounding shadow preset');
     try {
       const data = await requestJson({
@@ -1707,14 +1846,14 @@ export default function PhotoMagicEditor({ store }) {
           body: JSON.stringify({
             image_id: imageId,
             mask_output_id: maskOutputId,
-            preset: AUTO_SHADOW_PRESET.preset,
-            subject_boost: AUTO_SHADOW_PRESET.subjectBoost,
-            background_exposure: AUTO_SHADOW_PRESET.backgroundExposure,
-            warmth: AUTO_SHADOW_PRESET.warmth,
-            shadow_opacity: AUTO_SHADOW_PRESET.shadowOpacity,
-            shadow_blur_px: AUTO_SHADOW_PRESET.shadowBlurPx,
-            shadow_offset_x: AUTO_SHADOW_PRESET.shadowOffsetX,
-            shadow_offset_y: AUTO_SHADOW_PRESET.shadowOffsetY
+            preset: groundShadowPreset.preset,
+            subject_boost: groundShadowPreset.subjectBoost,
+            background_exposure: groundShadowPreset.backgroundExposure,
+            warmth: groundShadowPreset.warmth,
+            shadow_opacity: groundShadowPreset.shadowOpacity,
+            shadow_blur_px: groundShadowPreset.shadowBlurPx,
+            shadow_offset_x: groundShadowPreset.shadowOffsetX,
+            shadow_offset_y: groundShadowPreset.shadowOffsetY
           })
         },
         successMessage: 'Grounding shadow rendered',
@@ -1730,7 +1869,7 @@ export default function PhotoMagicEditor({ store }) {
       setRelightMaskOutputId(data.mask?.output_id || null);
       setViewportMode('compare');
       setTool('relight');
-      setLastRenderSummary('Grounding shadow ready');
+      setLastRenderSummary(`${groundShadowPreset.label} ground shadow ready`);
     } catch (nextError) {
       console.error(nextError);
       const message = nextError?.message || 'Grounding shadow failed';
@@ -1741,7 +1880,7 @@ export default function PhotoMagicEditor({ store }) {
       setIsRunning(false);
       refreshHealth();
     }
-  }, [imageId, logDebug, maskOutputId, refreshHealth, requestJson, startDebugRun, store]);
+  }, [groundShadowStyle, imageId, logDebug, maskOutputId, refreshHealth, requestJson, startDebugRun, store]);
 
   const runSelect = useCallback(async () => {
     if (!imageId || !selectionPrompt.trim()) return;
@@ -2320,10 +2459,10 @@ export default function PhotoMagicEditor({ store }) {
       },
       {
         id: 'select',
-        title: 'Prompt Selection',
+        title: 'Magic Lift',
         model: sam2Ready ? 'Gemini Vision + SAM2' : 'Gemini Vision',
         ready: Boolean(geminiReady),
-        description: 'Language-based target pickup that resolves into a real mask.',
+        description: 'Detect an object, lift it into an isolated cutout, or route it straight into removal.',
         error: geminiReady ? '' : 'GEMINI_API_KEY is not configured.'
       },
       {
@@ -2464,14 +2603,14 @@ export default function PhotoMagicEditor({ store }) {
       if (selectionCutoutUrl) {
         cards.push({
           id: 'selection',
-          title: 'Detected Object',
-          engine: selectionMeta?.label ? `AI: ${selectionMeta.label}` : 'Smart Select',
+          title: 'Lifted Object',
+          engine: selectionMeta?.label ? `Magic Lift: ${selectionMeta.label}` : 'Magic Lift',
           url: selectionCutoutUrl,
-          empty: 'Use Smart Select to detect and extract an object.',
+          empty: 'Use Magic Lift to isolate an object from the current source.',
           promoteable: true,
           promoteLabel: 'Use as source',
-          promoteStage: selectionMeta?.label ? `${selectionMeta.label} source` : 'Selected source',
-          nextTool: 'erase',
+          promoteStage: selectionMeta?.label ? `${selectionMeta.label} lift` : 'Lifted source',
+          nextTool: 'relight',
           checker: true,
           primary: false
         });
@@ -2800,18 +2939,6 @@ export default function PhotoMagicEditor({ store }) {
             </div>
 
             {editorMode === 'photo' && (
-              <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-1.5 shadow-sm">
-                <span className="relative flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-50 blur-[2px]" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500 pm-pulse-badge" />
-                </span>
-                <span className="text-[11px] font-semibold text-gray-600">
-                  {readyCount}/{visibleStack.length} Online
-                </span>
-              </div>
-            )}
-
-            {editorMode === 'photo' && (
               <Button variant="secondary" onClick={refreshHealth} disabled={isHealthLoading}>
                 <RefreshCw className={cn('h-4 w-4', isHealthLoading ? 'animate-spin' : '')} />
                 Sync
@@ -2850,6 +2977,17 @@ export default function PhotoMagicEditor({ store }) {
                   {isVideoUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Film className="h-3.5 w-3.5" />}
                   {isVideoUploading ? 'Uploading...' : 'Import Video'}
                 </button>
+                {imageSrc && (
+                  <>
+                    <Button variant="secondary" onClick={undoPhotoEdit} disabled={!photoHistory.length || isUploading || isRunning}>
+                      Undo
+                    </Button>
+                    <Button variant="secondary" onClick={resetPhotoSource} disabled={!photoOriginalSource || isUploading || isRunning}>
+                      <RotateCcw className="h-4 w-4" />
+                      Reset
+                    </Button>
+                  </>
+                )}
                 {imageSrc && (
                   <button
                     type="button"
@@ -3060,25 +3198,6 @@ export default function PhotoMagicEditor({ store }) {
                   {viewportMode}
                 </div>
 
-                {/* Floating engine badges */}
-                <div className="absolute bottom-4 left-4 flex flex-col gap-2 z-10">
-                  {visibleStack.filter(item => item.ready).map((item) => (
-                    <div key={item.id} className="pm-hover-lift flex items-center gap-2.5 rounded-xl border border-white/50 bg-white/75 px-3 py-1.5 shadow-sm cursor-default" style={{ backdropFilter: 'blur(24px)' }}>
-                      <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-emerald-100">
-                        <CheckCircle2 className="h-3 w-3 text-emerald-600" />
-                      </div>
-                      <div>
-                        <div className="text-[9px] font-bold uppercase tracking-widest text-emerald-600 leading-none">Online</div>
-                        <div className="text-[11px] font-bold text-gray-800 leading-none mt-0.5">{item.title}</div>
-                      </div>
-                      <span className="relative flex h-1.5 w-1.5 ml-1">
-                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                      </span>
-                    </div>
-                  ))}
-                </div>
-
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-4 border-t border-gray-100 px-5 py-3">
@@ -3087,10 +3206,10 @@ export default function PhotoMagicEditor({ store }) {
                     ? 'Click to add keep points. Hold Alt or Cmd for remove points.'
                     : tool === 'relight'
                       ? 'Adjust lighting to reshape your image. Use Compare to preview changes.'
-                      : tool === 'expand'
+                    : tool === 'expand'
                         ? 'Extend the canvas and regenerate the missing area. Use the result as your new starting image.'
                     : tool === 'erase' && imageSrc
-                      ? 'Use Smart Select or paint a mask manually, then remove. Switch to Compare to preview.'
+                      ? 'Use Magic Lift or paint a mask manually, then remove. Switch to Compare to preview.'
                       : 'Use the tools on the right to process your image. Each result can be used as input for the next step.'}
                 </div>
 
@@ -3140,6 +3259,42 @@ export default function PhotoMagicEditor({ store }) {
                   </button>
                 ))}
               </div>
+            </div>
+
+            <div className="mb-4 space-y-3">
+              <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <Label>Editing Session</Label>
+                  <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-gray-400">
+                    {photoHistory.length ? `${photoHistory.length} undo` : 'Live'}
+                  </div>
+                </div>
+                <div className="mt-3 space-y-2">
+                  <div className="rounded-xl border border-gray-100 bg-gray-50/70 px-3 py-2.5">
+                    <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Current Source</div>
+                    <div className="mt-1 text-sm font-medium text-gray-900">{sourceStage}</div>
+                    <div className="mt-0.5 text-xs text-gray-500">{sourceLabel || 'No image loaded'}</div>
+                  </div>
+                  <div className="rounded-xl border border-gray-100 bg-gray-50/70 px-3 py-2.5">
+                    <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Latest Result</div>
+                    <div className="mt-1 text-sm font-medium text-gray-900">{primaryOutput?.title || 'No render yet'}</div>
+                    <div className="mt-0.5 text-xs text-gray-500">{lastRenderSummary}</div>
+                  </div>
+                  {sourceHistory.length > 1 ? (
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {sourceHistory.map((step, index) => (
+                        <span key={`${step}-${index}`} className={cn(
+                          'rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]',
+                          index === sourceHistory.length - 1 ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-500'
+                        )}>
+                          {step}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
             </div>
 
             {/* ── Remove Background ── */}
@@ -3223,10 +3378,31 @@ export default function PhotoMagicEditor({ store }) {
                       <Sparkles className="h-4 w-4 pm-sparkle-icon" />
                       Generate Background
                     </Button>
-                    <Button variant="secondary" onClick={runGroundShadow} disabled={!imageId || isRunning || !relightReady || !maskOutputId} className="w-full justify-center pm-btn-hover">
-                      <Sunset className="h-4 w-4" />
-                      Add Ground Shadow
-                    </Button>
+                    <div className="rounded-xl border border-gray-100 bg-gray-50/70 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Ground Shadow</div>
+                          <div className="mt-0.5 text-xs text-gray-500">Anchor the subject with a stronger floor contact shadow.</div>
+                        </div>
+                        <StatusPill ok={Boolean(maskOutputId && relightReady)} label={maskOutputId ? 'Ready' : 'Need mask'} />
+                      </div>
+                      <div className="mt-3">
+                        <Toggle
+                          value={groundShadowStyle}
+                          onChange={setGroundShadowStyle}
+                          options={Object.entries(GROUND_SHADOW_OPTIONS).map(([value, config]) => ({
+                            value,
+                            label: config.label
+                          }))}
+                        />
+                      </div>
+                      <div className="mt-3">
+                        <Button variant="secondary" onClick={runGroundShadow} disabled={!imageId || isRunning || !relightReady || !maskOutputId} className="w-full justify-center pm-btn-hover">
+                          <Sunset className="h-4 w-4" />
+                          Ground Subject
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -3240,20 +3416,20 @@ export default function PhotoMagicEditor({ store }) {
                   <Label>How to Select</Label>
                   <div className="mt-3">
                     <Toggle value={maskMethod} onChange={setMaskMethod} options={[
-                      { value: 'smart', label: 'Smart Select', title: 'AI-powered detection using text prompts' },
+                      { value: 'smart', label: 'Magic Lift', title: 'Detect and isolate an object with AI' },
                       { value: 'brush', label: 'Manual Brush', title: 'Paint the mask by hand' }
                     ]} />
                   </div>
                 </div>
 
-                {/* Smart Select */}
+                {/* Magic Lift */}
                 {maskMethod === 'smart' ? (
                   <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm pm-section-enter">
                     <div className="flex items-center gap-2 mb-2">
                       <ScanSearch className="h-4 w-4 text-indigo-400" />
-                      <Label>Smart Select</Label>
+                      <Label>Magic Lift</Label>
                     </div>
-                    <div className="text-xs text-gray-500 mb-3">Describe what to detect. AI will find and mask it.</div>
+                    <div className="text-xs text-gray-500 mb-3">Describe the object to lift. AI will isolate it so you can remove it from the scene or promote it into its own source.</div>
                     <div className="space-y-3">
                       <Slider label="Max Resolution" tooltip="Maximum image dimension" value={maxSide} onChange={(e) => setMaxSide(clamp(toNumber(e.target.value, 2048), 256, 8192))} min={256} max={8192} step={256} />
                       <Slider label="Edge Expansion" tooltip="Grow the boundary outward" value={maskDilatePx} onChange={(e) => setMaskDilatePx(clamp(toNumber(e.target.value, 0), 0, 64))} min={0} max={64} />
@@ -3274,16 +3450,16 @@ export default function PhotoMagicEditor({ store }) {
                     <div className="mt-3">
                       <Button variant="primary" onClick={runSelect} disabled={!imageId || isRunning || !geminiReady || !selectionPrompt.trim()} className="w-full justify-center pm-btn-hover">
                         <ScanSearch className="h-4 w-4" />
-                        Detect Object
+                        Lift Object
                       </Button>
                     </div>
                     {selectionMaskUrl ? (
                       <div className="mt-2 space-y-1.5 pm-section-enter">
                         <Button variant="primary" onClick={() => { applyMaskArtifactToCanvas(selectionMaskUrl); setMaskMethod('brush'); }} disabled={isBusy} className="w-full justify-center pm-btn-hover">
-                          <Eraser className="h-4 w-4" /> Remove Object
+                          <Eraser className="h-4 w-4" /> Send to Remover
                         </Button>
-                        <Button variant="secondary" onClick={() => promoteOutputToSource({ url: selectionCutoutUrl, stageLabel: selectionMeta?.label ? `${selectionMeta.label} extract` : 'Extracted object', nextTool: 'erase' })} disabled={isBusy || !selectionCutoutUrl} className="w-full justify-center pm-btn-hover">
-                          <Wand2 className="h-4 w-4" /> Extract Object
+                        <Button variant="secondary" onClick={() => promoteOutputToSource({ url: selectionCutoutUrl, stageLabel: selectionMeta?.label ? `${selectionMeta.label} lift` : 'Lifted object', nextTool: 'relight' })} disabled={isBusy || !selectionCutoutUrl} className="w-full justify-center pm-btn-hover">
+                          <Wand2 className="h-4 w-4" /> Use Lifted Object
                         </Button>
                       </div>
                     ) : null}
@@ -4087,22 +4263,53 @@ export default function PhotoMagicEditor({ store }) {
                 </button>
               </div>
             )}
+
+            <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
+              <button
+                type="button"
+                onClick={() => setShowDiagnostics((prev) => !prev)}
+                className="flex w-full items-center justify-between gap-3"
+              >
+                <div className="text-left">
+                  <Label>System Status</Label>
+                  <div className="mt-1 text-xs text-gray-500">{readyCount}/{visibleStack.length} services ready</div>
+                </div>
+                <ChevronDown className={cn('h-4 w-4 text-gray-400 transition-transform', showDiagnostics && 'rotate-180')} />
+              </button>
+              {showDiagnostics ? (
+                <div className="mt-3 space-y-2">
+                  {visibleStack.map((item) => (
+                    <div key={item.id} className="flex items-center justify-between rounded-xl border border-gray-100 bg-gray-50/70 px-3 py-2">
+                      <div>
+                        <div className="text-xs font-semibold text-gray-900">{item.title}</div>
+                        <div className="text-[10px] uppercase tracking-[0.18em] text-gray-400">{item.model}</div>
+                      </div>
+                      <StatusPill ok={item.ready} label={item.ready ? 'Ready' : 'Offline'} />
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
         )}
 
         <div className="border-t border-gray-100 bg-white/60 px-5 py-3" style={{ backdropFilter: 'blur(24px)' }}>
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[11px] font-mono uppercase tracking-[0.16em] text-gray-400">
-            <span>{editorMode === 'photo' ? (stageConfig?.label || tool) : (VIDEO_TOOL_DEFINITIONS[videoTool]?.label || videoTool)}</span>
-            <span>
-              {editorMode === 'photo'
-                ? (isUploading ? 'Uploading...' : isRunning ? 'Processing...' : lastRenderSummary)
-                : (isVideoUploading
-                  ? 'Uploading video...'
-                  : isVideoProcessing
-                    ? 'Processing...'
-                    : lastVideoSummary)}
-            </span>
+            {editorMode === 'photo' ? (
+              <>
+                <span>Source · {sourceStage}</span>
+                <span>Result · {primaryOutput?.title || 'None'}</span>
+                <span>Undo · {photoHistory.length}</span>
+                <span>{isUploading ? 'Uploading...' : isRunning ? 'Processing...' : lastRenderSummary}</span>
+              </>
+            ) : (
+              <>
+                <span>{VIDEO_TOOL_DEFINITIONS[videoTool]?.label || videoTool}</span>
+                <span>Undo · {videoHistory.length}</span>
+                <span>{isVideoUploading ? 'Uploading video...' : isVideoProcessing ? 'Processing...' : lastVideoSummary}</span>
+              </>
+            )}
           </div>
         </div>
 
