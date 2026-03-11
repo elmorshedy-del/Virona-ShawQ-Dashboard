@@ -3,6 +3,9 @@ import fetch from 'node-fetch';
 const REPLICATE_API_BASE_URL = 'https://api.replicate.com/v1';
 const REPLICATE_FILL_MODEL_FALLBACK = 'black-forest-labs/flux-fill-pro';
 const REPLICATE_ENHANCE_MODEL_FALLBACK = 'bria/increase-resolution';
+const REPLICATE_VIDEO_CLEAN_MODEL_FALLBACK = 'bria/video-erase-object';
+const REPLICATE_VIDEO_REMOVE_BG_MODEL_FALLBACK = 'bria/video-remove-background';
+const REPLICATE_VIDEO_ENHANCE_MODEL_FALLBACK = 'bria/video-increase-resolution';
 const REPLICATE_ERASE_DEFAULT_PROMPT = 'reconstruct the masked area naturally to match the surrounding image, preserving texture, lighting, shading, and perspective';
 const REPLICATE_BACKGROUND_DEFAULT_PROMPT = 'premium studio background, natural floor grounding, clean commercial lighting, realistic depth, and seamless subject integration';
 const REPLICATE_EXPAND_DEFAULT_PROMPT = 'extend the canvas naturally to match the surrounding scene, preserving lighting, texture, shading, and perspective';
@@ -10,6 +13,9 @@ const REPLICATE_EXPAND_DEFAULT_PROMPT = 'extend the canvas naturally to match th
 const REPLICATE_API_TOKEN = String(process.env.REPLICATE_API_TOKEN || '').trim();
 const PHOTO_MAGIC_REPLICATE_FILL_MODEL = String(process.env.PHOTO_MAGIC_REPLICATE_FILL_MODEL || process.env.PHOTO_MAGIC_REPLICATE_MODEL || REPLICATE_FILL_MODEL_FALLBACK).trim() || REPLICATE_FILL_MODEL_FALLBACK;
 const PHOTO_MAGIC_REPLICATE_ENHANCE_MODEL = String(process.env.PHOTO_MAGIC_REPLICATE_ENHANCE_MODEL || REPLICATE_ENHANCE_MODEL_FALLBACK).trim() || REPLICATE_ENHANCE_MODEL_FALLBACK;
+const VIDEO_MAGIC_REPLICATE_CLEAN_MODEL = String(process.env.VIDEO_MAGIC_REPLICATE_CLEAN_MODEL || REPLICATE_VIDEO_CLEAN_MODEL_FALLBACK).trim() || REPLICATE_VIDEO_CLEAN_MODEL_FALLBACK;
+const VIDEO_MAGIC_REPLICATE_REMOVE_BG_MODEL = String(process.env.VIDEO_MAGIC_REPLICATE_REMOVE_BG_MODEL || REPLICATE_VIDEO_REMOVE_BG_MODEL_FALLBACK).trim() || REPLICATE_VIDEO_REMOVE_BG_MODEL_FALLBACK;
+const VIDEO_MAGIC_REPLICATE_ENHANCE_MODEL = String(process.env.VIDEO_MAGIC_REPLICATE_ENHANCE_MODEL || REPLICATE_VIDEO_ENHANCE_MODEL_FALLBACK).trim() || REPLICATE_VIDEO_ENHANCE_MODEL_FALLBACK;
 const PHOTO_MAGIC_REPLICATE_TIMEOUT_MS = Number(process.env.PHOTO_MAGIC_REPLICATE_TIMEOUT_MS || 300000);
 const PHOTO_MAGIC_REPLICATE_WAIT_SECONDS = Number(process.env.PHOTO_MAGIC_REPLICATE_WAIT_SECONDS || 20);
 const PHOTO_MAGIC_REPLICATE_POLL_INTERVAL_MS = Number(process.env.PHOTO_MAGIC_REPLICATE_POLL_INTERVAL_MS || 1500);
@@ -212,6 +218,48 @@ export async function getPhotoMagicReplicateEnhanceHealth({ force = false } = {}
   return getReplicateModelHealth(PHOTO_MAGIC_REPLICATE_ENHANCE_MODEL, { force });
 }
 
+export function getVideoMagicReplicateCleanConfig() {
+  return {
+    configured: isPhotoMagicReplicateConfigured(),
+    provider: 'replicate',
+    model: VIDEO_MAGIC_REPLICATE_CLEAN_MODEL,
+    timeout_ms: PHOTO_MAGIC_REPLICATE_TIMEOUT_MS,
+    wait_seconds: PHOTO_MAGIC_REPLICATE_WAIT_SECONDS
+  };
+}
+
+export function getVideoMagicReplicateRemoveBgConfig() {
+  return {
+    configured: isPhotoMagicReplicateConfigured(),
+    provider: 'replicate',
+    model: VIDEO_MAGIC_REPLICATE_REMOVE_BG_MODEL,
+    timeout_ms: PHOTO_MAGIC_REPLICATE_TIMEOUT_MS,
+    wait_seconds: PHOTO_MAGIC_REPLICATE_WAIT_SECONDS
+  };
+}
+
+export function getVideoMagicReplicateEnhanceConfig() {
+  return {
+    configured: isPhotoMagicReplicateConfigured(),
+    provider: 'replicate',
+    model: VIDEO_MAGIC_REPLICATE_ENHANCE_MODEL,
+    timeout_ms: PHOTO_MAGIC_REPLICATE_TIMEOUT_MS,
+    wait_seconds: PHOTO_MAGIC_REPLICATE_WAIT_SECONDS
+  };
+}
+
+export async function getVideoMagicReplicateCleanHealth({ force = false } = {}) {
+  return getReplicateModelHealth(VIDEO_MAGIC_REPLICATE_CLEAN_MODEL, { force });
+}
+
+export async function getVideoMagicReplicateRemoveBgHealth({ force = false } = {}) {
+  return getReplicateModelHealth(VIDEO_MAGIC_REPLICATE_REMOVE_BG_MODEL, { force });
+}
+
+export async function getVideoMagicReplicateEnhanceHealth({ force = false } = {}) {
+  return getReplicateModelHealth(VIDEO_MAGIC_REPLICATE_ENHANCE_MODEL, { force });
+}
+
 async function createPrediction({ modelRef, input }) {
   if (!isPhotoMagicReplicateConfigured()) return null;
   const { owner, name } = parseModelRef(modelRef);
@@ -316,6 +364,65 @@ export async function enhanceBria({
     input: {
       image: imageUrl,
       desired_increase: Math.max(2, Math.min(4, Math.round(desiredIncrease)))
+    }
+  });
+}
+
+export async function cleanVideoOverlayBria({
+  videoUrl,
+  maskUrl,
+  autoTrim = true,
+  preserveAudio = true,
+  outputContainerAndCodec = 'mp4_h264'
+} = {}) {
+  if (!videoUrl || !maskUrl) return null;
+
+  return createPrediction({
+    modelRef: VIDEO_MAGIC_REPLICATE_CLEAN_MODEL,
+    input: {
+      video_url: videoUrl,
+      mask_url: maskUrl,
+      auto_trim: Boolean(autoTrim),
+      preserve_audio: Boolean(preserveAudio),
+      output_container_and_codec: outputContainerAndCodec
+    }
+  });
+}
+
+export async function removeVideoBackgroundBria({
+  videoUrl,
+  preserveAudio = true,
+  backgroundColor = 'Transparent',
+  outputContainerAndCodec = 'webm_vp9'
+} = {}) {
+  if (!videoUrl) return null;
+
+  return createPrediction({
+    modelRef: VIDEO_MAGIC_REPLICATE_REMOVE_BG_MODEL,
+    input: {
+      video_url: videoUrl,
+      preserve_audio: Boolean(preserveAudio),
+      background_color: backgroundColor,
+      output_container_and_codec: outputContainerAndCodec
+    }
+  });
+}
+
+export async function enhanceVideoBria({
+  videoUrl,
+  desiredIncrease = 2,
+  preserveAudio = true,
+  outputContainerAndCodec = 'mp4_h264'
+} = {}) {
+  if (!videoUrl) return null;
+
+  return createPrediction({
+    modelRef: VIDEO_MAGIC_REPLICATE_ENHANCE_MODEL,
+    input: {
+      video_url: videoUrl,
+      desired_increase: Math.max(2, Math.min(4, Math.round(desiredIncrease))),
+      preserve_audio: Boolean(preserveAudio),
+      output_container_and_codec: outputContainerAndCodec
     }
   });
 }

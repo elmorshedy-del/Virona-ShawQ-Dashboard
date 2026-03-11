@@ -246,15 +246,17 @@ const TOOL_DEFINITIONS = {
 
 /* ── Video Magic Tool Definitions ─────────────────────────── */
 const VIDEO_TOOL_DEFINITIONS = {
-  overlay:     { label: 'Overlays',     description: 'Detect & edit text overlays on your video' },
+  clean_overlay: { label: 'Clean Overlay', description: 'Detect burnt-in overlays and remove them from the clip.' },
+  remove_bg_v:   { label: 'Remove BG',     description: 'Isolate the subject and strip the video background.' },
   resize:      { label: 'Smart Resize', description: 'Auto-resize for every social platform' },
   product_hub: { label: 'Product Hub',  description: 'Connect products from your catalog' },
   music:       { label: 'Music',        description: 'Add background music to your video' },
-  enhance_v:   { label: 'Enhance',      description: 'Upscale and improve video quality' },
+  enhance_v:   { label: 'Enhance',      description: 'Upscale short clips and improve video quality.' },
 };
 
 const VIDEO_TOOL_ICONS = {
-  overlay: Layers3,
+  clean_overlay: Eraser,
+  remove_bg_v: Wand2,
   resize: Crop,
   product_hub: ShoppingBag,
   music: Music,
@@ -494,7 +496,16 @@ export default function PhotoMagicEditor({ store }) {
   const [videoVolume, setVideoVolume] = useState(100);
   const [videoSpeed, setVideoSpeed] = useState(1);
   const [videoMuted, setVideoMuted] = useState(false);
-  const [videoTool, setVideoTool] = useState('overlay');
+  const [videoTool, setVideoTool] = useState('clean_overlay');
+  const [videoHealth, setVideoHealth] = useState(null);
+  const [isVideoHealthLoading, setIsVideoHealthLoading] = useState(false);
+  const [isVideoProcessing, setIsVideoProcessing] = useState(false);
+  const [videoHistory, setVideoHistory] = useState([]);
+  const [videoOriginalSource, setVideoOriginalSource] = useState(null);
+  const [videoEnhanceMode, setVideoEnhanceMode] = useState('upscale');
+  const [videoUpscaleFactor, setVideoUpscaleFactor] = useState(2);
+  const [videoBackgroundColor, setVideoBackgroundColor] = useState('Transparent');
+  const [lastVideoSummary, setLastVideoSummary] = useState('Idle');
   const videoRef = useRef(null);
   const videoFileInputRef = useRef(null);
 
@@ -580,6 +591,13 @@ export default function PhotoMagicEditor({ store }) {
   const enhanceFallbackReady = Boolean(enhanceState?.fallback_ready ?? aiConfigured);
   const enhanceReady = Boolean((enhanceState?.ready ?? false) || enhanceUpscaleReady || enhanceFallbackReady);
   const enhanceModeReady = enhanceMode === 'upscale' ? enhanceUpscaleReady : enhanceFallbackReady;
+  const videoMagic = videoHealth?.video_magic || {};
+  const videoCleanState = videoMagic.clean_overlay || {};
+  const videoRemoveBgState = videoMagic.remove_background || {};
+  const videoEnhanceState = videoMagic.enhance || {};
+  const videoCleanReady = Boolean(videoCleanState.ready);
+  const videoRemoveBgReady = Boolean(videoRemoveBgState.ready);
+  const videoEnhanceReady = Boolean(videoEnhanceState.ready);
 
   const currentMaskOutputId = selectionMaskOutputId || maskOutputId || relightMaskOutputId || expandMaskOutputId || null;
   const latestMaskForErase = selectionMaskUrl || maskUrl || relightMaskUrl || expandMaskUrl || null;
@@ -721,6 +739,21 @@ export default function PhotoMagicEditor({ store }) {
     }
   }, [store]);
 
+  const refreshVideoHealth = useCallback(async () => {
+    setIsVideoHealthLoading(true);
+    try {
+      const res = await fetch(withStore('/creative-studio/video-magic/health', store));
+      const data = await res.json();
+      if (!res.ok || !data?.success) throw new Error(data?.error || 'Failed to load Video Magic stack status');
+      setVideoHealth(data);
+    } catch (nextError) {
+      console.error(nextError);
+      setVideoHealth(null);
+    } finally {
+      setIsVideoHealthLoading(false);
+    }
+  }, [store]);
+
   const applySourcePayload = useCallback((payload, options = {}) => {
     const {
       previewUrl = null,
@@ -742,15 +775,55 @@ export default function PhotoMagicEditor({ store }) {
     setSourceLabel(sourceName || payload.filename || 'untitled');
     setSourceStage(sourceStageLabel);
     setSourceHistory((prev) => (resetHistory ? [sourceStageLabel] : [...prev, sourceStageLabel].slice(-4)));
+    setEditorMode('photo');
     setPrecisionMode(false);
     setViewportMode('source');
     setTool(nextTool);
     setLastRenderSummary(`Source ready ${payload.width || '?'}x${payload.height || '?'}`);
   }, []);
 
+  const applyVideoSourcePayload = useCallback((payload, options = {}) => {
+    const {
+      previewUrl = payload?.preview_url || null,
+      summary = 'Video ready'
+    } = options;
+
+    if (!payload?.video_id || !previewUrl) return null;
+
+    const snapshot = {
+      videoId: payload.video_id,
+      videoSrc: previewUrl,
+      videoFileInfo: {
+        width: payload.width,
+        height: payload.height,
+        duration: payload.duration,
+        size: payload.size,
+        fps: payload.fps || null,
+        filename: payload.filename || 'video.mp4',
+        mime: payload.mime || 'video/mp4'
+      }
+    };
+
+    setEditorMode('video');
+    setVideoId(snapshot.videoId);
+    setVideoSrc(snapshot.videoSrc);
+    setVideoFileInfo(snapshot.videoFileInfo);
+    setVideoCurrentTime(0);
+    setVideoDuration(payload.duration || 0);
+    setVideoTrimStart(0);
+    setVideoTrimEnd(payload.duration || null);
+    setOverlaySegments([]);
+    setSelectedOverlaySegIdx(null);
+    setSelectedOverlayIdx(null);
+    setIsVideoPlaying(false);
+    setLastVideoSummary(summary);
+    return snapshot;
+  }, []);
+
   useEffect(() => {
     refreshHealth();
-  }, [refreshHealth]);
+    refreshVideoHealth();
+  }, [refreshHealth, refreshVideoHealth]);
 
   useEffect(() => {
     return () => {
@@ -780,7 +853,10 @@ export default function PhotoMagicEditor({ store }) {
     const file = e.target.files?.[0];
     if (!file) return;
     setIsVideoUploading(true);
-    setVideoSrc(URL.createObjectURL(file));
+    setEditorMode('video');
+    setLastVideoSummary('Uploading video...');
+    const localPreviewUrl = URL.createObjectURL(file);
+    setVideoSrc(localPreviewUrl);
     setVideoTrimStart(0);
     setVideoTrimEnd(null);
     setOverlaySegments([]);
@@ -788,16 +864,25 @@ export default function PhotoMagicEditor({ store }) {
       const formData = new FormData();
       formData.append('video', file);
       const res = await fetch(withStore('/creative-studio/video-overlay/upload', store), { method: 'POST', body: formData });
-      const data = await res.json();
+      const data = await readJsonSafe(res);
       if (res.ok && data?.success !== false) {
-        setVideoId(data.video_id || data.videoId);
-        setVideoFileInfo({ width: data.width, height: data.height, duration: data.duration, size: file.size });
+        const snapshot = applyVideoSourcePayload(data, {
+          previewUrl: data.preview_url || localPreviewUrl,
+          summary: 'Video source ready'
+        });
+        setVideoHistory([]);
+        setVideoOriginalSource(snapshot);
+      } else {
+        throw new Error(data?.error || 'Video upload failed');
       }
     } catch (_err) {
       console.error('Video upload failed:', _err);
+      setError(_err?.message || 'Video upload failed');
+      setLastVideoSummary(`Failed: ${_err?.message || 'Video upload failed'}`);
     }
+    refreshVideoHealth();
     setIsVideoUploading(false);
-  }, [store]);
+  }, [applyVideoSourcePayload, refreshVideoHealth, store]);
 
   // ── Video: Playback controls ──
   const toggleVideoPlay = useCallback(() => {
@@ -831,6 +916,63 @@ export default function PhotoMagicEditor({ store }) {
     if (v) { setVideoDuration(v.duration); setVideoTrimEnd(null); }
   }, []);
 
+  const captureVideoSnapshot = useCallback(() => {
+    if (!videoId || !videoSrc) return null;
+    return {
+      videoId,
+      videoSrc,
+      videoFileInfo,
+      summary: lastVideoSummary
+    };
+  }, [lastVideoSummary, videoFileInfo, videoId, videoSrc]);
+
+  const pushVideoUndo = useCallback(() => {
+    const snapshot = captureVideoSnapshot();
+    if (!snapshot) return;
+    setVideoHistory((prev) => [...prev, snapshot].slice(-12));
+  }, [captureVideoSnapshot]);
+
+  const undoVideoEdit = useCallback(() => {
+    setVideoHistory((prev) => {
+      const next = [...prev];
+      const snapshot = next.pop();
+      if (snapshot) {
+        setEditorMode('video');
+        setVideoId(snapshot.videoId);
+        setVideoSrc(snapshot.videoSrc);
+        setVideoFileInfo(snapshot.videoFileInfo || null);
+        setVideoCurrentTime(0);
+        setVideoDuration(snapshot.videoFileInfo?.duration || 0);
+        setVideoTrimStart(0);
+        setVideoTrimEnd(snapshot.videoFileInfo?.duration || null);
+        setOverlaySegments([]);
+        setSelectedOverlaySegIdx(null);
+        setSelectedOverlayIdx(null);
+        setIsVideoPlaying(false);
+        setLastVideoSummary(snapshot.summary || 'Reverted to previous video state');
+      }
+      return next;
+    });
+  }, []);
+
+  const resetVideoSource = useCallback(() => {
+    if (!videoOriginalSource) return;
+    setEditorMode('video');
+    setVideoId(videoOriginalSource.videoId);
+    setVideoSrc(videoOriginalSource.videoSrc);
+    setVideoFileInfo(videoOriginalSource.videoFileInfo || null);
+    setVideoCurrentTime(0);
+    setVideoDuration(videoOriginalSource.videoFileInfo?.duration || 0);
+    setVideoTrimStart(0);
+    setVideoTrimEnd(videoOriginalSource.videoFileInfo?.duration || null);
+    setOverlaySegments([]);
+    setSelectedOverlaySegIdx(null);
+    setSelectedOverlayIdx(null);
+    setIsVideoPlaying(false);
+    setVideoHistory([]);
+    setLastVideoSummary('Reset to original source');
+  }, [videoOriginalSource]);
+
   // ── Video: Volume/Speed sync ──
   useEffect(() => {
     const v = videoRef.current;
@@ -847,15 +989,22 @@ export default function PhotoMagicEditor({ store }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ videoId: videoId, intervalSec: overlayScanInterval, maxFrames: overlayScanMaxFrames })
       });
-      const data = await res.json();
+      const data = await readJsonSafe(res);
       if (res.ok && data?.segments) {
         setOverlaySegments(data.segments);
+        setLastVideoSummary(data.segments.length ? `Detected ${data.segments.length} overlay segment${data.segments.length === 1 ? '' : 's'}` : 'No overlays detected');
+        return data.segments;
       }
+      throw new Error(data?.error || 'Overlay scan failed');
     } catch (_err) {
       console.error('Overlay scan failed:', _err);
+      setError(_err?.message || 'Overlay scan failed');
+      setLastVideoSummary(`Failed: ${_err?.message || 'Overlay scan failed'}`);
+      return [];
+    } finally {
+      setOverlayScanning(false);
     }
-    setOverlayScanning(false);
-  }, [videoId, overlayScanInterval, overlayScanMaxFrames, store]);
+  }, [overlayScanInterval, overlayScanMaxFrames, store, videoId]);
 
   // ── Video: Overlay export ──
   const exportOverlays = useCallback(async () => {
@@ -881,6 +1030,156 @@ export default function PhotoMagicEditor({ store }) {
     }
     setOverlayExporting(false);
   }, [videoId, overlaySegments, store]);
+
+  const runVideoCleanOverlay = useCallback(async () => {
+    if (!videoId) return;
+    setError(null);
+    setIsVideoProcessing(true);
+    const runId = startDebugRun('Video Clean Overlay', 'Cleaning detected overlays from the clip');
+    try {
+      let segments = overlaySegments;
+      if (!segments.length) {
+        logDebug(runId, 'Video Clean Overlay', 'scan', 'running', 'Scanning overlays before cleanup');
+        segments = await scanOverlays();
+      }
+      if (!segments.length) {
+        throw new Error('No overlays were detected to clean from this video.');
+      }
+
+      pushVideoUndo();
+      const data = await requestJson({
+        runId,
+        scope: 'Video Clean Overlay',
+        step: 'clean',
+        url: withStore('/creative-studio/video-magic/clean-overlay', store),
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            video_id: videoId,
+            segments
+          })
+        },
+        successMessage: 'Overlay cleanup render completed',
+        failureMessage: 'Video overlay cleanup failed',
+        successDetails: (payload) => ({
+          outputReady: Boolean(payload?.preview_url),
+          width: payload?.width || null,
+          height: payload?.height || null,
+          duration: payload?.duration || null
+        })
+      });
+
+      applyVideoSourcePayload(data, {
+        previewUrl: data.preview_url,
+        summary: 'Overlay cleanup ready'
+      });
+      setLastVideoSummary('Overlay cleanup ready');
+      setVideoTool('clean_overlay');
+    } catch (nextError) {
+      console.error(nextError);
+      const message = nextError?.message || 'Video overlay cleanup failed';
+      setError(message);
+      setLastVideoSummary(`Failed: ${message}`);
+      logDebug(runId, 'Video Clean Overlay', 'complete', 'failed', message);
+    } finally {
+      setIsVideoProcessing(false);
+      refreshVideoHealth();
+    }
+  }, [applyVideoSourcePayload, logDebug, overlaySegments, pushVideoUndo, refreshVideoHealth, requestJson, scanOverlays, startDebugRun, store, videoId]);
+
+  const runVideoRemoveBackground = useCallback(async () => {
+    if (!videoId) return;
+    setError(null);
+    setIsVideoProcessing(true);
+    const runId = startDebugRun('Video Background Removal', `Removing background with ${videoBackgroundColor} backdrop`);
+    try {
+      pushVideoUndo();
+      const data = await requestJson({
+        runId,
+        scope: 'Video Background Removal',
+        step: 'remove-bg',
+        url: withStore('/creative-studio/video-magic/remove-background', store),
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            video_id: videoId,
+            background_color: videoBackgroundColor
+          })
+        },
+        successMessage: 'Video background removal completed',
+        failureMessage: 'Video background removal failed',
+        successDetails: (payload) => ({
+          outputReady: Boolean(payload?.preview_url),
+          width: payload?.width || null,
+          height: payload?.height || null,
+          duration: payload?.duration || null
+        })
+      });
+
+      applyVideoSourcePayload(data, {
+        previewUrl: data.preview_url,
+        summary: `${videoBackgroundColor} background render ready`
+      });
+    } catch (nextError) {
+      console.error(nextError);
+      const message = nextError?.message || 'Video background removal failed';
+      setError(message);
+      setLastVideoSummary(`Failed: ${message}`);
+      logDebug(runId, 'Video Background Removal', 'complete', 'failed', message);
+    } finally {
+      setIsVideoProcessing(false);
+      refreshVideoHealth();
+    }
+  }, [applyVideoSourcePayload, logDebug, pushVideoUndo, refreshVideoHealth, requestJson, startDebugRun, store, videoBackgroundColor, videoId]);
+
+  const runVideoEnhance = useCallback(async () => {
+    if (!videoId) return;
+    setError(null);
+    setIsVideoProcessing(true);
+    const runId = startDebugRun('Video Enhancement', `Running ${videoEnhanceMode} at ${videoUpscaleFactor}x`);
+    try {
+      pushVideoUndo();
+      const data = await requestJson({
+        runId,
+        scope: 'Video Enhancement',
+        step: 'enhance',
+        url: withStore('/creative-studio/video-magic/enhance', store),
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            video_id: videoId,
+            mode: videoEnhanceMode,
+            desired_increase: videoUpscaleFactor
+          })
+        },
+        successMessage: 'Video enhancement completed',
+        failureMessage: 'Video enhancement failed',
+        successDetails: (payload) => ({
+          outputReady: Boolean(payload?.preview_url),
+          width: payload?.width || null,
+          height: payload?.height || null,
+          duration: payload?.duration || null
+        })
+      });
+
+      applyVideoSourcePayload(data, {
+        previewUrl: data.preview_url,
+        summary: `${videoUpscaleFactor}x video enhancement ready`
+      });
+    } catch (nextError) {
+      console.error(nextError);
+      const message = nextError?.message || 'Video enhancement failed';
+      setError(message);
+      setLastVideoSummary(`Failed: ${message}`);
+      logDebug(runId, 'Video Enhancement', 'complete', 'failed', message);
+    } finally {
+      setIsVideoProcessing(false);
+      refreshVideoHealth();
+    }
+  }, [applyVideoSourcePayload, logDebug, pushVideoUndo, refreshVideoHealth, requestJson, startDebugRun, store, videoEnhanceMode, videoId, videoUpscaleFactor]);
 
   // ── Video: Music library fetch ──
   const loadMusicLibrary = useCallback(async () => {
@@ -2493,15 +2792,11 @@ export default function PhotoMagicEditor({ store }) {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            {/* ── Mode Toggle ── */}
-            <div className="pm-mode-toggle">
-              <div className="pm-mode-pill" style={{ left: editorMode === 'photo' ? 3 : '50%', width: 'calc(50% - 3px)' }} />
-              <button type="button" className={editorMode === 'photo' ? 'active' : ''} onClick={() => setEditorMode('photo')}>
-                <Camera className="h-3.5 w-3.5" /> Photo
-              </button>
-              <button type="button" className={editorMode === 'video' ? 'active' : ''} onClick={() => setEditorMode('video')}>
-                <Film className="h-3.5 w-3.5" /> Video
-              </button>
+            <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-1.5 shadow-sm">
+              {editorMode === 'photo' ? <Camera className="h-3.5 w-3.5 text-indigo-500" /> : <Film className="h-3.5 w-3.5 text-indigo-500" />}
+              <span className="text-[11px] font-semibold text-gray-600">
+                {editorMode === 'photo' ? 'Photo Mode' : 'Video Mode'}
+              </span>
             </div>
 
             {editorMode === 'photo' && (
@@ -2545,6 +2840,16 @@ export default function PhotoMagicEditor({ store }) {
                   Import from Shopify
                 </button>
                 <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onFileChange} />
+                <button
+                  type="button"
+                  onClick={() => videoFileInputRef.current?.click()}
+                  disabled={isVideoUploading}
+                  className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-gray-700 shadow-sm transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{ background: 'rgba(255,255,255,0.82)', border: '1px solid rgba(209,213,219,0.9)' }}
+                >
+                  {isVideoUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Film className="h-3.5 w-3.5" />}
+                  {isVideoUploading ? 'Uploading...' : 'Import Video'}
+                </button>
                 {imageSrc && (
                   <button
                     type="button"
@@ -2568,6 +2873,27 @@ export default function PhotoMagicEditor({ store }) {
                   {isVideoUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
                   {isVideoUploading ? 'Uploading...' : 'Import Video'}
                 </button>
+                <button
+                  type="button"
+                  onClick={onPickFile}
+                  disabled={isUploading}
+                  className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-gray-700 shadow-sm transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{ background: 'rgba(255,255,255,0.82)', border: '1px solid rgba(209,213,219,0.9)' }}
+                >
+                  <ImagePlus className="h-3.5 w-3.5" />
+                  Import Photo
+                </button>
+                {videoSrc ? (
+                  <>
+                    <Button variant="secondary" onClick={undoVideoEdit} disabled={!videoHistory.length || isVideoProcessing}>
+                      Undo
+                    </Button>
+                    <Button variant="secondary" onClick={resetVideoSource} disabled={!videoOriginalSource || isVideoProcessing}>
+                      <RotateCcw className="h-4 w-4" />
+                      Reset
+                    </Button>
+                  </>
+                ) : null}
                 <input ref={videoFileInputRef} type="file" accept="video/mp4,video/webm,video/quicktime,video/x-msvideo" className="hidden" onChange={handleVideoUpload} />
               </>
             )}
@@ -3524,22 +3850,38 @@ export default function PhotoMagicEditor({ store }) {
               <p className="mt-2 text-[10px] text-gray-400 leading-relaxed">{VIDEO_TOOL_DEFINITIONS[videoTool]?.description}</p>
             </div>
 
-            {/* ═══ Overlays Tool ═══ */}
-            {videoTool === 'overlay' && (
+            {/* ═══ Clean Overlay Tool ═══ */}
+            {videoTool === 'clean_overlay' && (
               <div className="space-y-3 pm-section-enter">
                 <div className="rounded-2xl border border-gray-100/80 bg-white/70 p-3 shadow-sm space-y-3">
-                  <span className="text-[11px] font-bold uppercase tracking-widest text-gray-500 block">Scan Settings</span>
+                  <span className="text-[11px] font-bold uppercase tracking-widest text-gray-500 block">Overlay Detection</span>
+                  <div className="rounded-xl border border-gray-100 bg-gray-50/80 px-3 py-2 text-[11px] text-gray-500">
+                    {videoCleanReady
+                      ? `Ready via ${videoCleanState?.model || 'Bria Video Eraser'}`
+                      : (videoCleanState?.error || 'Video overlay cleanup is not ready yet.')}
+                  </div>
                   <Slider label="Interval" tooltip="Seconds between frames" value={overlayScanInterval} onChange={(e) => setOverlayScanInterval(+e.target.value)} min={0.5} max={5} step={0.5} />
                   <Slider label="Max Frames" value={overlayScanMaxFrames} onChange={(e) => setOverlayScanMaxFrames(+e.target.value)} min={10} max={120} step={5} />
-                  <button
-                    type="button"
-                    onClick={scanOverlays}
-                    disabled={!videoId || overlayScanning}
-                    className="w-full py-2 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
-                    style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
-                  >
-                    {overlayScanning ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Scanning...</> : <><ScanSearch className="h-3.5 w-3.5" /> Scan for Overlays</>}
-                  </button>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={scanOverlays}
+                      disabled={!videoId || overlayScanning || isVideoProcessing}
+                      className="w-full py-2 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
+                      style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+                    >
+                      {overlayScanning ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Scanning...</> : <><ScanSearch className="h-3.5 w-3.5" /> Scan Overlay</>}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={runVideoCleanOverlay}
+                      disabled={!videoId || !videoCleanReady || overlayScanning || isVideoProcessing}
+                      className="w-full py-2 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
+                      style={{ background: 'linear-gradient(135deg, #111827, #374151)' }}
+                    >
+                      {isVideoProcessing ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Cleaning...</> : <><Eraser className="h-3.5 w-3.5" /> Clean Overlay</>}
+                    </button>
+                  </div>
                 </div>
 
                 {overlaySegments.length > 0 && (
@@ -3553,14 +3895,18 @@ export default function PhotoMagicEditor({ store }) {
                             Segment {si + 1} <span className="text-gray-400 font-mono">({formatVideoTime(seg.start)} - {formatVideoTime(seg.end)})</span>
                           </button>
                           {seg.overlays?.map((ov, oi) => (
-                            <div key={oi} className={cn(
-                              'flex items-center justify-between px-2 py-1 rounded-lg transition-all cursor-pointer',
-                              selectedOverlaySegIdx === si && selectedOverlayIdx === oi ? 'bg-indigo-50 border border-indigo-200' : 'hover:bg-gray-50'
-                            )} onClick={() => { setSelectedOverlaySegIdx(si); setSelectedOverlayIdx(oi); }}>
-                              <span className="text-[10px] text-gray-600 truncate flex-1">"{ov.text || 'Overlay'}"</span>
-                              <button type="button" onClick={(e) => { e.stopPropagation(); deleteOverlay(si, oi); }} className="text-gray-300 hover:text-red-400 ml-1">
-                                <XCircle className="h-3 w-3" />
-                              </button>
+                            <div
+                              key={oi}
+                              className={cn(
+                                'px-2 py-1 rounded-lg transition-all',
+                                selectedOverlaySegIdx === si && selectedOverlayIdx === oi ? 'bg-indigo-50 border border-indigo-200' : 'bg-gray-50'
+                              )}
+                              onClick={() => { setSelectedOverlaySegIdx(si); setSelectedOverlayIdx(oi); }}
+                            >
+                              <div className="text-[10px] font-semibold text-gray-600 truncate">"{ov.text || 'Overlay'}"</div>
+                              <div className="mt-0.5 text-[9px] font-mono uppercase tracking-[0.16em] text-gray-400">
+                                {Math.round(ov.width || 0)}x{Math.round(ov.height || 0)} region
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -3568,45 +3914,34 @@ export default function PhotoMagicEditor({ store }) {
                     </div>
                   </div>
                 )}
+              </div>
+            )}
 
-                {selectedOverlaySegIdx !== null && selectedOverlayIdx !== null && overlaySegments[selectedOverlaySegIdx]?.overlays?.[selectedOverlayIdx] && (() => {
-                  const ov = overlaySegments[selectedOverlaySegIdx].overlays[selectedOverlayIdx];
-                  const patch = (p) => updateOverlay(selectedOverlaySegIdx, selectedOverlayIdx, p);
-                  return (
-                    <div className="rounded-2xl border border-indigo-100 bg-indigo-50/30 p-3 shadow-sm space-y-2">
-                      <span className="text-[11px] font-bold uppercase tracking-widest text-indigo-400 block">Edit Overlay</span>
-                      <div>
-                        <span className="text-[10px] font-semibold text-gray-500 mb-1 block">Text</span>
-                        <input type="text" value={ov.text || ''} onChange={(e) => patch({ text: e.target.value })}
-                          className="w-full px-2 py-1.5 rounded-lg border border-gray-200 bg-white text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-300" />
-                      </div>
-                      <Slider label="Font Size" value={ov.fontSize || 24} onChange={(e) => patch({ fontSize: +e.target.value })} min={8} max={120} />
-                      <div className="flex gap-2">
-                        <div className="flex-1">
-                          <span className="text-[10px] font-semibold text-gray-500 mb-1 block">Text Color</span>
-                          <input type="color" value={ov.textColor || '#ffffff'} onChange={(e) => patch({ textColor: e.target.value })} className="w-full h-7 rounded-lg cursor-pointer" />
-                        </div>
-                        <div className="flex-1">
-                          <span className="text-[10px] font-semibold text-gray-500 mb-1 block">Background</span>
-                          <input type="color" value={ov.backgroundColor || '#333333'} onChange={(e) => patch({ backgroundColor: e.target.value })} className="w-full h-7 rounded-lg cursor-pointer" />
-                        </div>
-                      </div>
-                      <Slider label="Border Radius" value={ov.borderRadius || 0} onChange={(e) => patch({ borderRadius: +e.target.value })} min={0} max={32} />
-                    </div>
-                  );
-                })()}
-
-                {overlaySegments.length > 0 && (
+            {videoTool === 'remove_bg_v' && (
+              <div className="space-y-3 pm-section-enter">
+                <div className="rounded-2xl border border-gray-100/80 bg-white/70 p-3 shadow-sm space-y-3">
+                  <span className="text-[11px] font-bold uppercase tracking-widest text-gray-500 block">Background Removal</span>
+                  <div className="rounded-xl border border-gray-100 bg-gray-50/80 px-3 py-2 text-[11px] text-gray-500">
+                    {videoRemoveBgReady
+                      ? `Ready via ${videoRemoveBgState?.model || 'Bria Remove Background'}`
+                      : (videoRemoveBgState?.error || 'Video background removal is not ready yet.')}
+                  </div>
+                  <Select value={videoBackgroundColor} onChange={(e) => setVideoBackgroundColor(e.target.value)}>
+                    <option value="Transparent">Transparent</option>
+                    <option value="White">White</option>
+                    <option value="Black">Black</option>
+                    <option value="Light Gray">Light Gray</option>
+                  </Select>
                   <button
                     type="button"
-                    onClick={exportOverlays}
-                    disabled={overlayExporting}
+                    onClick={runVideoRemoveBackground}
+                    disabled={!videoId || !videoRemoveBgReady || isVideoProcessing}
                     className="w-full py-2.5 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
                     style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
                   >
-                    {overlayExporting ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Exporting...</> : <><Film className="h-3.5 w-3.5" /> Export with Overlays</>}
+                    {isVideoProcessing ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Removing...</> : <><Wand2 className="h-3.5 w-3.5" /> Remove Background</>}
                   </button>
-                )}
+                </div>
               </div>
             )}
 
@@ -3631,7 +3966,7 @@ export default function PhotoMagicEditor({ store }) {
                       return { ...seg, overlays: [...(seg.overlays || []), { text: `${product.name} — ${formatCurrency(product.price, product.currency)}`, fontSize: 28, textColor: '#ffffff', backgroundColor: '#1a1a2e', borderRadius: 8, x: 40, y: 40 + (seg.overlays?.length || 0) * 70, width: 400, height: 60 }] };
                     }));
                   }
-                  setVideoTool('overlay');
+                  setVideoTool('clean_overlay');
                 }} />
               </div>
             )}
@@ -3715,9 +4050,14 @@ export default function PhotoMagicEditor({ store }) {
                       <button
                         key={mode}
                         type="button"
+                        onClick={() => mode === 'Upscale' && setVideoEnhanceMode('upscale')}
+                        disabled={mode !== 'Upscale'}
                         className={cn(
                           'flex-1 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all relative',
-                          mode === 'Upscale' ? 'bg-indigo-100 text-indigo-600 shadow-sm' : 'bg-gray-100/60 text-gray-400 hover:text-gray-600'
+                          videoEnhanceMode === 'upscale' && mode === 'Upscale'
+                            ? 'bg-indigo-100 text-indigo-600 shadow-sm'
+                            : 'bg-gray-100/60 text-gray-400 hover:text-gray-600',
+                          mode !== 'Upscale' && 'opacity-50 cursor-not-allowed'
                         )}
                       >
                         {mode}
@@ -3728,24 +4068,23 @@ export default function PhotoMagicEditor({ store }) {
                 </div>
 
                 <div className="rounded-2xl border border-gray-100/80 bg-white/70 p-3 shadow-sm space-y-3">
-                  <Slider label="Quality" value={80} onChange={() => {}} min={0} max={100} />
-                  <Slider label="Strength" value={50} onChange={() => {}} min={0} max={100} />
+                  <div className="rounded-xl border border-gray-100 bg-gray-50/80 px-3 py-2 text-[11px] text-gray-500">
+                    {videoEnhanceReady
+                      ? `Ready via ${videoEnhanceState?.model || 'Bria Video Increase Resolution'}`
+                      : (videoEnhanceState?.error || 'Video enhancement is not ready yet.')}
+                  </div>
+                  <Slider label="Upscale Factor" value={videoUpscaleFactor} onChange={(e) => setVideoUpscaleFactor(+e.target.value)} min={2} max={4} step={1} />
                 </div>
 
                 <button
                   type="button"
-                  disabled
+                  onClick={runVideoEnhance}
+                  disabled={!videoId || !videoEnhanceReady || isVideoProcessing}
                   className="w-full py-2.5 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
                   style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
                 >
-                  <Zap className="h-3.5 w-3.5" /> Enhance Video
+                  {isVideoProcessing ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Enhancing...</> : <><Zap className="h-3.5 w-3.5" /> Enhance Video</>}
                 </button>
-
-                <div className="rounded-2xl border border-dashed border-amber-200 bg-amber-50/30 p-3 text-center">
-                  <span className="pm-badge-soon">Coming Soon</span>
-                  <p className="text-[11px] text-gray-500 mt-2 font-medium">Video enhancement is in development</p>
-                  <p className="text-[10px] text-gray-400 mt-0.5">AI upscaling, denoising, and stabilization</p>
-                </div>
               </div>
             )}
           </div>
@@ -3755,7 +4094,15 @@ export default function PhotoMagicEditor({ store }) {
         <div className="border-t border-gray-100 bg-white/60 px-5 py-3" style={{ backdropFilter: 'blur(24px)' }}>
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[11px] font-mono uppercase tracking-[0.16em] text-gray-400">
             <span>{editorMode === 'photo' ? (stageConfig?.label || tool) : (VIDEO_TOOL_DEFINITIONS[videoTool]?.label || videoTool)}</span>
-            <span>{editorMode === 'photo' ? (isUploading ? 'Uploading...' : isRunning ? 'Processing...' : lastRenderSummary) : (isVideoUploading ? 'Uploading video...' : videoSrc ? 'Ready' : 'Idle')}</span>
+            <span>
+              {editorMode === 'photo'
+                ? (isUploading ? 'Uploading...' : isRunning ? 'Processing...' : lastRenderSummary)
+                : (isVideoUploading
+                  ? 'Uploading video...'
+                  : isVideoProcessing
+                    ? 'Processing...'
+                    : lastVideoSummary)}
+            </span>
           </div>
         </div>
 
