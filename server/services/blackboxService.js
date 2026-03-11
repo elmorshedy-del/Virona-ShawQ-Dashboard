@@ -873,14 +873,91 @@ function resolveAttributionOrderSourceForBlackbox(db, store) {
   return sources[0];
 }
 
-function buildOrderWhereClauseForBlackbox(orderTable) {
+const tableColumnsCache = new Map();
+
+function getTableColumns(db, tableName) {
+  if (tableColumnsCache.has(tableName)) return tableColumnsCache.get(tableName);
+
+  let columns = new Set();
+  try {
+    const rows = db.prepare(`PRAGMA table_info(${tableName})`).all();
+    columns = new Set(rows.map((row) => row.name).filter(Boolean));
+  } catch (_error) {
+    columns = new Set();
+  }
+  tableColumnsCache.set(tableName, columns);
+  return columns;
+}
+
+function hasTableColumn(db, tableName, columnName) {
+  return getTableColumns(db, tableName).has(columnName);
+}
+
+function selectColumnOrNull(db, tableName, columnName, alias = columnName) {
+  return hasTableColumn(db, tableName, columnName)
+    ? `${columnName} AS ${alias}`
+    : `NULL AS ${alias}`;
+}
+
+function buildOrderWhereClauseForBlackbox(db, orderTable) {
   if (orderTable === 'shopify_orders') {
-    return ` AND (financial_status = 'paid' OR financial_status = 'partially_paid') AND COALESCE(is_excluded, 0) = 0`;
+    const clauses = [];
+    if (hasTableColumn(db, orderTable, 'financial_status')) {
+      clauses.push(`(financial_status = 'paid' OR financial_status = 'partially_paid')`);
+    }
+    if (hasTableColumn(db, orderTable, 'is_excluded')) {
+      clauses.push(`COALESCE(is_excluded, 0) = 0`);
+    }
+    return clauses.length ? ` AND ${clauses.join(' AND ')}` : '';
   }
   if (orderTable === 'salla_orders') {
-    return ` AND COALESCE(is_excluded, 0) = 0`;
+    if (hasTableColumn(db, orderTable, 'is_excluded')) {
+      return ` AND COALESCE(is_excluded, 0) = 0`;
+    }
+    return '';
   }
   return '';
+}
+
+function createEmptyMisattributionDiagnostics(graceHours = DEFAULT_ATTRIBUTION_GRACE_HOURS) {
+  return {
+    grace_hours: graceHours,
+    eligible_orders: 0,
+    attributed_purchase_count: 0,
+    unresolved_count: 0,
+    coverage_rate: null,
+    dropped_after_checkout_count: 0,
+    dropped_at_checkout_count: 0,
+    weak_upstream_count: 0,
+    no_checkout_context_count: 0,
+    path_breakdown: [],
+    rows: []
+  };
+}
+
+function createEmptyGhostOrderData() {
+  return {
+    totalOrders: 0,
+    purchaseTelemetryEvents: 0,
+    hasPurchaseTelemetry: false,
+    ordersWithAnyPurchase: 0,
+    ordersWithPixelPurchase: 0,
+    ordersWithGtmPurchase: 0,
+    ordersWithWebhookPurchase: 0,
+    ordersWithFullPurchaseCoverage: 0,
+    hardGhostOrdersTotal: 0,
+    recoveredWebhookOnlyTotal: 0,
+    partialMissTotal: 0,
+    noTelemetryTotal: 0,
+    unknownSourceTotal: 0,
+    purchaseGapOrdersTotal: 0,
+    hardGhostOrders: [],
+    recoveredWebhookOnlyOrders: [],
+    partialMissOrders: [],
+    noTelemetryOrders: [],
+    unknownSourceOrders: [],
+    purchaseGapOrders: []
+  };
 }
 
 function safeDivideForBlackbox(numerator, denominator) {
@@ -1023,7 +1100,7 @@ function buildAttributionTruthForBlackbox(store, range, graceCutoffMs) {
   const db = getDb();
   const orderSource = resolveAttributionOrderSourceForBlackbox(db, store);
   const orderTable = orderSource.table;
-  const orderWhere = buildOrderWhereClauseForBlackbox(orderTable);
+  const orderWhere = buildOrderWhereClauseForBlackbox(db, orderTable);
 
   const hasCountryRows = db.prepare(`
     SELECT COUNT(*) as count
@@ -1041,15 +1118,15 @@ function buildAttributionTruthForBlackbox(store, range, graceCutoffMs) {
     SELECT
       order_id,
       date,
-      order_created_at,
-      country,
-      country_code,
-      city,
-      state,
-      order_total,
-      currency,
-      customer_email,
-      attribution_json
+      ${selectColumnOrNull(db, orderTable, 'order_created_at')},
+      ${selectColumnOrNull(db, orderTable, 'country')},
+      ${selectColumnOrNull(db, orderTable, 'country_code')},
+      ${selectColumnOrNull(db, orderTable, 'city')},
+      ${selectColumnOrNull(db, orderTable, 'state')},
+      ${selectColumnOrNull(db, orderTable, 'order_total')},
+      ${selectColumnOrNull(db, orderTable, 'currency')},
+      ${selectColumnOrNull(db, orderTable, 'customer_email')},
+      ${selectColumnOrNull(db, orderTable, 'attribution_json')}
     FROM ${orderTable}
     WHERE store = ?
       AND date BETWEEN ? AND ?
@@ -1843,22 +1920,23 @@ function getGhostOrders(store, range, options = {}) {
   const db = getDb();
   const maxItems = clampInt(options.ghostOrderLimit, DEFAULT_GHOST_ORDER_LIMIT, 1, MAX_GHOST_LIMIT);
   const lookbackHours = clampInt(options.approxLookbackHours, DEFAULT_APPROX_LOOKBACK_HOURS, 1, MAX_APPROX_LOOKBACK_HOURS);
+  const orderWhere = buildOrderWhereClauseForBlackbox(db, 'shopify_orders');
 
   const orderRows = db.prepare(`
     SELECT
       order_id,
       date,
-      order_created_at,
-      country_code,
-      city,
-      state,
-      order_total,
-      currency,
-      customer_email
+      ${selectColumnOrNull(db, 'shopify_orders', 'order_created_at')},
+      ${selectColumnOrNull(db, 'shopify_orders', 'country_code')},
+      ${selectColumnOrNull(db, 'shopify_orders', 'city')},
+      ${selectColumnOrNull(db, 'shopify_orders', 'state')},
+      ${selectColumnOrNull(db, 'shopify_orders', 'order_total')},
+      ${selectColumnOrNull(db, 'shopify_orders', 'currency')},
+      ${selectColumnOrNull(db, 'shopify_orders', 'customer_email')}
     FROM shopify_orders
     WHERE store = ?
       AND date BETWEEN ? AND ?
-      AND COALESCE(is_excluded, 0) = 0
+      ${orderWhere}
     ORDER BY COALESCE(order_created_at, date) DESC
   `).all(store, range.startDate, range.endDate);
 
@@ -2743,13 +2821,25 @@ export function getBlackboxOverview(store, options = {}) {
 
   const duplicateDiagnostics = detectDuplicateBeginCheckout(beginEvents, duplicateWindowSeconds);
   const checkoutAttribution = buildCheckoutAttributionOverview(beginEvents, ghostSessionLimit);
-  const misattribution = buildMisattributedPurchaseDiagnostics(normalizedStore, range, {
-    attributionGraceHours: options.attributionGraceHours,
-    approxLookbackHours: options.approxLookbackHours,
-    maxItems: ghostSessionLimit
-  });
+  let misattribution = createEmptyMisattributionDiagnostics(
+    clampInt(options.attributionGraceHours, DEFAULT_ATTRIBUTION_GRACE_HOURS, 1, MAX_ATTRIBUTION_GRACE_HOURS)
+  );
+  try {
+    misattribution = buildMisattributedPurchaseDiagnostics(normalizedStore, range, {
+      attributionGraceHours: options.attributionGraceHours,
+      approxLookbackHours: options.approxLookbackHours,
+      maxItems: ghostSessionLimit
+    });
+  } catch (error) {
+    console.error('[Blackbox] misattribution diagnostics error:', error);
+  }
   const ghostSessions = detectGhostSessions(rows, ghostSessionLimit);
-  const ghostOrderData = getGhostOrders(normalizedStore, range, options);
+  let ghostOrderData = createEmptyGhostOrderData();
+  try {
+    ghostOrderData = getGhostOrders(normalizedStore, range, options);
+  } catch (error) {
+    console.error('[Blackbox] ghost order diagnostics error:', error);
+  }
 
   return {
     store: normalizedStore,
