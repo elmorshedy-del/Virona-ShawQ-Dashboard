@@ -811,32 +811,380 @@ function purchaseEventPriority(event) {
   }
 }
 
+function purchaseEventContextPriority(event) {
+  if (!event) return 0;
+  let score = 0;
+  if (event.has_fbc || event.has_fbclid) score += 50;
+  if (event.has_fbp) score += 40;
+  if (event.has_event_source_url) score += 30;
+  if (event.has_landing_context) score += 20;
+  if (safeString(event.page_path, 600) || safeString(event.page_url, 1600)) score += 15;
+  if (safeString(event.checkout_button, 160) || safeString(event.checkout_source, 160)) score += 10;
+  return score;
+}
+
 function pickBestPurchaseEvent(events) {
   if (!Array.isArray(events) || !events.length) return null;
 
   let best = null;
   let bestScore = -1;
   let bestPriority = -1;
+  let bestContextPriority = -1;
   let bestTs = -1;
 
   for (const event of events) {
     const score = attributionScore(event?.attribution_status);
     const priority = purchaseEventPriority(event);
+    const contextPriority = purchaseEventContextPriority(event);
     const ts = eventTimeMs(event);
 
     if (
       score > bestScore
       || (score === bestScore && priority > bestPriority)
-      || (score === bestScore && priority === bestPriority && ts > bestTs)
+      || (score === bestScore && priority === bestPriority && contextPriority > bestContextPriority)
+      || (score === bestScore && priority === bestPriority && contextPriority === bestContextPriority && ts > bestTs)
     ) {
       best = event;
       bestScore = score;
       bestPriority = priority;
+      bestContextPriority = contextPriority;
       bestTs = ts;
     }
   }
 
   return best;
+}
+
+function resolveAttributionOrderSourceForBlackbox(db, store) {
+  const sources = [
+    { table: 'shopify_orders', supportsAttribution: true },
+    { table: 'salla_orders', supportsAttribution: false }
+  ];
+
+  for (const source of sources) {
+    try {
+      const count = db.prepare(`SELECT COUNT(*) as count FROM ${source.table} WHERE store = ?`).get(store)?.count || 0;
+      if (count > 0) return source;
+    } catch (_error) {
+      // Ignore missing table/scopes and try next source.
+    }
+  }
+
+  return sources[0];
+}
+
+function buildOrderWhereClauseForBlackbox(orderTable) {
+  if (orderTable === 'shopify_orders') {
+    return ` AND (financial_status = 'paid' OR financial_status = 'partially_paid') AND COALESCE(is_excluded, 0) = 0`;
+  }
+  if (orderTable === 'salla_orders') {
+    return ` AND COALESCE(is_excluded, 0) = 0`;
+  }
+  return '';
+}
+
+function safeDivideForBlackbox(numerator, denominator) {
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) return null;
+  return numerator / denominator;
+}
+
+function coverageRateFromCountsForBlackbox(metaOrders, totalOrders) {
+  if (!Number.isFinite(metaOrders) || !Number.isFinite(totalOrders) || totalOrders <= 0) return null;
+  const covered = Math.min(totalOrders, Math.max(0, metaOrders));
+  return safeDivideForBlackbox(covered, totalOrders);
+}
+
+function buildMetaDailyTotalsForBlackbox(db, { store, start, end }) {
+  const rows = db.prepare(`
+    SELECT
+      date,
+      SUM(CASE WHEN has_country = 1 THEN country_sum ELSE all_sum END) as orders
+    FROM (
+      SELECT
+        date,
+        campaign_id,
+        MAX(CASE WHEN country IS NOT NULL AND country != '' AND country != 'ALL' THEN 1 ELSE 0 END) as has_country,
+        SUM(CASE WHEN country IS NOT NULL AND country != '' AND country != 'ALL' THEN conversions ELSE 0 END) as country_sum,
+        SUM(CASE WHEN country IS NULL OR country = '' OR country = 'ALL' THEN conversions ELSE 0 END) as all_sum
+      FROM meta_daily_metrics
+      WHERE store = ? AND date BETWEEN ? AND ?
+      GROUP BY date, campaign_id
+    )
+    GROUP BY date
+  `).all(store, start, end);
+
+  return new Map(rows.map((row) => [row.date, row.orders || 0]));
+}
+
+function buildMetaDailyByCountryForBlackbox(db, { store, start, end }) {
+  const rows = db.prepare(`
+    SELECT date, country as country_code, SUM(conversions) as orders
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? AND country IS NOT NULL AND country != '' AND country != 'ALL'
+    GROUP BY date, country
+  `).all(store, start, end);
+
+  const map = new Map();
+  rows.forEach((row) => {
+    if (!row.country_code) return;
+    map.set(`${row.date}|${row.country_code}`, row.orders || 0);
+  });
+  return map;
+}
+
+function parseAttributionForBlackbox(raw) {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function parseConsentStatusForBlackbox(value) {
+  if (value == null) return 'unknown';
+  const normalized = String(value).trim().toLowerCase();
+  if (['denied', 'false', '0', 'no', 'blocked'].includes(normalized)) return 'denied';
+  if (['granted', 'true', '1', 'yes', 'allowed'].includes(normalized)) return 'granted';
+  return 'unknown';
+}
+
+function parseFbcTimestampForBlackbox(fbc) {
+  if (!fbc) return null;
+  const parts = String(fbc).split('.');
+  if (parts.length < 3) return null;
+  const timestamp = Number.parseInt(parts[2], 10);
+  if (!Number.isFinite(timestamp)) return null;
+  return timestamp * 1000;
+}
+
+function pickAttrForBlackbox(attrs, base, suffix) {
+  if (!attrs || typeof attrs !== 'object') return null;
+  return attrs[`${base}_${suffix}`] || attrs[base] || null;
+}
+
+function buildTouchLabelForBlackbox(attrs, suffix) {
+  const source = pickAttrForBlackbox(attrs, 'utm_source', suffix);
+  const medium = pickAttrForBlackbox(attrs, 'utm_medium', suffix);
+  const campaign = pickAttrForBlackbox(attrs, 'utm_campaign', suffix);
+  const referrer = pickAttrForBlackbox(attrs, 'referrer', suffix);
+  const landing = pickAttrForBlackbox(attrs, 'landing_page', suffix);
+
+  const parts = [];
+  if (source) parts.push(source);
+  if (medium) parts.push(medium);
+  if (campaign) parts.push(campaign);
+  if (parts.length) return parts.join(' / ');
+  if (referrer) return referrer;
+  if (landing) return landing;
+  return 'Direct / Unknown';
+}
+
+function getMetaIdStatusForBlackbox(attrs) {
+  const fbp = attrs.fbp || null;
+  const fbc = attrs.fbc || attrs.fbc_last || attrs.fbc_first || null;
+  const fbclid = attrs.fbclid || attrs.fbclid_last || attrs.fbclid_first || null;
+
+  return {
+    fbp,
+    fbc,
+    fbclid,
+    hasMetaIds: Boolean(fbp || fbc || fbclid)
+  };
+}
+
+function buildOrderReasonForBlackbox({ attrs, orderDate, metaForDate, metaForDateCountry, hasCountryBreakdown }) {
+  const consentStatus = parseConsentStatusForBlackbox(attrs.consent);
+  const metaIds = getMetaIdStatusForBlackbox(attrs);
+  const fbcTimestamp = parseFbcTimestampForBlackbox(metaIds.fbc);
+  const orderTime = parseSqliteDateTimeToMs(orderDate) || null;
+  const daysSinceClick = fbcTimestamp && orderTime ? (orderTime - fbcTimestamp) / (1000 * 60 * 60 * 24) : null;
+
+  if (consentStatus === 'denied') {
+    return { code: 'consent_denied', reason: 'Tracking consent was declined at checkout.', priority: 1 };
+  }
+  if (!metaIds.hasMetaIds) {
+    return { code: 'missing_meta_ids', reason: 'No Meta identifiers were captured on the order.', priority: 2 };
+  }
+  if (Number.isFinite(daysSinceClick) && daysSinceClick > 7) {
+    return { code: 'window_expired', reason: 'Click timestamp falls outside the typical attribution window.', priority: 3 };
+  }
+  if (!metaForDate) {
+    return { code: 'meta_zero', reason: 'Meta reported zero conversions for this day.', priority: 4 };
+  }
+  if (hasCountryBreakdown && !metaForDateCountry && metaForDate) {
+    return { code: 'meta_zero_country', reason: 'Meta reported zero conversions for this country on that day.', priority: 5 };
+  }
+  return { code: 'unknown', reason: 'Not enough attribution data to explain this miss.', priority: 6 };
+}
+
+function buildAttributionTruthForBlackbox(store, range, graceCutoffMs) {
+  const db = getDb();
+  const orderSource = resolveAttributionOrderSourceForBlackbox(db, store);
+  const orderTable = orderSource.table;
+  const orderWhere = buildOrderWhereClauseForBlackbox(orderTable);
+
+  const hasCountryRows = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?
+      AND country IS NOT NULL AND country != '' AND country != 'ALL'
+  `).get(store, range.startDate, range.endDate)?.count > 0;
+
+  const metaByDate = buildMetaDailyTotalsForBlackbox(db, { store, start: range.startDate, end: range.endDate });
+  const metaByDateCountry = hasCountryRows
+    ? buildMetaDailyByCountryForBlackbox(db, { store, start: range.startDate, end: range.endDate })
+    : new Map();
+
+  const orderRows = db.prepare(`
+    SELECT
+      order_id,
+      date,
+      order_created_at,
+      country,
+      country_code,
+      city,
+      state,
+      order_total,
+      currency,
+      customer_email,
+      attribution_json
+    FROM ${orderTable}
+    WHERE store = ?
+      AND date BETWEEN ? AND ?
+      ${orderWhere}
+    ORDER BY COALESCE(order_created_at, date) DESC
+  `).all(store, range.startDate, range.endDate);
+
+  const eligibleOrderRows = orderRows.filter((order) => {
+    const orderTs = parseSqliteDateTimeToMs(order.order_created_at || order.date);
+    return Number.isFinite(orderTs) && orderTs <= graceCutoffMs;
+  });
+
+  const bucketGaps = new Map();
+  const eligibleCounts = new Map();
+  eligibleOrderRows.forEach((order) => {
+    const countryCode = safeString(order.country_code, 16) || 'UN';
+    const bucketKey = hasCountryRows ? `${order.date}|${countryCode}` : order.date;
+    eligibleCounts.set(bucketKey, (eligibleCounts.get(bucketKey) || 0) + 1);
+  });
+
+  eligibleCounts.forEach((eligibleCount, bucketKey) => {
+    const metaCount = hasCountryRows
+      ? (metaByDateCountry.get(bucketKey) || 0)
+      : (metaByDate.get(bucketKey) || 0);
+    bucketGaps.set(bucketKey, Math.max(0, eligibleCount - metaCount));
+  });
+
+  const bucketOrders = new Map();
+  eligibleOrderRows.forEach((order) => {
+    const countryCode = safeString(order.country_code, 16) || 'UN';
+    const bucketKey = hasCountryRows ? `${order.date}|${countryCode}` : order.date;
+    const gapForBucket = bucketGaps.get(bucketKey) || 0;
+    if (!gapForBucket) return;
+
+    const attrs = parseAttributionForBlackbox(order.attribution_json);
+    const metaIds = getMetaIdStatusForBlackbox(attrs);
+    const metaForDate = metaByDate.get(order.date) || 0;
+    const metaForDateCountry = hasCountryRows ? (metaByDateCountry.get(`${order.date}|${countryCode}`) || 0) : 0;
+    const reason = buildOrderReasonForBlackbox({
+      attrs,
+      orderDate: order.order_created_at || order.date,
+      metaForDate,
+      metaForDateCountry,
+      hasCountryBreakdown: hasCountryRows
+    });
+
+    const entry = {
+      order_id: safeString(order.order_id, 120),
+      date: order.date || null,
+      order_created_at: order.order_created_at || order.date || null,
+      country: order.country || null,
+      country_code: countryCode,
+      city: order.city || null,
+      state: order.state || null,
+      order_total: order.order_total || 0,
+      currency: order.currency || null,
+      customer_email: order.customer_email || null,
+      order_has_fbc: Boolean(metaIds.fbc || metaIds.fbclid),
+      order_has_fbp: Boolean(metaIds.fbp),
+      order_has_click_id: Boolean(metaIds.fbclid),
+      order_has_meta_ids: Boolean(metaIds.hasMetaIds),
+      order_consent_status: parseConsentStatusForBlackbox(attrs.consent),
+      order_first_touch: buildTouchLabelForBlackbox(attrs, 'first'),
+      order_last_touch: buildTouchLabelForBlackbox(attrs, 'last'),
+      order_reason_code: reason.code,
+      order_reason: reason.reason,
+      order_priority: reason.priority
+    };
+
+    const list = bucketOrders.get(bucketKey) || [];
+    list.push(entry);
+    bucketOrders.set(bucketKey, list);
+  });
+
+  const unattributedOrders = [];
+  bucketOrders.forEach((orders, bucketKey) => {
+    const gap = bucketGaps.get(bucketKey) || 0;
+    if (!gap) return;
+    const sorted = [...orders].sort((a, b) => {
+      if (a.order_priority !== b.order_priority) return a.order_priority - b.order_priority;
+      const dateCompare = String(b.order_created_at || b.date).localeCompare(String(a.order_created_at || a.date));
+      if (dateCompare !== 0) return dateCompare;
+      return String(a.order_id).localeCompare(String(b.order_id));
+    });
+    unattributedOrders.push(...sorted.slice(0, gap));
+  });
+
+  unattributedOrders.sort((a, b) => parseSqliteDateTimeToMs(b.order_created_at || b.date) - parseSqliteDateTimeToMs(a.order_created_at || a.date));
+
+  const eligibleOrders = eligibleOrderRows.length;
+  const unresolvedCount = unattributedOrders.length;
+  const attributedCount = Math.max(0, eligibleOrders - unresolvedCount);
+
+  return {
+    eligible_orders: eligibleOrders,
+    attributed_purchase_count: attributedCount,
+    unresolved_count: unresolvedCount,
+    coverage_rate: coverageRateFromCountsForBlackbox(attributedCount, eligibleOrders),
+    unattributed_orders: unattributedOrders
+  };
+}
+
+function buildMisattributedPathBreakdown(rows) {
+  const total = Array.isArray(rows) ? rows.length : 0;
+  if (!total) return [];
+
+  const grouped = new Map();
+  rows.forEach((row) => {
+    const button = safeString(row.resolved_checkout_button || row.checkout_button, DUPLICATE_BUTTON_MAX_LENGTH) || 'unknown';
+    const source = safeString(row.resolved_checkout_source || row.checkout_source, DUPLICATE_BUTTON_MAX_LENGTH) || 'unknown';
+    const key = `${button}||${source}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        checkout_button: button,
+        checkout_source: source,
+        count: 0,
+        dropped_after_checkout_count: 0,
+        dropped_at_checkout_count: 0,
+        weak_or_missing_context_count: 0
+      });
+    }
+    const bucket = grouped.get(key);
+    bucket.count += 1;
+    if (row.diagnosis === 'dropped_after_checkout') bucket.dropped_after_checkout_count += 1;
+    else if (row.diagnosis === 'dropped_at_checkout') bucket.dropped_at_checkout_count += 1;
+    else bucket.weak_or_missing_context_count += 1;
+  });
+
+  return [...grouped.values()]
+    .map((row) => ({
+      ...row,
+      share: safeDivideForBlackbox(row.count, total) || 0
+    }))
+    .sort((a, b) => b.count - a.count || a.checkout_button.localeCompare(b.checkout_button))
+    .slice(0, TOP_DUPLICATE_BUTTON_LIMIT);
 }
 
 function buildMisattributedPurchaseDiagnostics(store, range, options = {}) {
@@ -851,24 +1199,7 @@ function buildMisattributedPurchaseDiagnostics(store, range, options = {}) {
   const lookbackHours = clampInt(options.approxLookbackHours, DEFAULT_APPROX_LOOKBACK_HOURS, 1, MAX_APPROX_LOOKBACK_HOURS);
   const upstreamWindowMs = DEFAULT_ATTRIBUTION_UPSTREAM_WINDOW_HOURS * 60 * 60 * 1000;
   const graceCutoffMs = Date.now() - (graceHours * 60 * 60 * 1000);
-
-  const orderRows = db.prepare(`
-    SELECT
-      order_id,
-      date,
-      order_created_at,
-      country_code,
-      city,
-      state,
-      order_total,
-      currency,
-      customer_email
-    FROM shopify_orders
-    WHERE store = ?
-      AND date BETWEEN ? AND ?
-      AND COALESCE(is_excluded, 0) = 0
-    ORDER BY COALESCE(order_created_at, date) DESC
-  `).all(store, range.startDate, range.endDate);
+  const orderTruth = buildAttributionTruthForBlackbox(store, range, graceCutoffMs);
 
   const purchaseRows = db.prepare(`
     SELECT
@@ -904,7 +1235,7 @@ function buildMisattributedPurchaseDiagnostics(store, range, options = {}) {
     ORDER BY event_ts DESC, id DESC
   `).all(store, range.startDate, range.endDate).map(mapRowForApi);
 
-  const beginRows = attachResolvedCheckoutContext(db.prepare(`
+  const checkoutContextRows = attachResolvedCheckoutContext(db.prepare(`
     SELECT
       id,
       event_name,
@@ -933,7 +1264,7 @@ function buildMisattributedPurchaseDiagnostics(store, range, options = {}) {
     FROM blackbox_events
     WHERE store = ?
       AND date(event_ts) BETWEEN ? AND ?
-      AND event_name = 'begin_checkout'
+      AND event_name IN ('begin_checkout', 'checkout_signal', 'checkout_cta_clicked', 'checkout_contact_info_submitted', 'checkout_shipping_info_submitted', 'payment_info_submitted')
     ORDER BY event_ts DESC, id DESC
   `).all(store, range.startDate, range.endDate));
 
@@ -980,44 +1311,33 @@ function buildMisattributedPurchaseDiagnostics(store, range, options = {}) {
   }
 
   const rows = [];
-  let eligibleOrders = 0;
-  let attributedPurchases = 0;
-  let unresolvedCount = 0;
   let droppedAfterCheckoutCount = 0;
   let droppedAtCheckoutCount = 0;
   let weakUpstreamCount = 0;
   let noCheckoutContextCount = 0;
 
-  for (const order of orderRows) {
-    const orderTs = parseSqliteDateTimeToMs(order.order_created_at || order.date);
-    if (!Number.isFinite(orderTs) || orderTs > graceCutoffMs) continue;
-
+  for (const order of orderTruth.unattributed_orders) {
     const orderId = safeString(order.order_id, 120);
     if (!orderId) continue;
-    eligibleOrders += 1;
 
     const purchaseEvents = purchasesByOrder.get(orderId) || [];
     const bestPurchase = pickBestPurchaseEvent(purchaseEvents);
-    if (!bestPurchase) continue;
-
-    const purchaseScore = attributionScore(bestPurchase.attribution_status);
-    if (purchaseScore >= 2) {
-      attributedPurchases += 1;
-      continue;
-    }
-
-    unresolvedCount += 1;
-
-    const relatedCheckout = findBestRelatedPreviousEvent(bestPurchase, beginRows, lookbackHours * 60 * 60 * 1000);
+    const approxCheckout = findApproxLastActivityForOrder(order, checkoutContextRows, lookbackHours);
+    const relatedCheckout = bestPurchase
+      ? findBestRelatedPreviousEvent(bestPurchase, checkoutContextRows, lookbackHours * 60 * 60 * 1000)
+      : approxCheckout;
     const relatedAtc = relatedCheckout
       ? findBestRelatedPreviousEvent(relatedCheckout, addToCartRows, upstreamWindowMs)
-      : null;
+      : (approxCheckout ? findBestRelatedPreviousEvent(approxCheckout, addToCartRows, upstreamWindowMs) : null);
 
+    const purchaseScore = bestPurchase ? attributionScore(bestPurchase.attribution_status) : 0;
     const checkoutScore = relatedCheckout ? attributionScore(relatedCheckout.attribution_status) : -1;
     const upstreamScore = relatedAtc ? attributionScore(relatedAtc.attribution_status) : -1;
 
     let diagnosis = 'no_checkout_context';
-    if (relatedCheckout) {
+    if (!relatedCheckout && relatedAtc) {
+      diagnosis = 'weak_upstream';
+    } else if (relatedCheckout) {
       if (checkoutScore > purchaseScore) diagnosis = 'dropped_after_checkout';
       else if (upstreamScore > checkoutScore) diagnosis = 'dropped_at_checkout';
       else diagnosis = 'weak_upstream';
@@ -1028,34 +1348,38 @@ function buildMisattributedPurchaseDiagnostics(store, range, options = {}) {
     else if (diagnosis === 'weak_upstream') weakUpstreamCount += 1;
     else noCheckoutContextCount += 1;
 
+    const missingContextCopies = purchaseEvents.filter((event) => {
+      const noPage = !safeString(event.page_path, 600) && !safeString(event.page_url, 1200);
+      const noContext = !Boolean(event.has_event_source_url || event.has_landing_context);
+      const noPath = !safeString(event.checkout_button, 160) && !safeString(event.checkout_source, 160);
+      return noPage && noContext && noPath;
+    }).length;
+
     rows.push({
-      order_id: orderId,
-      order_created_at: order.order_created_at || order.date || null,
-      order_total: order.order_total || 0,
-      currency: order.currency || null,
-      customer_email: order.customer_email || null,
-      country_code: order.country_code || bestPurchase.country_code || null,
-      city: order.city || null,
-      state: order.state || null,
-      purchase_event_id: bestPurchase.event_id || null,
-      purchase_event_ts: bestPurchase.event_ts || null,
-      purchase_source: bestPurchase.source || null,
-      purchase_channel: bestPurchase.channel || null,
-      purchase_attribution_status: bestPurchase.attribution_status,
-      purchase_signal_count: bestPurchase.attribution_id_signal_count || 0,
-      purchase_has_fbc: Boolean(bestPurchase.has_fbc || bestPurchase.has_fbclid),
-      purchase_has_fbp: Boolean(bestPurchase.has_fbp),
-      purchase_has_click_id: Boolean(bestPurchase.has_click_id),
-      purchase_has_event_source_url: Boolean(bestPurchase.has_event_source_url),
-      purchase_has_landing_context: Boolean(bestPurchase.has_landing_context),
-      purchase_page_path: bestPurchase.page_path || null,
-      purchase_page_url: bestPurchase.page_url || null,
-      purchase_event_source_url: bestPurchase.event_source_url_resolved || bestPurchase.event_source_url || null,
+      ...order,
+      purchase_event_id: bestPurchase?.event_id || null,
+      purchase_event_ts: bestPurchase?.event_ts || null,
+      purchase_source: bestPurchase?.source || null,
+      purchase_channel: bestPurchase?.channel || null,
+      purchase_attribution_status: bestPurchase?.attribution_status || 'missing',
+      purchase_signal_count: bestPurchase?.attribution_id_signal_count || 0,
+      purchase_has_fbc: Boolean(bestPurchase?.has_fbc || bestPurchase?.has_fbclid),
+      purchase_has_fbp: Boolean(bestPurchase?.has_fbp),
+      purchase_has_click_id: Boolean(bestPurchase?.has_click_id),
+      purchase_has_event_source_url: Boolean(bestPurchase?.has_event_source_url),
+      purchase_has_landing_context: Boolean(bestPurchase?.has_landing_context),
+      purchase_page_path: bestPurchase?.page_path || null,
+      purchase_page_url: bestPurchase?.page_url || null,
+      purchase_event_source_url: bestPurchase?.event_source_url_resolved || bestPurchase?.event_source_url || null,
       purchase_identity: identityKeyFromEvent(bestPurchase) || null,
+      purchase_duplicate_copy_count: Math.max(0, purchaseEvents.length - 1),
+      purchase_contextless_copy_count: missingContextCopies,
       checkout_event_name: relatedCheckout?.event_name || null,
       checkout_event_ts: relatedCheckout?.event_ts || null,
       checkout_button: relatedCheckout?.resolved_checkout_button || relatedCheckout?.checkout_button || null,
       checkout_source: relatedCheckout?.resolved_checkout_source || relatedCheckout?.checkout_source || null,
+      resolved_checkout_button: relatedCheckout?.resolved_checkout_button || relatedCheckout?.checkout_button || null,
+      resolved_checkout_source: relatedCheckout?.resolved_checkout_source || relatedCheckout?.checkout_source || null,
       checkout_attribution_status: relatedCheckout?.attribution_status || 'none',
       checkout_signal_count: relatedCheckout?.attribution_id_signal_count || 0,
       checkout_has_fbc: Boolean(relatedCheckout?.has_fbc || relatedCheckout?.has_fbclid),
@@ -1079,17 +1403,19 @@ function buildMisattributedPurchaseDiagnostics(store, range, options = {}) {
     });
   }
 
-  rows.sort((a, b) => parseSqliteDateTimeToMs(b.order_created_at) - parseSqliteDateTimeToMs(a.order_created_at));
+  rows.sort((a, b) => parseSqliteDateTimeToMs(b.order_created_at || b.date) - parseSqliteDateTimeToMs(a.order_created_at || a.date));
 
   return {
     grace_hours: graceHours,
-    eligible_orders: eligibleOrders,
-    attributed_purchase_count: attributedPurchases,
-    unresolved_count: rows.length,
+    eligible_orders: orderTruth.eligible_orders,
+    attributed_purchase_count: orderTruth.attributed_purchase_count,
+    unresolved_count: orderTruth.unresolved_count,
+    coverage_rate: orderTruth.coverage_rate,
     dropped_after_checkout_count: droppedAfterCheckoutCount,
     dropped_at_checkout_count: droppedAtCheckoutCount,
     weak_upstream_count: weakUpstreamCount,
     no_checkout_context_count: noCheckoutContextCount,
+    path_breakdown: buildMisattributedPathBreakdown(rows),
     rows: rows.slice(0, maxItems)
   };
 }
