@@ -19,6 +19,7 @@ const DEFAULT_ATTRIBUTION_GRACE_HOURS = 2;
 const MAX_ATTRIBUTION_GRACE_HOURS = 24;
 const DEFAULT_ATTRIBUTION_UPSTREAM_WINDOW_HOURS = 6;
 const DEFAULT_ATTRIBUTION_RECOVERY_WINDOW_HOURS = 12;
+const DEFAULT_BUTTON_CONTEXT_WINDOW_HOURS = 12;
 const DEFAULT_APPROX_LOOKBACK_HOURS = 6;
 const MAX_APPROX_LOOKBACK_HOURS = 24;
 const MAX_RAW_JSON_CHARS = 20000;
@@ -877,6 +878,109 @@ function findBestRelatedLaterEvent(baseEvent, candidates, windowMs) {
   }
 
   return best;
+}
+
+function buildCheckoutContextLookupKeys(row) {
+  const keys = new Set();
+  const pagePath = safeString(row?.page_path, 300);
+
+  const addKeys = (prefix, rawValue, maxLength = 200) => {
+    const value = safeString(rawValue, maxLength);
+    if (!value) return;
+    keys.add(`${prefix}:${value}`);
+    if (pagePath) keys.add(`${prefix}:${value}|page:${pagePath}`);
+  };
+
+  addKeys('checkout', row?.checkout_token, 160);
+  addKeys('cart', row?.cart_token, 160);
+  addKeys('event', row?.event_id, 160);
+
+  const identity = identityKeyFromEvent(row);
+  if (identity) {
+    keys.add(`identity:${identity}`);
+    if (pagePath) keys.add(`identity:${identity}|page:${pagePath}`);
+  }
+
+  return [...keys];
+}
+
+function resolveBestIndexedCheckoutContext(baseEvent, candidateIndex, windowMs) {
+  if (!baseEvent || !(candidateIndex instanceof Map) || !candidateIndex.size) return null;
+
+  const baseTs = eventTimeMs(baseEvent);
+  if (!Number.isFinite(baseTs)) return null;
+
+  let best = null;
+  let bestScore = -1;
+  let bestTs = -1;
+
+  const seenIds = new Set();
+  for (const key of buildCheckoutContextLookupKeys(baseEvent)) {
+    const candidate = candidateIndex.get(key);
+    if (!candidate || seenIds.has(candidate.id)) continue;
+    seenIds.add(candidate.id);
+
+    const candidateTs = eventTimeMs(candidate);
+    if (!Number.isFinite(candidateTs) || candidateTs > baseTs || candidateTs < (baseTs - windowMs)) continue;
+
+    const score = relationStrength(baseEvent, candidate);
+    if (score > bestScore || (score === bestScore && candidateTs > bestTs)) {
+      best = candidate;
+      bestScore = score;
+      bestTs = candidateTs;
+    }
+  }
+
+  return best;
+}
+
+function attachResolvedCheckoutContext(rows, windowMs = DEFAULT_BUTTON_CONTEXT_WINDOW_HOURS * 60 * 60 * 1000) {
+  if (!Array.isArray(rows) || !rows.length) return [];
+
+  const normalizedRows = rows.map((row) => mapRowForApi(row));
+  const ascending = [...normalizedRows].sort((a, b) => {
+    const aTs = eventTimeMs(a);
+    const bTs = eventTimeMs(b);
+    return aTs - bTs;
+  });
+  const resolvedById = new Map();
+  const candidateIndex = new Map();
+
+  for (const row of ascending) {
+    let resolvedButton = row.checkout_button || null;
+    let resolvedSource = row.checkout_source || null;
+    let resolvedFrom = 'self';
+    let resolvedEventName = row.event_name || null;
+    let resolvedEventTs = row.event_ts || null;
+
+    if (!resolvedButton && !resolvedSource) {
+      const candidate = resolveBestIndexedCheckoutContext(row, candidateIndex, windowMs);
+      if (candidate) {
+        resolvedButton = candidate.checkout_button || null;
+        resolvedSource = candidate.checkout_source || null;
+        resolvedFrom = 'related_previous';
+        resolvedEventName = candidate.event_name || null;
+        resolvedEventTs = candidate.event_ts || null;
+      }
+    }
+
+    resolvedById.set(row.id, {
+      ...row,
+      resolved_checkout_button: resolvedButton,
+      resolved_checkout_source: resolvedSource,
+      resolved_checkout_context_from: resolvedFrom,
+      resolved_checkout_context_event_name: resolvedEventName,
+      resolved_checkout_context_event_ts: resolvedEventTs
+    });
+
+    if (row.checkout_button || row.checkout_source) {
+      for (const key of buildCheckoutContextLookupKeys(row)) {
+        candidateIndex.set(key, row);
+      }
+    }
+  }
+
+  return normalizedRows.map((row) => resolvedById.get(row.id) || row);
 }
 
 function buildMisattributedCheckoutDiagnostics(events, options = {}) {
@@ -1925,7 +2029,9 @@ export function listBlackboxEvents(store, filters = {}) {
     ORDER BY event_ts DESC, id DESC
     LIMIT ?
     OFFSET ?
-  `).all(...params, limit, offset).map(mapRowForApi);
+  `).all(...params, limit, offset);
+
+  const resolvedRows = attachResolvedCheckoutContext(rows);
 
   const eventNames = db.prepare(`
     SELECT event_name, COUNT(*) AS count
@@ -1955,7 +2061,7 @@ export function listBlackboxEvents(store, filters = {}) {
     total: Number(totalRow?.total || 0),
     limit,
     offset,
-    rows,
+    rows: resolvedRows,
     options: {
       eventNames,
       sources
