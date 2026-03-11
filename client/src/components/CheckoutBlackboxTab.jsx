@@ -67,18 +67,20 @@ function attributionBadgeClass(status) {
 
 function transitionBadgeClass(status) {
   switch (status) {
+    case 'dropped_after_checkout': return 'bg-rose-100 text-rose-700';
     case 'dropped_at_checkout': return 'bg-rose-100 text-rose-700';
     case 'weak_upstream': return 'bg-amber-100 text-amber-800';
-    case 'no_upstream_signal': return 'bg-sky-100 text-sky-700';
+    case 'no_checkout_context': return 'bg-sky-100 text-sky-700';
     default: return 'bg-gray-100 text-gray-700';
   }
 }
 
 function transitionLabel(status) {
   switch (status) {
+    case 'dropped_after_checkout': return 'Dropped after checkout';
     case 'dropped_at_checkout': return 'Dropped at checkout';
     case 'weak_upstream': return 'Weak upstream';
-    case 'no_upstream_signal': return 'No upstream signal';
+    case 'no_checkout_context': return 'No checkout context';
     default: return status || '—';
   }
 }
@@ -156,21 +158,22 @@ function DuplicatePathsTable({ rows }) {
   );
 }
 
-function MisattributedCheckoutsTable({ rows }) {
+function MisattributedPurchasesTable({ rows }) {
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-      <h3 className="text-lg font-semibold text-gray-900">Unresolved Misattributed Checkouts</h3>
+      <h3 className="text-lg font-semibold text-gray-900">Unresolved Misattributed Purchases</h3>
       <p className="mt-1 text-xs text-gray-500">
-        Only checkouts older than {ATTRIBUTION_GRACE_HOURS} hours are shown. Primary status is based on attribution IDs surviving (<code>fbc/fbclid</code> or <code>fbp</code>). Page context stays visible as supporting evidence.
+        Only orders older than {ATTRIBUTION_GRACE_HOURS} hours are shown. Purchase attribution is primary. Checkout and upstream rows are shown only to explain where attribution weakened.
       </p>
       <div className="mt-3 max-h-[36rem] overflow-auto">
         <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
-              <th className="py-2 pr-3">Checkout Time</th>
-              <th className="py-2 pr-3">Identity</th>
+              <th className="py-2 pr-3">Order</th>
+              <th className="py-2 pr-3">Purchase</th>
               <th className="py-2 pr-3">Checkout Path</th>
-              <th className="py-2 pr-3">Checkout IDs</th>
+              <th className="py-2 pr-3">Purchase IDs</th>
+              <th className="py-2 pr-3">Checkout Snapshot</th>
               <th className="py-2 pr-3">Upstream Snapshot</th>
               <th className="py-2 pr-3">Diagnosis</th>
               <th className="py-2">Page</th>
@@ -178,37 +181,54 @@ function MisattributedCheckoutsTable({ rows }) {
           </thead>
           <tbody>
             {rows.length ? rows.map((row) => (
-              <tr key={row.id} className="border-b border-gray-100 align-top">
+              <tr key={row.order_id} className="border-b border-gray-100 align-top">
                 <td className="py-2 pr-3 text-xs text-gray-700">
-                  <div>{formatTimestamp(row.event_ts)}</div>
-                  <div className="text-gray-500">{row.country_code || '—'} {row.region_code ? `• ${row.region_code}` : ''}</div>
+                  <div className="font-mono">{row.order_id || '—'}</div>
+                  <div>{formatTimestamp(row.order_created_at)}</div>
+                  <div className="text-gray-500">
+                    {(row.currency || '—')} {row.order_total ?? '—'}
+                  </div>
+                  <div className="text-gray-500">{row.country_code || '—'} {row.state ? `• ${row.state}` : ''}</div>
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
-                  <div className="font-mono">{formatIdentity(row)}</div>
-                  <div className="text-gray-500">{row.source || '—'}</div>
+                  <div>{formatTimestamp(row.purchase_event_ts)}</div>
+                  <div className="text-gray-500">{row.purchase_source || '—'} {row.purchase_channel ? `• ${row.purchase_channel}` : ''}</div>
+                  <div className="mt-1 font-mono">{row.purchase_identity || '—'}</div>
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
-                  <div>{row.resolved_checkout_button || row.checkout_button || '—'}</div>
-                  <div className="text-gray-500">{row.resolved_checkout_source || row.checkout_source || '—'}</div>
-                  {row.resolved_checkout_context_from === 'related_previous' ? (
-                    <div className="mt-1 text-[11px] text-gray-400">
-                      from {row.resolved_checkout_context_event_name || 'earlier event'}
-                    </div>
-                  ) : null}
+                  <div>{row.checkout_button || '—'}</div>
+                  <div className="text-gray-500">{row.checkout_source || '—'}</div>
+                  <div className="mt-1 text-[11px] text-gray-400">{formatTimestamp(row.checkout_event_ts)}</div>
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
                   <div>
-                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${attributionBadgeClass(row.attribution_status)}`}>
-                      {row.attribution_status}
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${attributionBadgeClass(row.purchase_attribution_status)}`}>
+                      {row.purchase_attribution_status}
                     </span>
                   </div>
                   <div className="mt-1 flex flex-wrap gap-1">
-                    <SignalPill label="fbc" value={row.has_fbc || row.has_fbclid} />
-                    <SignalPill label="fbp" value={row.has_fbp} />
-                    <SignalPill label="ctx" value={row.has_event_source_url || row.has_landing_context} />
+                    <SignalPill label="fbc" value={row.purchase_has_fbc || row.purchase_has_click_id} />
+                    <SignalPill label="fbp" value={row.purchase_has_fbp} />
+                    <SignalPill label="ctx" value={row.purchase_has_event_source_url || row.purchase_has_landing_context} />
                   </div>
                   <div className="mt-1 text-[11px] text-gray-500">
-                    ID signals: {row.attribution_id_signal_count || 0}/2
+                    ID signals: {row.purchase_signal_count || 0}/2
+                  </div>
+                </td>
+                <td className="py-2 pr-3 text-xs text-gray-700">
+                  <div>
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${attributionBadgeClass(row.checkout_attribution_status)}`}>
+                      {row.checkout_attribution_status}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-gray-500">{formatTimestamp(row.checkout_event_ts)}</div>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    <SignalPill label="fbc" value={row.checkout_has_fbc || row.checkout_has_click_id} />
+                    <SignalPill label="fbp" value={row.checkout_has_fbp} />
+                    <SignalPill label="ctx" value={row.checkout_has_event_source_url || row.checkout_has_landing_context} />
+                  </div>
+                  <div className="mt-1 text-[11px] text-gray-500">
+                    Source event: {row.checkout_event_name || '—'}
                   </div>
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
@@ -229,24 +249,24 @@ function MisattributedCheckoutsTable({ rows }) {
                 </td>
                 <td className="py-2 pr-3 text-xs text-gray-700">
                   <div>
-                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${transitionBadgeClass(row.attribution_transition)}`}>
-                      {transitionLabel(row.attribution_transition)}
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${transitionBadgeClass(row.diagnosis)}`}>
+                      {transitionLabel(row.diagnosis)}
                     </span>
                   </div>
                   <div className="mt-1 text-gray-500">
-                    {row.attribution_id_signal_count || 0}/2 ID signals at checkout
+                    Purchase IDs: {row.purchase_signal_count || 0}/2
                   </div>
                 </td>
                 <td className="py-2 text-xs text-gray-700">
-                  <div>{row.page_path || '—'}</div>
-                  <div className="max-w-sm truncate text-gray-500" title={row.event_source_url_resolved || row.page_url || ''}>
-                    {row.event_source_url_resolved || row.page_url || '—'}
+                  <div>{row.purchase_page_path || row.checkout_page_path || row.upstream_page_path || '—'}</div>
+                  <div className="max-w-sm truncate text-gray-500" title={row.purchase_event_source_url || row.purchase_page_url || row.checkout_page_url || ''}>
+                    {row.purchase_event_source_url || row.purchase_page_url || row.checkout_page_url || '—'}
                   </div>
                 </td>
               </tr>
             )) : (
               <tr>
-                <td className="py-3 text-sm text-gray-500" colSpan={7}>No unresolved misattributed checkouts in this range.</td>
+                <td className="py-3 text-sm text-gray-500" colSpan={8}>No unresolved misattributed purchases in this range.</td>
               </tr>
             )}
           </tbody>
@@ -431,7 +451,7 @@ export default function CheckoutBlackboxTab({ store }) {
           <div>
             <h2 className="text-2xl font-semibold text-gray-900">Misattributed Checkout Monitor</h2>
             <p className="mt-1 text-sm text-gray-600">
-              Clean operator view for linked checkouts that stayed weak after a grace window: did attribution IDs survive, did they drop at checkout, and which button path triggered them.
+              Purchase-first operator view: only orders older than the grace window with weak purchase attribution are surfaced. Checkout rows are used only to explain where attribution weakened and which path triggered it.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -541,34 +561,34 @@ export default function CheckoutBlackboxTab({ store }) {
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <StatCard
-          label="Begin Checkout"
-          value={formatNumber(summary.begin_checkout_events)}
-          hint={`With attribution IDs: ${formatPercent(summary.begin_checkout_events ? (summary.begin_checkout_attributed / summary.begin_checkout_events) : 0)}`}
+          label="Eligible Orders"
+          value={formatNumber(summary.eligible_orders_older_than_grace)}
+          hint={`Attributed purchases: ${formatNumber(summary.attributed_purchases_older_than_grace)}`}
         />
         <StatCard
           label="Unresolved Misattributed"
-          value={formatNumber(summary.unresolved_misattributed_checkouts)}
+          value={formatNumber(summary.unresolved_misattributed_purchases)}
           hint={`Older than ${ATTRIBUTION_GRACE_HOURS}h`}
         />
         <StatCard
-          label="Dropped at Checkout"
+          label="Dropped After Checkout"
+          value={formatNumber(summary.dropped_after_checkout_count)}
+          hint="Checkout looked better than purchase"
+        />
+        <StatCard
+          label="Dropped At Checkout"
           value={formatNumber(summary.dropped_at_checkout_count)}
           hint="Upstream looked better than checkout"
         />
         <StatCard
-          label="Weak Upstream"
-          value={formatNumber(summary.weak_upstream_count)}
-          hint="Already weak before checkout"
-        />
-        <StatCard
-          label="Recovered Later"
-          value={formatNumber(summary.recovered_late_checkouts)}
-          hint="Auto-cleared from unresolved list"
+          label="Weak / No Checkout Context"
+          value={formatNumber((summary.weak_upstream_count || 0) + (summary.no_upstream_signal_count || 0))}
+          hint="Already weak or no linked checkout"
         />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[1.7fr_1fr]">
-        <MisattributedCheckoutsTable rows={unresolvedRows} />
+        <MisattributedPurchasesTable rows={unresolvedRows} />
         <DuplicatePathsTable rows={duplicates.top_buttons || []} />
       </div>
 

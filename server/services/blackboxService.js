@@ -797,6 +797,303 @@ function attributionScore(status) {
   }
 }
 
+function purchaseEventPriority(event) {
+  const sourceClass = classifyPurchaseSource(event);
+  switch (sourceClass) {
+    case 'pixel':
+      return 3;
+    case 'gtm':
+      return 2;
+    case 'webhook':
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function pickBestPurchaseEvent(events) {
+  if (!Array.isArray(events) || !events.length) return null;
+
+  let best = null;
+  let bestScore = -1;
+  let bestPriority = -1;
+  let bestTs = -1;
+
+  for (const event of events) {
+    const score = attributionScore(event?.attribution_status);
+    const priority = purchaseEventPriority(event);
+    const ts = eventTimeMs(event);
+
+    if (
+      score > bestScore
+      || (score === bestScore && priority > bestPriority)
+      || (score === bestScore && priority === bestPriority && ts > bestTs)
+    ) {
+      best = event;
+      bestScore = score;
+      bestPriority = priority;
+      bestTs = ts;
+    }
+  }
+
+  return best;
+}
+
+function buildMisattributedPurchaseDiagnostics(store, range, options = {}) {
+  const db = getDb();
+  const graceHours = clampInt(
+    options.attributionGraceHours,
+    DEFAULT_ATTRIBUTION_GRACE_HOURS,
+    1,
+    MAX_ATTRIBUTION_GRACE_HOURS
+  );
+  const maxItems = clampInt(options.maxItems, DEFAULT_GHOST_SESSION_LIMIT, 1, MAX_GHOST_LIMIT);
+  const lookbackHours = clampInt(options.approxLookbackHours, DEFAULT_APPROX_LOOKBACK_HOURS, 1, MAX_APPROX_LOOKBACK_HOURS);
+  const upstreamWindowMs = DEFAULT_ATTRIBUTION_UPSTREAM_WINDOW_HOURS * 60 * 60 * 1000;
+  const graceCutoffMs = Date.now() - (graceHours * 60 * 60 * 1000);
+
+  const orderRows = db.prepare(`
+    SELECT
+      order_id,
+      date,
+      order_created_at,
+      country_code,
+      city,
+      state,
+      order_total,
+      currency,
+      customer_email
+    FROM shopify_orders
+    WHERE store = ?
+      AND date BETWEEN ? AND ?
+      AND COALESCE(is_excluded, 0) = 0
+    ORDER BY COALESCE(order_created_at, date) DESC
+  `).all(store, range.startDate, range.endDate);
+
+  const purchaseRows = db.prepare(`
+    SELECT
+      id,
+      event_name,
+      event_ts,
+      source,
+      channel,
+      session_id,
+      client_id,
+      event_id,
+      order_id,
+      cart_token,
+      checkout_token,
+      checkout_button,
+      checkout_source,
+      page_url,
+      page_path,
+      landing_page,
+      event_source_url,
+      utm_source,
+      utm_medium,
+      utm_campaign,
+      country_code,
+      region_code,
+      ip_hash,
+      user_agent,
+      payload_json
+    FROM blackbox_events
+    WHERE store = ?
+      AND date(event_ts) BETWEEN ? AND ?
+      AND event_name = 'purchase'
+    ORDER BY event_ts DESC, id DESC
+  `).all(store, range.startDate, range.endDate).map(mapRowForApi);
+
+  const beginRows = attachResolvedCheckoutContext(db.prepare(`
+    SELECT
+      id,
+      event_name,
+      event_ts,
+      source,
+      channel,
+      session_id,
+      client_id,
+      event_id,
+      order_id,
+      cart_token,
+      checkout_token,
+      checkout_button,
+      checkout_source,
+      page_url,
+      page_path,
+      landing_page,
+      event_source_url,
+      utm_source,
+      utm_medium,
+      utm_campaign,
+      country_code,
+      region_code,
+      ip_hash,
+      payload_json
+    FROM blackbox_events
+    WHERE store = ?
+      AND date(event_ts) BETWEEN ? AND ?
+      AND event_name = 'begin_checkout'
+    ORDER BY event_ts DESC, id DESC
+  `).all(store, range.startDate, range.endDate));
+
+  const addToCartRows = db.prepare(`
+    SELECT
+      id,
+      event_name,
+      event_ts,
+      source,
+      channel,
+      session_id,
+      client_id,
+      event_id,
+      order_id,
+      cart_token,
+      checkout_token,
+      checkout_button,
+      checkout_source,
+      page_url,
+      page_path,
+      landing_page,
+      event_source_url,
+      utm_source,
+      utm_medium,
+      utm_campaign,
+      country_code,
+      region_code,
+      ip_hash,
+      payload_json
+    FROM blackbox_events
+    WHERE store = ?
+      AND date(event_ts) BETWEEN ? AND ?
+      AND event_name = 'add_to_cart'
+    ORDER BY event_ts DESC, id DESC
+  `).all(store, range.startDate, range.endDate).map(mapRowForApi);
+
+  const purchasesByOrder = new Map();
+  for (const event of purchaseRows) {
+    const orderId = resolveOrderIdFromPurchaseEvent(event);
+    if (!orderId) continue;
+    const existing = purchasesByOrder.get(orderId) || [];
+    existing.push(event);
+    purchasesByOrder.set(orderId, existing);
+  }
+
+  const rows = [];
+  let eligibleOrders = 0;
+  let attributedPurchases = 0;
+  let unresolvedCount = 0;
+  let droppedAfterCheckoutCount = 0;
+  let droppedAtCheckoutCount = 0;
+  let weakUpstreamCount = 0;
+  let noCheckoutContextCount = 0;
+
+  for (const order of orderRows) {
+    const orderTs = parseSqliteDateTimeToMs(order.order_created_at || order.date);
+    if (!Number.isFinite(orderTs) || orderTs > graceCutoffMs) continue;
+
+    const orderId = safeString(order.order_id, 120);
+    if (!orderId) continue;
+    eligibleOrders += 1;
+
+    const purchaseEvents = purchasesByOrder.get(orderId) || [];
+    const bestPurchase = pickBestPurchaseEvent(purchaseEvents);
+    if (!bestPurchase) continue;
+
+    const purchaseScore = attributionScore(bestPurchase.attribution_status);
+    if (purchaseScore >= 2) {
+      attributedPurchases += 1;
+      continue;
+    }
+
+    unresolvedCount += 1;
+
+    const relatedCheckout = findBestRelatedPreviousEvent(bestPurchase, beginRows, lookbackHours * 60 * 60 * 1000);
+    const relatedAtc = relatedCheckout
+      ? findBestRelatedPreviousEvent(relatedCheckout, addToCartRows, upstreamWindowMs)
+      : null;
+
+    const checkoutScore = relatedCheckout ? attributionScore(relatedCheckout.attribution_status) : -1;
+    const upstreamScore = relatedAtc ? attributionScore(relatedAtc.attribution_status) : -1;
+
+    let diagnosis = 'no_checkout_context';
+    if (relatedCheckout) {
+      if (checkoutScore > purchaseScore) diagnosis = 'dropped_after_checkout';
+      else if (upstreamScore > checkoutScore) diagnosis = 'dropped_at_checkout';
+      else diagnosis = 'weak_upstream';
+    }
+
+    if (diagnosis === 'dropped_after_checkout') droppedAfterCheckoutCount += 1;
+    else if (diagnosis === 'dropped_at_checkout') droppedAtCheckoutCount += 1;
+    else if (diagnosis === 'weak_upstream') weakUpstreamCount += 1;
+    else noCheckoutContextCount += 1;
+
+    rows.push({
+      order_id: orderId,
+      order_created_at: order.order_created_at || order.date || null,
+      order_total: order.order_total || 0,
+      currency: order.currency || null,
+      customer_email: order.customer_email || null,
+      country_code: order.country_code || bestPurchase.country_code || null,
+      city: order.city || null,
+      state: order.state || null,
+      purchase_event_id: bestPurchase.event_id || null,
+      purchase_event_ts: bestPurchase.event_ts || null,
+      purchase_source: bestPurchase.source || null,
+      purchase_channel: bestPurchase.channel || null,
+      purchase_attribution_status: bestPurchase.attribution_status,
+      purchase_signal_count: bestPurchase.attribution_signal_count || 0,
+      purchase_has_fbc: Boolean(bestPurchase.has_fbc || bestPurchase.has_fbclid),
+      purchase_has_fbp: Boolean(bestPurchase.has_fbp),
+      purchase_has_click_id: Boolean(bestPurchase.has_click_id),
+      purchase_has_event_source_url: Boolean(bestPurchase.has_event_source_url),
+      purchase_has_landing_context: Boolean(bestPurchase.has_landing_context),
+      purchase_page_path: bestPurchase.page_path || null,
+      purchase_page_url: bestPurchase.page_url || null,
+      purchase_event_source_url: bestPurchase.event_source_url_resolved || bestPurchase.event_source_url || null,
+      purchase_identity: identityKeyFromEvent(bestPurchase) || null,
+      checkout_event_name: relatedCheckout?.event_name || null,
+      checkout_event_ts: relatedCheckout?.event_ts || null,
+      checkout_button: relatedCheckout?.resolved_checkout_button || relatedCheckout?.checkout_button || null,
+      checkout_source: relatedCheckout?.resolved_checkout_source || relatedCheckout?.checkout_source || null,
+      checkout_attribution_status: relatedCheckout?.attribution_status || 'none',
+      checkout_signal_count: relatedCheckout?.attribution_signal_count || 0,
+      checkout_has_fbc: Boolean(relatedCheckout?.has_fbc || relatedCheckout?.has_fbclid),
+      checkout_has_fbp: Boolean(relatedCheckout?.has_fbp),
+      checkout_has_click_id: Boolean(relatedCheckout?.has_click_id),
+      checkout_has_event_source_url: Boolean(relatedCheckout?.has_event_source_url),
+      checkout_has_landing_context: Boolean(relatedCheckout?.has_landing_context),
+      checkout_page_path: relatedCheckout?.page_path || null,
+      checkout_page_url: relatedCheckout?.page_url || null,
+      upstream_event_name: relatedAtc?.event_name || null,
+      upstream_event_ts: relatedAtc?.event_ts || null,
+      upstream_attribution_status: relatedAtc?.attribution_status || 'none',
+      upstream_signal_count: relatedAtc?.attribution_signal_count || 0,
+      upstream_has_fbc: Boolean(relatedAtc?.has_fbc || relatedAtc?.has_fbclid),
+      upstream_has_fbp: Boolean(relatedAtc?.has_fbp),
+      upstream_has_click_id: Boolean(relatedAtc?.has_click_id),
+      upstream_has_event_source_url: Boolean(relatedAtc?.has_event_source_url),
+      upstream_has_landing_context: Boolean(relatedAtc?.has_landing_context),
+      upstream_page_path: relatedAtc?.page_path || null,
+      diagnosis
+    });
+  }
+
+  rows.sort((a, b) => parseSqliteDateTimeToMs(b.order_created_at) - parseSqliteDateTimeToMs(a.order_created_at));
+
+  return {
+    grace_hours: graceHours,
+    eligible_orders: eligibleOrders,
+    attributed_purchase_count: attributedPurchases,
+    unresolved_count: rows.length,
+    dropped_after_checkout_count: droppedAfterCheckoutCount,
+    dropped_at_checkout_count: droppedAtCheckoutCount,
+    weak_upstream_count: weakUpstreamCount,
+    no_checkout_context_count: noCheckoutContextCount,
+    rows: rows.slice(0, maxItems)
+  };
+}
+
 function eventTimeMs(event) {
   return parseSqliteDateTimeToMs(event?.event_ts);
 }
@@ -2120,8 +2417,9 @@ export function getBlackboxOverview(store, options = {}) {
 
   const duplicateDiagnostics = detectDuplicateBeginCheckout(beginEvents, duplicateWindowSeconds);
   const checkoutAttribution = buildCheckoutAttributionOverview(beginEvents, ghostSessionLimit);
-  const misattribution = buildMisattributedCheckoutDiagnostics(rows, {
+  const misattribution = buildMisattributedPurchaseDiagnostics(normalizedStore, range, {
     attributionGraceHours: options.attributionGraceHours,
+    approxLookbackHours: options.approxLookbackHours,
     maxItems: ghostSessionLimit
   });
   const ghostSessions = detectGhostSessions(rows, ghostSessionLimit);
@@ -2137,11 +2435,15 @@ export function getBlackboxOverview(store, options = {}) {
       begin_checkout_attributed: checkoutAttribution.attributed_count,
       begin_checkout_partial: checkoutAttribution.partial_count,
       begin_checkout_missing: checkoutAttribution.missing_count,
+      unresolved_misattributed_purchases: misattribution.unresolved_count,
+      attributed_purchases_older_than_grace: misattribution.attributed_purchase_count,
+      eligible_orders_older_than_grace: misattribution.eligible_orders,
       unresolved_misattributed_checkouts: misattribution.unresolved_count,
-      recovered_late_checkouts: misattribution.recovered_later_count,
+      recovered_late_checkouts: 0,
+      dropped_after_checkout_count: misattribution.dropped_after_checkout_count,
       dropped_at_checkout_count: misattribution.dropped_at_checkout_count,
       weak_upstream_count: misattribution.weak_upstream_count,
-      no_upstream_signal_count: misattribution.no_upstream_signal_count,
+      no_upstream_signal_count: misattribution.no_checkout_context_count,
       purchase_events: purchaseEvents.length,
       duplicate_begin_checkout_events: duplicateDiagnostics.duplicateEventCount,
       duplicate_begin_checkout_rate: beginEvents.length
