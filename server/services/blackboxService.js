@@ -899,7 +899,7 @@ function buildMisattributedPurchaseDiagnostics(store, range, options = {}) {
       payload_json
     FROM blackbox_events
     WHERE store = ?
-      AND date(event_ts) BETWEEN ? AND ?
+      AND event_ts >= ? AND event_ts < date(?, '+1 day')
       AND event_name = 'purchase'
     ORDER BY event_ts DESC, id DESC
   `).all(store, range.startDate, range.endDate).map(mapRowForApi);
