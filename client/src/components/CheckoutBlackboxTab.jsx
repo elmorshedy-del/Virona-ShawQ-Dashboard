@@ -45,9 +45,10 @@ function formatPercent(value, digits = 1) {
 
 function formatTimestamp(value) {
   if (!value) return '—';
-  const normalized = value.includes('T') ? value : `${value.replace(' ', 'T')}Z`;
+  const raw = String(value);
+  const normalized = raw.includes('T') ? raw : `${raw.replace(' ', 'T')}Z`;
   const parsed = new Date(normalized);
-  if (!Number.isFinite(parsed.getTime())) return value;
+  if (!Number.isFinite(parsed.getTime())) return raw;
   return parsed.toLocaleString();
 }
 
