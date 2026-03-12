@@ -203,7 +203,7 @@ test('buildNormalizedProductMetrics flags products that move into cart less ofte
 });
 
 
-test('getJourneySegment normalizes device and source labels for merchant-safe segments', () => {
+test('getJourneySegment normalizes device, source, country, and campaign labels for merchant-safe segments', () => {
   const journey = makeJourney({
     entry_device_os: 'ios',
     entry_device_type: 'mobile',
@@ -224,6 +224,16 @@ test('getJourneySegment normalizes device and source labels for merchant-safe se
     segmentKey: 'source:direct',
     segmentLabel: 'Direct',
     dimension: 'source'
+  });
+  assert.deepEqual(getJourneySegment(makeJourney({ entry_country_code: 'gb' }), 'country'), {
+    segmentKey: 'country:united_kingdom',
+    segmentLabel: 'United Kingdom',
+    dimension: 'country'
+  });
+  assert.deepEqual(getJourneySegment(makeJourney({ entry_campaign: '' }), 'campaign'), {
+    segmentKey: 'campaign:no_campaign_tag',
+    segmentLabel: 'No campaign tag',
+    dimension: 'campaign'
   });
 });
 
@@ -260,4 +270,48 @@ test('buildNormalizedSegmentMetrics flags device cohorts that leak earlier than 
   assert.equal(ios.comparison.primaryTransition.toStage, 'atc');
   assert.equal(ios.comparison.primaryTransition.comparison.status, 'weaker_than_usual');
   assert.ok(ios.comparison.primaryTransition.comparison.missedAdvancedJourneys > 5);
+});
+
+
+test('buildNormalizedSegmentMetrics flags campaign cohorts that convert less often than usual', () => {
+  const makeCampaignJourney = ({ campaign, purchased }) => makeJourney({
+    entry_campaign: campaign,
+    product_view_count: 1,
+    sequence: purchased
+      ? ['product', 'cart', 'checkout_contact', 'checkout_payment', 'purchase']
+      : ['product', 'cart', 'checkout_contact', 'checkout_payment'],
+    event_breakdown: purchased
+      ? { add_to_cart_clicked: 1, product_added_to_cart: 1, payment_info_submitted: 1, checkout_completed: 1 }
+      : { add_to_cart_clicked: 1, product_added_to_cart: 1, payment_info_submitted: 1 },
+    cart_entered_at: '2026-03-11 12:00:00',
+    checkout_started_at: '2026-03-11 12:02:00',
+    payment_info_submitted_at: '2026-03-11 12:04:00',
+    purchase_at: purchased ? '2026-03-11 12:05:00' : null,
+    purchased_in_session: purchased,
+    last_meaningful_event_name: purchased ? 'checkout_completed' : 'payment_info_submitted'
+  });
+
+  const currentJourneys = [
+    ...Array.from({ length: 30 }, (_, index) => makeCampaignJourney({ campaign: 'Spring Prospecting', purchased: index < 2 })),
+    ...Array.from({ length: 20 }, (_, index) => makeCampaignJourney({ campaign: 'Retargeting', purchased: index < 4 }))
+  ];
+
+  const baselineJourneys = [
+    ...Array.from({ length: 45 }, (_, index) => makeCampaignJourney({ campaign: 'Spring Prospecting', purchased: index < 9 })),
+    ...Array.from({ length: 30 }, (_, index) => makeCampaignJourney({ campaign: 'Retargeting', purchased: index < 6 }))
+  ];
+
+  const metrics = buildNormalizedSegmentMetrics({
+    currentJourneys,
+    baselineJourneys,
+    dimension: 'campaign'
+  });
+  const springProspecting = metrics.segments.find((segment) => segment.segmentKey === 'campaign:spring_prospecting');
+
+  assert.ok(springProspecting);
+  assert.equal(metrics.segments[0].segmentKey, 'campaign:spring_prospecting');
+  assert.equal(springProspecting.comparison.primaryTransition.fromStage, 'payment');
+  assert.equal(springProspecting.comparison.primaryTransition.toStage, 'purchase');
+  assert.equal(springProspecting.comparison.primaryTransition.comparison.status, 'weaker_than_usual');
+  assert.ok(springProspecting.comparison.primaryTransition.comparison.missedAdvancedJourneys > 2);
 });

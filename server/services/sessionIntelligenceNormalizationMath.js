@@ -34,7 +34,7 @@ export const SESSION_INTELLIGENCE_PRODUCT_NORMALIZATION_STAGES = Object.freeze([
   'purchase'
 ]);
 
-export const SESSION_INTELLIGENCE_SEGMENT_DIMENSIONS = Object.freeze(['device', 'source']);
+export const SESSION_INTELLIGENCE_SEGMENT_DIMENSIONS = Object.freeze(['device', 'source', 'country', 'campaign']);
 
 const PRODUCT_STAGE_STEP_KEYS = new Set(['product']);
 const CHECKOUT_STAGE_STEP_KEYS = new Set(['checkout_contact', 'checkout_shipping', 'checkout_payment', 'checkout_review']);
@@ -64,6 +64,8 @@ const SOURCE_SEGMENT_LABELS = Object.freeze({
   email: 'Email',
   pinterest: 'Pinterest'
 });
+const UNKNOWN_COUNTRY_LABEL = 'Unknown country';
+const NO_CAMPAIGN_TAG_LABEL = 'No campaign tag';
 const SOURCE_SEGMENT_ALIASES = Object.freeze({
   direct: new Set(['', '(direct)', '(none)', 'direct', 'none']),
   instagram: new Set(['ig', 'instagram', 'instagram_ads']),
@@ -75,6 +77,9 @@ const SOURCE_SEGMENT_ALIASES = Object.freeze({
   pinterest: new Set(['pinterest', 'pin'])
 });
 const DESKTOP_DEVICE_OS_KEYS = new Set(['windows', 'macos', 'linux', 'chromeos']);
+const REGION_DISPLAY_NAMES = typeof Intl !== 'undefined' && typeof Intl.DisplayNames === 'function'
+  ? new Intl.DisplayNames(['en'], { type: 'region' })
+  : null;
 
 function safeFiniteNumber(value, fallback = 0) {
   const numericValue = Number(value);
@@ -389,6 +394,22 @@ function normalizeDeviceSegmentLabel(journeyRow) {
   return 'Unknown';
 }
 
+function normalizeCountrySegmentLabel(entryCountryCode) {
+  const normalizedCountry = safeString(entryCountryCode).trim();
+  if (!normalizedCountry) return UNKNOWN_COUNTRY_LABEL;
+  const upperCountry = normalizedCountry.toUpperCase();
+  if (/^[A-Z]{2}$/.test(upperCountry)) {
+    const displayName = REGION_DISPLAY_NAMES?.of(upperCountry);
+    if (displayName) return displayName;
+  }
+  return titleCaseSegmentLabel(normalizedCountry);
+}
+
+function normalizeCampaignSegmentLabel(entryCampaign) {
+  const normalizedCampaign = safeString(entryCampaign).trim().replace(/\s+/g, ' ');
+  return normalizedCampaign || NO_CAMPAIGN_TAG_LABEL;
+}
+
 function buildJourneyCohorts(journeyRows, resolveCohort) {
   const cohorts = new Map();
   for (const journeyRow of Array.isArray(journeyRows) ? journeyRows : []) {
@@ -551,6 +572,24 @@ export function getJourneySegment(journeyRow, dimension) {
       segmentKey: `source:${segmentLabel.toLowerCase()}`,
       segmentLabel,
       dimension: 'source'
+    };
+  }
+
+  if (normalizedDimension === 'country') {
+    const segmentLabel = normalizeCountrySegmentLabel(journeyRow?.entry_country_code);
+    return {
+      segmentKey: `country:${segmentLabel.toLowerCase().replace(/\s+/g, '_')}`,
+      segmentLabel,
+      dimension: 'country'
+    };
+  }
+
+  if (normalizedDimension === 'campaign') {
+    const segmentLabel = normalizeCampaignSegmentLabel(journeyRow?.entry_campaign);
+    return {
+      segmentKey: `campaign:${segmentLabel.toLowerCase().replace(/\s+/g, '_')}`,
+      segmentLabel,
+      dimension: 'campaign'
     };
   }
 
