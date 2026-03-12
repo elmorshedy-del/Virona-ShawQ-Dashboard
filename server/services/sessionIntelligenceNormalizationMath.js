@@ -141,9 +141,10 @@ export function hasJourneyReachedStage(journeyRow, stageKey) {
   }
 }
 
-export function buildFunnelStageCounts(journeyRows) {
+export function buildFunnelStageCounts(journeyRows, stageSequence = SESSION_INTELLIGENCE_FUNNEL_STAGES) {
   const rows = Array.isArray(journeyRows) ? journeyRows : [];
-  return SESSION_INTELLIGENCE_FUNNEL_STAGES.map((stageKey) => ({
+  const normalizedStageSequence = Array.isArray(stageSequence) ? stageSequence : SESSION_INTELLIGENCE_FUNNEL_STAGES;
+  return normalizedStageSequence.map((stageKey) => ({
     stageKey,
     label: getFunnelStageLabel(stageKey),
     reachedJourneys: rows.reduce((count, row) => count + (hasJourneyReachedStage(row, stageKey) ? 1 : 0), 0)
@@ -382,8 +383,8 @@ export function buildNormalizedProductMetrics({
 
   for (const cohort of currentCohorts.values()) {
     const baselineCohort = baselineCohorts.get(cohort.productKey) || null;
-    const currentStages = buildFunnelStageCounts(cohort.journeys).filter((stage) => SESSION_INTELLIGENCE_PRODUCT_NORMALIZATION_STAGES.includes(stage.stageKey));
-    const baselineStages = buildFunnelStageCounts(baselineCohort?.journeys || []).filter((stage) => SESSION_INTELLIGENCE_PRODUCT_NORMALIZATION_STAGES.includes(stage.stageKey));
+    const currentStages = buildFunnelStageCounts(cohort.journeys, SESSION_INTELLIGENCE_PRODUCT_NORMALIZATION_STAGES);
+    const baselineStages = buildFunnelStageCounts(baselineCohort?.journeys || [], SESSION_INTELLIGENCE_PRODUCT_NORMALIZATION_STAGES);
     const transitions = buildNormalizedTransitionMetrics({
       currentStageCounts: currentStages,
       baselineStageCounts: baselineStages,
