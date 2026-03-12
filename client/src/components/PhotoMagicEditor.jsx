@@ -478,7 +478,7 @@ const PHOTO_WORKFLOW_SHORTCUTS = [
 ];
 
 function getBackgroundPresetById(presetId) {
-  return BACKGROUND_PRESET_OPTIONS.find((item) => item.id === presetId) || BACKGROUND_PRESET_OPTIONS[0];
+  return BACKGROUND_PRESET_OPTIONS.find((item) => item.id === presetId);
 }
 
 export default function PhotoMagicEditor({ store }) {
