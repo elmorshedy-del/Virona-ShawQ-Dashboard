@@ -45,7 +45,8 @@ import {
 } from '../services/sessionIntelligenceJourneyService.js';
 import {
   getSessionIntelligenceNormalizedFunnel,
-  getSessionIntelligenceNormalizedProducts
+  getSessionIntelligenceNormalizedProducts,
+  getSessionIntelligenceNormalizedSegments
 } from '../services/sessionIntelligenceNormalizationService.js';
 import { issueSessionIntelligenceAdminCookie, validateSessionIntelligenceAdminRequest } from '../utils/sessionIntelligenceSurveyAccess.js';
 
@@ -597,6 +598,38 @@ router.get('/normalized/products', requireSurveyAdminSession, (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] normalized products error:', error);
     res.status(500).json({ success: false, error: 'Failed to load normalized product metrics' });
+  }
+});
+
+router.get('/normalized/segments', requireSurveyAdminSession, (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const dimension = req.query.dimension || 'device';
+    const date = req.query.date || null;
+    const startDate = req.query.startDate || req.query.start || null;
+    const endDate = req.query.endDate || req.query.end || null;
+    const baselineDays = req.query.baselineDays ? parseInt(req.query.baselineDays, 10) : undefined;
+    const rebuild = normalizeFlag(req.query.rebuild);
+    const journeyLimit = req.query.limit ? parseInt(req.query.limit, 10) : undefined;
+
+    const report = getSessionIntelligenceNormalizedSegments(store, {
+      dimension,
+      date,
+      startDate,
+      endDate,
+      baselineDays,
+      rebuild,
+      journeyLimit
+    });
+
+    if (!report.success) {
+      return res.status(400).json(report);
+    }
+
+    res.json(report);
+  } catch (error) {
+    console.error('[SessionIntelligence] normalized segments error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load normalized segment metrics' });
   }
 });
 
