@@ -25,6 +25,15 @@ export const SESSION_INTELLIGENCE_FUNNEL_STAGES = Object.freeze([
   'purchase'
 ]);
 
+export const SESSION_INTELLIGENCE_PRODUCT_NORMALIZATION_STAGES = Object.freeze([
+  'product',
+  'atc',
+  'cart',
+  'checkout',
+  'payment',
+  'purchase'
+]);
+
 const PRODUCT_STAGE_STEP_KEYS = new Set(['product']);
 const CHECKOUT_STAGE_STEP_KEYS = new Set(['checkout_contact', 'checkout_shipping', 'checkout_payment', 'checkout_review']);
 const PAYMENT_STAGE_STEP_KEYS = new Set(['checkout_payment', 'checkout_review']);
@@ -40,6 +49,9 @@ const ATC_EVENT_NAMES = new Set([
   'si_atc_click_disabled'
 ]);
 const PURCHASE_EVENT_NAMES = new Set(['checkout_completed', 'purchase_reconciled']);
+const PRODUCT_KEY_ID_PREFIX = 'id:';
+const PRODUCT_KEY_LABEL_PREFIX = 'label:';
+const PRODUCT_COMPARISON_SORT_PRECISION = 1000;
 
 function safeFiniteNumber(value, fallback = 0) {
   const numericValue = Number(value);
@@ -49,6 +61,10 @@ function safeFiniteNumber(value, fallback = 0) {
 function safeString(value) {
   if (value == null) return '';
   return String(value);
+}
+
+function normalizeProductLabelKey(label) {
+  return safeString(label).trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
 function normalizeJourneySequence(sequence) {
@@ -70,6 +86,15 @@ function normalizeEventBreakdown(eventBreakdown) {
 
 function hasNamedEvent(eventBreakdown, names) {
   return Array.from(names).some((name) => safeFiniteNumber(eventBreakdown?.[name], 0) > 0);
+}
+
+function buildProductKey({ productId, productLabel }) {
+  const normalizedProductId = safeString(productId).trim();
+  if (normalizedProductId) return `${PRODUCT_KEY_ID_PREFIX}${normalizedProductId}`;
+
+  const normalizedProductLabel = normalizeProductLabelKey(productLabel);
+  if (normalizedProductLabel) return `${PRODUCT_KEY_LABEL_PREFIX}${normalizedProductLabel}`;
+  return null;
 }
 
 export function getFunnelStageLabel(stageKey) {
@@ -116,13 +141,18 @@ export function hasJourneyReachedStage(journeyRow, stageKey) {
   }
 }
 
-export function buildFunnelStageCounts(journeyRows) {
+export function buildFunnelStageCounts(journeyRows, stageSequence = SESSION_INTELLIGENCE_FUNNEL_STAGES) {
   const rows = Array.isArray(journeyRows) ? journeyRows : [];
-  return SESSION_INTELLIGENCE_FUNNEL_STAGES.map((stageKey) => ({
+  const normalizedStageSequence = Array.isArray(stageSequence) ? stageSequence : SESSION_INTELLIGENCE_FUNNEL_STAGES;
+  return normalizedStageSequence.map((stageKey) => ({
     stageKey,
     label: getFunnelStageLabel(stageKey),
     reachedJourneys: rows.reduce((count, row) => count + (hasJourneyReachedStage(row, stageKey) ? 1 : 0), 0)
   }));
+}
+
+function buildStageCountMap(stageCounts) {
+  return new Map((Array.isArray(stageCounts) ? stageCounts : []).map((stage) => [stage.stageKey, safeFiniteNumber(stage.reachedJourneys, 0)]));
 }
 
 export function shrinkBinomialRate({ successes, trials, priorRate, priorStrength }) {
@@ -138,13 +168,14 @@ export function shrinkBinomialRate({ successes, trials, priorRate, priorStrength
   return (normalizedSuccesses + alpha) / (normalizedTrials + alpha + beta);
 }
 
-function buildTransitionCounts(stageCounts) {
-  const byStage = new Map(stageCounts.map((stage) => [stage.stageKey, stage.reachedJourneys]));
+function buildTransitionCounts(stageCounts, stageSequence = SESSION_INTELLIGENCE_FUNNEL_STAGES) {
+  const normalizedStageSequence = Array.isArray(stageSequence) ? stageSequence : SESSION_INTELLIGENCE_FUNNEL_STAGES;
+  const byStage = buildStageCountMap(stageCounts);
   const transitions = [];
 
-  for (let index = 0; index < SESSION_INTELLIGENCE_FUNNEL_STAGES.length - 1; index += 1) {
-    const fromStage = SESSION_INTELLIGENCE_FUNNEL_STAGES[index];
-    const toStage = SESSION_INTELLIGENCE_FUNNEL_STAGES[index + 1];
+  for (let index = 0; index < normalizedStageSequence.length - 1; index += 1) {
+    const fromStage = normalizedStageSequence[index];
+    const toStage = normalizedStageSequence[index + 1];
     const reachedJourneys = safeFiniteNumber(byStage.get(fromStage), 0);
     const advancedJourneys = safeFiniteNumber(byStage.get(toStage), 0);
     const rawRate = reachedJourneys > 0 ? advancedJourneys / reachedJourneys : null;
@@ -171,13 +202,12 @@ function describeTransitionStatus({ currentReachedJourneys, baselineReachedJourn
   return 'steady';
 }
 
-export function buildNormalizedFunnelMetrics({
-  currentJourneys,
-  baselineJourneys,
+function buildNormalizedTransitionMetrics({
+  currentStageCounts,
+  baselineStageCounts,
+  stageSequence,
   config = SESSION_INTELLIGENCE_NORMALIZATION_CONFIG
 }) {
-  const normalizedCurrentJourneys = Array.isArray(currentJourneys) ? currentJourneys : [];
-  const normalizedBaselineJourneys = Array.isArray(baselineJourneys) ? baselineJourneys : [];
   const minimumReachedJourneys = safeFiniteNumber(config.minimumReachedJourneys, SESSION_INTELLIGENCE_NORMALIZATION_CONFIG.minimumReachedJourneys);
   const shrinkagePriorStrengthJourneys = safeFiniteNumber(
     config.shrinkagePriorStrengthJourneys,
@@ -185,13 +215,11 @@ export function buildNormalizedFunnelMetrics({
   );
   const steadyGapThreshold = safeFiniteNumber(config.steadyGapThreshold, SESSION_INTELLIGENCE_NORMALIZATION_CONFIG.steadyGapThreshold);
 
-  const currentStages = buildFunnelStageCounts(normalizedCurrentJourneys);
-  const baselineStages = buildFunnelStageCounts(normalizedBaselineJourneys);
-  const currentTransitions = buildTransitionCounts(currentStages);
-  const baselineTransitions = buildTransitionCounts(baselineStages);
+  const currentTransitions = buildTransitionCounts(currentStageCounts, stageSequence);
+  const baselineTransitions = buildTransitionCounts(baselineStageCounts, stageSequence);
   const baselineByPair = new Map(baselineTransitions.map((transition) => [`${transition.fromStage}:${transition.toStage}`, transition]));
 
-  const transitions = currentTransitions.map((transition) => {
+  return currentTransitions.map((transition) => {
     const baselineTransition = baselineByPair.get(`${transition.fromStage}:${transition.toStage}`) || null;
     const baselineRate = baselineTransition?.rawRate ?? null;
     const currentRate = baselineRate == null
@@ -239,6 +267,24 @@ export function buildNormalizedFunnelMetrics({
       }
     };
   });
+}
+
+export function buildNormalizedFunnelMetrics({
+  currentJourneys,
+  baselineJourneys,
+  config = SESSION_INTELLIGENCE_NORMALIZATION_CONFIG
+}) {
+  const normalizedCurrentJourneys = Array.isArray(currentJourneys) ? currentJourneys : [];
+  const normalizedBaselineJourneys = Array.isArray(baselineJourneys) ? baselineJourneys : [];
+
+  const currentStages = buildFunnelStageCounts(normalizedCurrentJourneys);
+  const baselineStages = buildFunnelStageCounts(normalizedBaselineJourneys);
+  const transitions = buildNormalizedTransitionMetrics({
+    currentStageCounts: currentStages,
+    baselineStageCounts: baselineStages,
+    stageSequence: SESSION_INTELLIGENCE_FUNNEL_STAGES,
+    config
+  });
 
   return {
     totals: {
@@ -250,5 +296,163 @@ export function buildNormalizedFunnelMetrics({
       baselineReachedJourneys: baselineStages.find((candidate) => candidate.stageKey === stage.stageKey)?.reachedJourneys ?? 0
     })),
     transitions
+  };
+}
+
+export function getAnchoredJourneyProduct(journeyRow) {
+  const candidates = [
+    {
+      productId: journeyRow?.last_product_before_cart_id,
+      productLabel: journeyRow?.last_product_before_cart_label,
+      attributionSource: 'last_product_before_cart'
+    },
+    {
+      productId: journeyRow?.last_product_id,
+      productLabel: journeyRow?.last_product_label,
+      attributionSource: 'last_product'
+    },
+    {
+      productId: journeyRow?.first_product_id,
+      productLabel: journeyRow?.first_product_label,
+      attributionSource: 'first_product'
+    }
+  ];
+
+  for (const candidate of candidates) {
+    const productKey = buildProductKey(candidate);
+    if (!productKey) continue;
+    return {
+      productKey,
+      productId: safeString(candidate.productId).trim() || null,
+      productLabel: safeString(candidate.productLabel).trim() || null,
+      attributionSource: candidate.attributionSource
+    };
+  }
+
+  return null;
+}
+
+function buildAnchoredProductCohorts(journeyRows) {
+  const cohorts = new Map();
+  for (const journeyRow of Array.isArray(journeyRows) ? journeyRows : []) {
+    const anchoredProduct = getAnchoredJourneyProduct(journeyRow);
+    if (!anchoredProduct) continue;
+    const existing = cohorts.get(anchoredProduct.productKey) || {
+      ...anchoredProduct,
+      journeys: []
+    };
+    if (!existing.productId && anchoredProduct.productId) {
+      existing.productId = anchoredProduct.productId;
+    }
+    if (!existing.productLabel && anchoredProduct.productLabel) {
+      existing.productLabel = anchoredProduct.productLabel;
+    }
+    existing.journeys.push(journeyRow);
+    cohorts.set(anchoredProduct.productKey, existing);
+  }
+  return cohorts;
+}
+
+function getPrimaryProductComparison(transitions) {
+  const normalizedTransitions = Array.isArray(transitions) ? transitions : [];
+  const weakTransitions = normalizedTransitions.filter((transition) => transition?.comparison?.status === 'weaker_than_usual');
+  if (weakTransitions.length) {
+    return weakTransitions.sort((left, right) => {
+      const missedGap = safeFiniteNumber(right?.comparison?.missedAdvancedJourneys, 0) - safeFiniteNumber(left?.comparison?.missedAdvancedJourneys, 0);
+      if (missedGap !== 0) return missedGap;
+      return safeFiniteNumber(right?.comparison?.gap, 0) - safeFiniteNumber(left?.comparison?.gap, 0);
+    })[0];
+  }
+
+  return normalizedTransitions.find((transition) => transition?.comparison?.status === 'steady')
+    || normalizedTransitions.find((transition) => transition?.comparison?.status === 'stronger_than_usual')
+    || normalizedTransitions[0]
+    || null;
+}
+
+export function buildNormalizedProductMetrics({
+  currentJourneys,
+  baselineJourneys,
+  config = SESSION_INTELLIGENCE_NORMALIZATION_CONFIG
+}) {
+  const normalizedCurrentJourneys = Array.isArray(currentJourneys) ? currentJourneys : [];
+  const normalizedBaselineJourneys = Array.isArray(baselineJourneys) ? baselineJourneys : [];
+  const currentCohorts = buildAnchoredProductCohorts(normalizedCurrentJourneys);
+  const baselineCohorts = buildAnchoredProductCohorts(normalizedBaselineJourneys);
+  const products = [];
+
+  for (const cohort of currentCohorts.values()) {
+    const baselineCohort = baselineCohorts.get(cohort.productKey) || null;
+    const currentStages = buildFunnelStageCounts(cohort.journeys, SESSION_INTELLIGENCE_PRODUCT_NORMALIZATION_STAGES);
+    const baselineStages = buildFunnelStageCounts(baselineCohort?.journeys || [], SESSION_INTELLIGENCE_PRODUCT_NORMALIZATION_STAGES);
+    const transitions = buildNormalizedTransitionMetrics({
+      currentStageCounts: currentStages,
+      baselineStageCounts: baselineStages,
+      stageSequence: SESSION_INTELLIGENCE_PRODUCT_NORMALIZATION_STAGES,
+      config
+    });
+    const currentPurchaseCount = safeFiniteNumber(currentStages.find((stage) => stage.stageKey === 'purchase')?.reachedJourneys, 0);
+    const baselinePurchaseCount = safeFiniteNumber(baselineStages.find((stage) => stage.stageKey === 'purchase')?.reachedJourneys, 0);
+    const currentJourneysCount = cohort.journeys.length;
+    const baselineJourneysCount = baselineCohort?.journeys?.length || 0;
+    const currentPurchaseRate = currentJourneysCount > 0 ? currentPurchaseCount / currentJourneysCount : null;
+    const baselinePurchaseRate = baselineJourneysCount > 0 ? baselinePurchaseCount / baselineJourneysCount : null;
+    const purchaseRateGap = baselinePurchaseRate != null && currentPurchaseRate != null
+      ? baselinePurchaseRate - currentPurchaseRate
+      : null;
+    const expectedPurchases = baselinePurchaseRate != null ? currentJourneysCount * baselinePurchaseRate : null;
+    const missedPurchases = expectedPurchases != null ? Math.max(0, expectedPurchases - currentPurchaseCount) : null;
+    const primaryTransition = getPrimaryProductComparison(transitions);
+    const rankingScore = Math.round((
+      safeFiniteNumber(primaryTransition?.comparison?.missedAdvancedJourneys, 0)
+      + safeFiniteNumber(missedPurchases, 0)
+    ) * PRODUCT_COMPARISON_SORT_PRECISION) / PRODUCT_COMPARISON_SORT_PRECISION;
+
+    products.push({
+      productKey: cohort.productKey,
+      productId: cohort.productId,
+      productLabel: cohort.productLabel || 'Unknown product',
+      attributionSource: cohort.attributionSource,
+      current: {
+        journeys: currentJourneysCount,
+        purchases: currentPurchaseCount,
+        purchaseRate: currentPurchaseRate
+      },
+      baseline: {
+        journeys: baselineJourneysCount,
+        purchases: baselinePurchaseCount,
+        purchaseRate: baselinePurchaseRate
+      },
+      comparison: {
+        primaryTransition,
+        purchaseRateGap,
+        expectedPurchases,
+        missedPurchases,
+        rankingScore
+      },
+      stages: currentStages.map((stage) => ({
+        ...stage,
+        baselineReachedJourneys: baselineStages.find((candidate) => candidate.stageKey === stage.stageKey)?.reachedJourneys ?? 0
+      })),
+      transitions
+    });
+  }
+
+  products.sort((left, right) => {
+    const scoreGap = safeFiniteNumber(right?.comparison?.rankingScore, 0) - safeFiniteNumber(left?.comparison?.rankingScore, 0);
+    if (scoreGap !== 0) return scoreGap;
+    const currentJourneyGap = safeFiniteNumber(right?.current?.journeys, 0) - safeFiniteNumber(left?.current?.journeys, 0);
+    if (currentJourneyGap !== 0) return currentJourneyGap;
+    return safeString(left?.productLabel).localeCompare(safeString(right?.productLabel));
+  });
+
+  return {
+    totals: {
+      currentJourneys: normalizedCurrentJourneys.length,
+      baselineJourneys: normalizedBaselineJourneys.length,
+      currentProducts: products.length,
+      baselineProducts: baselineCohorts.size
+    },
+    products
   };
 }
