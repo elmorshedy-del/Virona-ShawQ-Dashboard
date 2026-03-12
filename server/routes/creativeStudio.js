@@ -35,15 +35,26 @@ import {
 } from '../services/photoMagicAiClient.js';
 import { eraseSdxl, expandPhotoCanvas, getPhotoMagicHqHealth, isPhotoMagicHqConfigured } from '../services/photoMagicHqClient.js';
 import {
+  cleanVideoOverlayBria,
   enhanceBria,
+  enhanceVideoBria,
   eraseFluxFill,
+  getPhotoMagicReplicateBackgroundConfig,
   expandFluxFill,
   getPhotoMagicReplicateConfig,
   getPhotoMagicReplicateEnhanceConfig,
   getPhotoMagicReplicateEnhanceHealth,
   getPhotoMagicReplicateExpandConfig,
   getPhotoMagicReplicateHealth,
-  isPhotoMagicReplicateConfigured
+  getVideoMagicReplicateCleanConfig,
+  getVideoMagicReplicateCleanHealth,
+  getVideoMagicReplicateEnhanceConfig,
+  getVideoMagicReplicateEnhanceHealth,
+  getVideoMagicReplicateRemoveBgConfig,
+  getVideoMagicReplicateRemoveBgHealth,
+  isPhotoMagicReplicateConfigured,
+  removeVideoBackgroundBria,
+  replaceBackgroundFluxFill
 } from '../services/photoMagicReplicateClient.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -152,8 +163,29 @@ function getUploadedVideoPath(videoId) {
   return path.join(VIDEO_OVERLAY_UPLOADS_DIR, videoId);
 }
 
+function getUploadedVideoMetaPath(videoId) {
+  return path.join(VIDEO_OVERLAY_UPLOADS_DIR, `${videoId}.json`);
+}
+
 function getExportedVideoPath(exportId) {
   return path.join(VIDEO_OVERLAY_OUTPUTS_DIR, `${exportId}.mp4`);
+}
+
+async function readUploadedVideoMeta(videoId) {
+  const metaPath = getUploadedVideoMetaPath(videoId);
+  if (!fs.existsSync(metaPath)) return null;
+  try {
+    const raw = await fs.promises.readFile(metaPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeUploadedVideoMeta(videoId, meta) {
+  const metaPath = getUploadedVideoMetaPath(videoId);
+  await fs.promises.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf8');
 }
 
 function getOverlayRenderAssetPath(exportId, index) {
@@ -162,6 +194,53 @@ function getOverlayRenderAssetPath(exportId, index) {
 
 function isVideoOverlayAssetId(value) {
   return VIDEO_OVERLAY_ID_REGEX.test(String(value || '').trim());
+}
+
+function buildVideoMagicSourceUrl(req, store, videoId, filename = 'source.mp4') {
+  const baseUrl = getPhotoMagicPublicBaseUrl(req);
+  const relative = withStoreParam(
+    `/api/creative-studio/video-magic/source?video_id=${encodeURIComponent(videoId)}&filename=${encodeURIComponent(filename)}`,
+    store
+  );
+  return baseUrl ? `${baseUrl}${relative}` : relative;
+}
+
+function guessVideoExtension({ mime = '', filename = '' } = {}) {
+  const normalizedMime = String(mime || '').toLowerCase();
+  if (normalizedMime.includes('webm')) return 'webm';
+  if (normalizedMime.includes('quicktime')) return 'mov';
+  if (normalizedMime.includes('ogg')) return 'ogv';
+  if (normalizedMime.includes('avi')) return 'avi';
+
+  const ext = path.extname(String(filename || '')).replace(/^\./, '').toLowerCase();
+  if (ext) return ext;
+  return 'mp4';
+}
+
+async function storeVideoUploadBuffer({ videoId = null, buffer, filename, mime }) {
+  await ensureVideoOverlayDirs();
+
+  const resolvedVideoId = videoId || crypto.randomUUID();
+  const videoPath = getUploadedVideoPath(resolvedVideoId);
+  await fs.promises.writeFile(videoPath, buffer);
+
+  let info = { duration: null, width: null, height: null, fps: null };
+  try {
+    info = await ffprobeVideoInfo(videoPath);
+  } catch (error) {
+    console.warn('ffprobe failed for stored video:', error?.message || error);
+  }
+
+  const meta = {
+    video_id: resolvedVideoId,
+    filename: filename || `video.${guessVideoExtension({ mime, filename })}`,
+    mime: mime || 'video/mp4',
+    size: buffer.length,
+    ...info
+  };
+
+  await writeUploadedVideoMeta(resolvedVideoId, meta);
+  return meta;
 }
 
 const VIDEO_OVERLAY_SUPPORTED_SCAN_MODELS = [
@@ -567,6 +646,35 @@ function buildPhotoMagicExpandPrompt(prompt, negativePrompt) {
   if (positive) return positive;
   if (avoid) return `Extend the canvas naturally to match the surrounding scene, preserving lighting, texture, shading, and perspective. Keep the generated extension free of ${avoid}.`;
   return 'Extend the canvas naturally to match the surrounding scene, preserving lighting, texture, shading, and perspective.';
+}
+
+function buildPhotoMagicBackgroundPrompt(prompt) {
+  const normalized = String(prompt || '').trim();
+  if (normalized) return normalized;
+  return 'Premium studio background with realistic depth, clean commercial lighting, natural floor grounding, and seamless subject integration.';
+}
+
+async function invertReplicateMaskBuffer(maskBuffer, width, height) {
+  const { data, info } = await sharp(maskBuffer, { limitInputPixels: PHOTO_MAGIC_MAX_IMAGE_PIXELS })
+    .resize(width, height, { fit: 'fill', kernel: 'nearest' })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const inverted = Buffer.alloc(info.width * info.height);
+  for (let sourceIndex = 0, targetIndex = 0; sourceIndex < data.length; sourceIndex += info.channels, targetIndex += 1) {
+    const value = data[sourceIndex] || 0;
+    inverted[targetIndex] = 255 - value;
+  }
+
+  return sharp(inverted, {
+    raw: {
+      width: info.width,
+      height: info.height,
+      channels: 1
+    }
+  })
+    .png()
+    .toBuffer();
 }
 
 async function buildPhotoMagicExpandAssets(imageBuffer, {
@@ -2212,6 +2320,16 @@ function buildCreativeOsPaletteFromRawImage(rawBuffer, channels) {
 }
 
 async function ffprobeVideoInfo(videoPath) {
+  const parseFraction = (rawValue) => {
+    const value = String(rawValue || '').trim();
+    if (!value || value === '0/0') return 0;
+    if (!value.includes('/')) return safeParseNumber(value, 0);
+    const [numRaw, denRaw] = value.split('/');
+    const num = safeParseNumber(numRaw, 0);
+    const den = safeParseNumber(denRaw, 1);
+    return den ? num / den : 0;
+  };
+
   const { stdout: durationOut } = await execFileAsync('ffprobe', [
     '-v', 'error',
     '-show_entries', 'format=duration',
@@ -2224,16 +2342,17 @@ async function ffprobeVideoInfo(videoPath) {
   const { stdout: streamOut } = await execFileAsync('ffprobe', [
     '-v', 'error',
     '-select_streams', 'v:0',
-    '-show_entries', 'stream=width,height',
-    '-of', 'csv=s=x:p=0',
+    '-show_entries', 'stream=width,height,avg_frame_rate',
+    '-of', 'default=noprint_wrappers=1:nokey=1',
     videoPath
   ]);
 
-  const [widthStr, heightStr] = String(streamOut).trim().split('x');
+  const [widthStr, heightStr, frameRateRaw] = String(streamOut).trim().split('\n');
   const width = Math.max(0, parseInt(widthStr || '0', 10) || 0);
   const height = Math.max(0, parseInt(heightStr || '0', 10) || 0);
+  const fps = Math.max(0, parseFraction(frameRateRaw));
 
-  return { duration, width, height };
+  return { duration, width, height, fps };
 }
 
 function buildSegmentsFromFrameKeys({ frames, durationSec, intervalSec }) {
@@ -3531,28 +3650,22 @@ router.get('/video-overlay/health', async (req, res) => {
 router.post('/video-overlay/upload', upload.single('video'), async (req, res) => {
   try {
     await ensureVideoOverlayDirs();
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
 
     if (!req.file) {
       return res.status(400).json({ success: false, error: 'No video provided' });
     }
 
-    const videoId = crypto.randomUUID();
-    const videoPath = getUploadedVideoPath(videoId);
-    await fs.promises.writeFile(videoPath, req.file.buffer);
-
-    let info = { duration: null, width: null, height: null };
-    try {
-      info = await ffprobeVideoInfo(videoPath);
-    } catch (e) {
-      console.warn('ffprobe failed for upload:', e?.message || e);
-    }
+    const stored = await storeVideoUploadBuffer({
+      buffer: req.file.buffer,
+      filename: req.file.originalname,
+      mime: req.file.mimetype
+    });
 
     return res.json({
       success: true,
-      video_id: videoId,
-      filename: req.file.originalname,
-      size: req.file.size,
-      ...info
+      ...stored,
+      preview_url: buildVideoMagicSourceUrl(req, store, stored.video_id, stored.filename || 'source.mp4')
     });
   } catch (error) {
     console.error('Video overlay upload error:', error);
@@ -4856,6 +4969,318 @@ router.get('/video-overlay/download', async (req, res) => {
   }
 });
 
+function buildVideoOverlayMaskBoxes(segments = [], videoWidth = 0, videoHeight = 0) {
+  const maxWidth = Math.max(1, Math.round(safeParseNumber(videoWidth, 1)));
+  const maxHeight = Math.max(1, Math.round(safeParseNumber(videoHeight, 1)));
+  const boxes = [];
+
+  for (const seg of segments) {
+    const start = clampNumber(seg?.start, 0, Number.MAX_SAFE_INTEGER);
+    const end = clampNumber(seg?.end, start, Number.MAX_SAFE_INTEGER);
+    const overlays = Array.isArray(seg?.overlays) ? seg.overlays : [];
+
+    for (const ov of overlays) {
+      const width = Math.max(1, Math.min(maxWidth, Math.round(safeParseNumber(ov?.width, 1))));
+      const height = Math.max(1, Math.min(maxHeight, Math.round(safeParseNumber(ov?.height, 1))));
+      const x = Math.max(0, Math.min(maxWidth - width, Math.round(safeParseNumber(ov?.x, 0))));
+      const y = Math.max(0, Math.min(maxHeight - height, Math.round(safeParseNumber(ov?.y, 0))));
+      boxes.push({ start, end, x, y, width, height });
+    }
+  }
+
+  return boxes;
+}
+
+async function renderVideoOverlayMask({ videoInfo, segments, outputPath }) {
+  const duration = clampNumber(videoInfo?.duration || 0, 0.1, 60 * 60);
+  const width = Math.max(2, Math.round(safeParseNumber(videoInfo?.width, 1920)));
+  const height = Math.max(2, Math.round(safeParseNumber(videoInfo?.height, 1080)));
+  const fps = clampNumber(safeParseNumber(videoInfo?.fps, 30), 1, 60);
+  const boxes = buildVideoOverlayMaskBoxes(segments, width, height);
+
+  if (!boxes.length) {
+    const err = new Error('No overlay regions available to build the cleanup mask.');
+    err.status = 400;
+    throw err;
+  }
+
+  const filter = boxes.map((box) =>
+    `drawbox=x=${box.x}:y=${box.y}:w=${box.width}:h=${box.height}:color=white@1:t=fill:enable='between(t,${box.start.toFixed(3)},${box.end.toFixed(3)})'`
+  ).join(',');
+
+  await execFileAsync('ffmpeg', [
+    '-f', 'lavfi',
+    '-i', `color=c=black:s=${width}x${height}:d=${duration.toFixed(3)}:r=${fps.toFixed(3)}`,
+    '-vf', filter,
+    '-an',
+    '-c:v', 'libx264',
+    '-pix_fmt', 'yuv420p',
+    '-movflags', '+faststart',
+    '-y',
+    outputPath
+  ]);
+}
+
+async function downloadRemoteBinary(url) {
+  const response = await axios.get(url, { responseType: 'arraybuffer' });
+  return {
+    buffer: Buffer.from(response.data),
+    mime: String(response.headers?.['content-type'] || '').trim() || 'application/octet-stream'
+  };
+}
+
+router.get('/video-magic/health', async (req, res) => {
+  try {
+    const publicBaseUrl = getPhotoMagicPublicBaseUrl(req);
+    const cleanConfig = getVideoMagicReplicateCleanConfig();
+    const removeBgConfig = getVideoMagicReplicateRemoveBgConfig();
+    const enhanceConfig = getVideoMagicReplicateEnhanceConfig();
+    const cleanHealth = isPhotoMagicReplicateConfigured()
+      ? await getVideoMagicReplicateCleanHealth().catch((e) => ({ ok: false, status: 0, payload: { error: e?.message || String(e) } }))
+      : null;
+    const removeBgHealth = isPhotoMagicReplicateConfigured()
+      ? await getVideoMagicReplicateRemoveBgHealth().catch((e) => ({ ok: false, status: 0, payload: { error: e?.message || String(e) } }))
+      : null;
+    const enhanceHealth = isPhotoMagicReplicateConfigured()
+      ? await getVideoMagicReplicateEnhanceHealth().catch((e) => ({ ok: false, status: 0, payload: { error: e?.message || String(e) } }))
+      : null;
+    const overlayAiConfigured = isVideoOverlayAiConfigured();
+
+    res.json({
+      success: true,
+      video_magic: {
+        clean_overlay: {
+          configured: cleanConfig.configured,
+          ready: Boolean(publicBaseUrl && cleanHealth?.ok),
+          provider: 'replicate',
+          model: cleanConfig.model,
+          requires_scan: true,
+          gemini_configured: Boolean(process.env.GEMINI_API_KEY),
+          health: cleanHealth,
+          error: !publicBaseUrl
+            ? 'PHOTO_MAGIC_PUBLIC_BASE_URL could not be resolved for video cleanup.'
+            : (cleanHealth?.ok ? null : (cleanHealth?.payload?.detail || cleanHealth?.payload?.error || 'Video cleanup is not ready.'))
+        },
+        remove_background: {
+          configured: removeBgConfig.configured,
+          ready: Boolean(publicBaseUrl && removeBgHealth?.ok),
+          provider: 'replicate',
+          model: removeBgConfig.model,
+          health: removeBgHealth,
+          error: !publicBaseUrl
+            ? 'PHOTO_MAGIC_PUBLIC_BASE_URL could not be resolved for video background removal.'
+            : (removeBgHealth?.ok ? null : (removeBgHealth?.payload?.detail || removeBgHealth?.payload?.error || 'Video background removal is not ready.'))
+        },
+        enhance: {
+          configured: enhanceConfig.configured,
+          ready: Boolean(publicBaseUrl && enhanceHealth?.ok),
+          provider: 'replicate',
+          model: enhanceConfig.model,
+          supported_modes: ['upscale'],
+          health: enhanceHealth,
+          error: !publicBaseUrl
+            ? 'PHOTO_MAGIC_PUBLIC_BASE_URL could not be resolved for video enhancement.'
+            : (enhanceHealth?.ok ? null : (enhanceHealth?.payload?.detail || enhanceHealth?.payload?.error || 'Video enhancement is not ready.'))
+        },
+        overlay_scan: {
+          gemini_configured: Boolean(process.env.GEMINI_API_KEY),
+          detector_configured: overlayAiConfigured
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/video-magic/source', async (req, res) => {
+  try {
+    const videoId = String(req.query?.video_id || '').trim();
+    if (!isVideoOverlayAssetId(videoId)) {
+      return res.status(400).json({ success: false, error: 'A valid video_id is required.' });
+    }
+
+    const videoPath = getUploadedVideoPath(videoId);
+    if (!fs.existsSync(videoPath)) {
+      return res.status(404).json({ success: false, error: 'Source video not found' });
+    }
+
+    const meta = await readUploadedVideoMeta(videoId);
+    const filename = sanitizeDownloadFilename(String(req.query?.filename || ''), meta?.filename || 'source.mp4');
+    const contentType = meta?.mime || 'video/mp4';
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    fs.createReadStream(videoPath).pipe(res);
+  } catch (error) {
+    console.error('Video magic source download error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/video-magic/clean-overlay', async (req, res) => {
+  try {
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
+    const videoId = String(req.body?.video_id || '').trim();
+    const segments = Array.isArray(req.body?.segments) ? req.body.segments : [];
+
+    if (!isVideoOverlayAssetId(videoId)) {
+      return res.status(400).json({ success: false, error: 'A valid video_id is required.' });
+    }
+    if (!segments.length) {
+      return res.status(400).json({ success: false, error: 'Overlay segments are required for cleanup.' });
+    }
+    if (!isPhotoMagicReplicateConfigured()) {
+      return res.status(503).json({ success: false, error: 'REPLICATE_API_TOKEN is not configured.' });
+    }
+
+    const videoPath = getUploadedVideoPath(videoId);
+    if (!fs.existsSync(videoPath)) {
+      return res.status(404).json({ success: false, error: 'Uploaded video not found (upload again).' });
+    }
+
+    const videoInfo = await ffprobeVideoInfo(videoPath);
+    const sourceUrl = buildVideoMagicSourceUrl(req, store, videoId, (await readUploadedVideoMeta(videoId))?.filename || 'source.mp4');
+    const maskId = crypto.randomUUID();
+    const maskFilename = `overlay-mask-${maskId}.mp4`;
+    const tempMaskPath = path.join(os.tmpdir(), `${maskId}-${maskFilename}`);
+    await renderVideoOverlayMask({ videoInfo, segments, outputPath: tempMaskPath });
+    const renderedMaskMeta = await storeVideoUploadBuffer({
+      videoId: maskId,
+      buffer: await fs.promises.readFile(tempMaskPath),
+      filename: maskFilename,
+      mime: 'video/mp4'
+    });
+    await fs.promises.unlink(tempMaskPath).catch(() => {});
+    const maskUrl = buildVideoMagicSourceUrl(req, store, renderedMaskMeta.video_id, renderedMaskMeta.filename);
+
+    const replicateResult = await cleanVideoOverlayBria({
+      videoUrl: sourceUrl,
+      maskUrl,
+      autoTrim: Boolean(req.body?.auto_trim ?? true),
+      preserveAudio: Boolean(req.body?.preserve_audio ?? true),
+      outputContainerAndCodec: 'mp4_h264'
+    });
+
+    const downloaded = await downloadRemoteBinary(replicateResult.outputUrl);
+    const filename = 'clean-overlay.mp4';
+    const stored = await storeVideoUploadBuffer({
+      buffer: downloaded.buffer,
+      filename,
+      mime: downloaded.mime || 'video/mp4'
+    });
+
+    return res.json({
+      success: true,
+      ...stored,
+      provider: 'replicate',
+      model: getVideoMagicReplicateCleanConfig().model,
+      preview_url: buildVideoMagicSourceUrl(req, store, stored.video_id, stored.filename || filename)
+    });
+  } catch (error) {
+    console.error('Video magic clean overlay error:', error);
+    res.status(Number(error?.status || 500)).json({ success: false, error: error.message, details: error?.payload || null });
+  }
+});
+
+router.post('/video-magic/remove-background', async (req, res) => {
+  try {
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
+    const videoId = String(req.body?.video_id || '').trim();
+    if (!isVideoOverlayAssetId(videoId)) {
+      return res.status(400).json({ success: false, error: 'A valid video_id is required.' });
+    }
+    if (!isPhotoMagicReplicateConfigured()) {
+      return res.status(503).json({ success: false, error: 'REPLICATE_API_TOKEN is not configured.' });
+    }
+
+    const videoPath = getUploadedVideoPath(videoId);
+    if (!fs.existsSync(videoPath)) {
+      return res.status(404).json({ success: false, error: 'Uploaded video not found (upload again).' });
+    }
+
+    const meta = await readUploadedVideoMeta(videoId);
+    const sourceUrl = buildVideoMagicSourceUrl(req, store, videoId, meta?.filename || 'source.mp4');
+    const backgroundColor = String(req.body?.background_color || 'Transparent').trim() || 'Transparent';
+    const codec = backgroundColor.toLowerCase() === 'transparent' ? 'webm_vp9' : 'mp4_h264';
+
+    const replicateResult = await removeVideoBackgroundBria({
+      videoUrl: sourceUrl,
+      preserveAudio: Boolean(req.body?.preserve_audio ?? true),
+      backgroundColor,
+      outputContainerAndCodec: codec
+    });
+
+    const downloaded = await downloadRemoteBinary(replicateResult.outputUrl);
+    const extension = codec === 'webm_vp9' ? 'webm' : 'mp4';
+    const filename = `background-removed.${extension}`;
+    const stored = await storeVideoUploadBuffer({
+      buffer: downloaded.buffer,
+      filename,
+      mime: downloaded.mime || (extension === 'webm' ? 'video/webm' : 'video/mp4')
+    });
+
+    return res.json({
+      success: true,
+      ...stored,
+      provider: 'replicate',
+      model: getVideoMagicReplicateRemoveBgConfig().model,
+      preview_url: buildVideoMagicSourceUrl(req, store, stored.video_id, stored.filename || filename)
+    });
+  } catch (error) {
+    console.error('Video magic background removal error:', error);
+    res.status(Number(error?.status || 500)).json({ success: false, error: error.message, details: error?.payload || null });
+  }
+});
+
+router.post('/video-magic/enhance', async (req, res) => {
+  try {
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
+    const videoId = String(req.body?.video_id || '').trim();
+    if (!isVideoOverlayAssetId(videoId)) {
+      return res.status(400).json({ success: false, error: 'A valid video_id is required.' });
+    }
+    if (!isPhotoMagicReplicateConfigured()) {
+      return res.status(503).json({ success: false, error: 'REPLICATE_API_TOKEN is not configured.' });
+    }
+
+    const videoPath = getUploadedVideoPath(videoId);
+    if (!fs.existsSync(videoPath)) {
+      return res.status(404).json({ success: false, error: 'Uploaded video not found (upload again).' });
+    }
+
+    const meta = await readUploadedVideoMeta(videoId);
+    const sourceUrl = buildVideoMagicSourceUrl(req, store, videoId, meta?.filename || 'source.mp4');
+    const desiredIncrease = clampNumber(req.body?.desired_increase ?? 2, 2, 4);
+
+    const replicateResult = await enhanceVideoBria({
+      videoUrl: sourceUrl,
+      desiredIncrease,
+      preserveAudio: Boolean(req.body?.preserve_audio ?? true),
+      outputContainerAndCodec: 'mp4_h264'
+    });
+
+    const downloaded = await downloadRemoteBinary(replicateResult.outputUrl);
+    const filename = `enhanced-${desiredIncrease}x.mp4`;
+    const stored = await storeVideoUploadBuffer({
+      buffer: downloaded.buffer,
+      filename,
+      mime: downloaded.mime || 'video/mp4'
+    });
+
+    return res.json({
+      success: true,
+      ...stored,
+      provider: 'replicate',
+      model: getVideoMagicReplicateEnhanceConfig().model,
+      preview_url: buildVideoMagicSourceUrl(req, store, stored.video_id, stored.filename || filename)
+    });
+  } catch (error) {
+    console.error('Video magic enhancement error:', error);
+    res.status(Number(error?.status || 500)).json({ success: false, error: error.message, details: error?.payload || null });
+  }
+});
+
 // ============================================================================
 // PHOTO MAGIC (RMBG2 + SAM2 + LaMa + optional SDXL HQ)
 // ============================================================================
@@ -4884,6 +5309,7 @@ router.get('/photo-magic/health', async (req, res) => {
       : null;
     const replicateReady = Boolean(replicateBaseUrl && replicateHealth?.ok);
     const replicateEnhanceReady = Boolean(replicateBaseUrl && replicateEnhanceHealth?.ok);
+    const replicateBackgroundConfig = getPhotoMagicReplicateBackgroundConfig();
     const standardErase = isPhotoMagicReplicateConfigured()
       ? {
           configured: true,
@@ -4907,6 +5333,30 @@ router.get('/photo-magic/health', async (req, res) => {
           timeout_ms: Number(process.env.PHOTO_MAGIC_AI_TIMEOUT_MS || 240000),
           wait_seconds: null,
           error: aiHealthPayload?.errors?.lama || null
+        };
+    const backgroundState = isPhotoMagicReplicateConfigured()
+      ? {
+          configured: true,
+          ready: replicateReady,
+          provider: 'replicate',
+          model: replicateBackgroundConfig.model,
+          prompt: replicateBackgroundConfig.prompt,
+          timeout_ms: replicateBackgroundConfig.timeout_ms,
+          wait_seconds: replicateBackgroundConfig.wait_seconds,
+          health: replicateHealth,
+          error: !replicateBaseUrl
+            ? 'PHOTO_MAGIC_PUBLIC_BASE_URL could not be resolved for Replicate background generation.'
+            : (replicateHealth?.ok ? null : (replicateHealth?.payload?.detail || replicateHealth?.payload?.error || 'Replicate background generation is not ready.'))
+        }
+      : {
+          configured: false,
+          ready: false,
+          provider: 'background',
+          model: null,
+          prompt: null,
+          timeout_ms: null,
+          wait_seconds: null,
+          error: 'REPLICATE_API_TOKEN is required for background generation.'
         };
     const expandState = isPhotoMagicReplicateConfigured()
       ? {
@@ -4993,6 +5443,7 @@ router.get('/photo-magic/health', async (req, res) => {
           }
         },
         standard_erase: standardErase,
+        background: backgroundState,
         expand: expandState,
         enhance: enhanceState
       }
@@ -5819,6 +6270,121 @@ router.post('/photo-magic/relight', async (req, res) => {
     });
   } catch (error) {
     console.error('Photo magic relight error:', error?.payload || error);
+    const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : 500;
+    res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
+  }
+});
+
+router.post('/photo-magic/background', async (req, res) => {
+  try {
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
+    await ensurePhotoMagicDirs(store);
+
+    if (!isPhotoMagicReplicateConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'REPLICATE_API_TOKEN is not configured. Background generation requires Replicate.'
+      });
+    }
+
+    const publicBaseUrl = getPhotoMagicPublicBaseUrl(req);
+    if (!publicBaseUrl) {
+      return res.status(503).json({
+        success: false,
+        error: 'Photo Magic public base URL could not be resolved for background generation.'
+      });
+    }
+
+    const imageId = String(req.body?.image_id || '').trim();
+    if (!imageId || !isSafeTmpId(imageId)) {
+      return res.status(400).json({ success: false, error: 'image_id is required' });
+    }
+
+    const maskOutputId = String(req.body?.mask_output_id || '').trim();
+    if (!maskOutputId || !isSafeTmpId(maskOutputId)) {
+      return res.status(400).json({ success: false, error: 'mask_output_id is required. Run background removal first.' });
+    }
+
+    const imagePath = getUploadedPhotoPath(store, imageId);
+    const maskPath = getPhotoMagicOutputPath(store, maskOutputId, 'png');
+    if (!fs.existsSync(imagePath)) {
+      return res.status(404).json({ success: false, error: 'Upload not found (upload again)' });
+    }
+    if (!fs.existsSync(maskPath)) {
+      return res.status(404).json({ success: false, error: 'Subject mask not found. Run background removal again.' });
+    }
+
+    const maxSide = clampNumber(req.body?.max_side ?? req.body?.source_max_side ?? 2048, 256, 8192);
+    const maskDilatePx = clampNumber(req.body?.mask_dilate_px ?? req.body?.maskDilatePx ?? 0, 0, 64);
+    const maskFeatherPx = clampNumber(req.body?.mask_feather_px ?? req.body?.maskFeatherPx ?? 0, 0, 64);
+    const prompt = buildPhotoMagicBackgroundPrompt(req.body?.prompt);
+
+    const imageBuffer = await fs.promises.readFile(imagePath);
+    const maskBuffer = await fs.promises.readFile(maskPath);
+
+    const sourceAssetId = crypto.randomUUID();
+    const maskAssetId = crypto.randomUUID();
+    const sourceAssetPath = getPhotoMagicOutputPath(store, sourceAssetId, 'png');
+    const maskAssetPath = getPhotoMagicOutputPath(store, maskAssetId, 'png');
+
+    try {
+      const preparedSource = await prepareReplicateSourceImageBuffer(imageBuffer, maxSide);
+      const preparedSubjectMask = await normalizeReplicateMaskBuffer(maskBuffer, {
+        width: preparedSource.width,
+        height: preparedSource.height,
+        dilatePx: maskDilatePx,
+        featherPx: maskFeatherPx
+      });
+      const backgroundMaskBuffer = await invertReplicateMaskBuffer(
+        preparedSubjectMask.buffer,
+        preparedSource.width,
+        preparedSource.height
+      );
+
+      await fs.promises.writeFile(sourceAssetPath, preparedSource.buffer);
+      await fs.promises.writeFile(maskAssetPath, backgroundMaskBuffer);
+
+      const { outputUrl } = await replaceBackgroundFluxFill({
+        imageUrl: buildPhotoMagicAssetUrl(req, store, sourceAssetId, 'background-source.png'),
+        maskUrl: buildPhotoMagicAssetUrl(req, store, maskAssetId, 'background-mask.png'),
+        prompt
+      });
+
+      const outputResponse = await axios.get(outputUrl, {
+        responseType: 'arraybuffer',
+        timeout: Number(process.env.PHOTO_MAGIC_REPLICATE_TIMEOUT_MS || 300000),
+        maxContentLength: PHOTO_MAGIC_MAX_UPLOAD_BYTES * 4
+      });
+
+      const finalBuffer = await sharp(Buffer.from(outputResponse.data), { limitInputPixels: PHOTO_MAGIC_MAX_IMAGE_PIXELS })
+        .png()
+        .toBuffer();
+
+      const outId = crypto.randomUUID();
+      const outPath = getPhotoMagicOutputPath(store, outId, 'png');
+      await fs.promises.writeFile(outPath, finalBuffer);
+
+      return res.json({
+        success: true,
+        provider: 'replicate',
+        engine: 'FLUX Fill',
+        prompt,
+        width: preparedSource.width,
+        height: preparedSource.height,
+        output_id: outId,
+        url: withStoreParam(
+          `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(outId)}&filename=${encodeURIComponent('background.png')}`,
+          store
+        )
+      });
+    } finally {
+      await Promise.allSettled([
+        fs.promises.unlink(sourceAssetPath),
+        fs.promises.unlink(maskAssetPath)
+      ]);
+    }
+  } catch (error) {
+    console.error('Photo magic background error:', error?.payload || error);
     const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : 500;
     res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
   }
