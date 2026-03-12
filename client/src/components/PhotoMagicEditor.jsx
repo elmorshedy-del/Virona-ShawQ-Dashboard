@@ -2935,6 +2935,7 @@ export default function PhotoMagicEditor({ store }) {
     return connectedStack.filter((item) => alwaysShow.has(item.id) || item.ready);
   }, [connectedStack]);
   const readyCount = visibleStack.filter((item) => item.ready).length;
+  const isBusy = isUploading || isRunning;
 
   const availableTools = useMemo(() => {
     const gating = {
@@ -3253,7 +3254,6 @@ export default function PhotoMagicEditor({ store }) {
   }, [activeMaskUrl, imageSrc, primaryOutputUrl, tool, viewportMode]);
 
   const sourcePreviewStyles = cutoutUrl && tool === 'remove_bg' ? makeTransparentBg() : undefined;
-  const isBusy = isUploading || isRunning;
   const cleanPlateMaskReady = maskMetrics.hasMask;
   const maskCoverageLabel = `${(maskMetrics.coverage * 100).toFixed(maskMetrics.coverage > 0 && maskMetrics.coverage < 0.1 ? 1 : 0)}%`;
   const currentLiftAsset = selectionCutoutUrl ? buildLiftAssetFromSelection() : null;
