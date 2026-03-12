@@ -864,7 +864,7 @@ export default function PhotoMagicEditor({ store }) {
     };
   }, [imageId, imageMeta, imageSrc, lastRenderSummary, sourceHistory, sourceLabel, sourceStage, tool]);
 
-  const clearPhotoOutputsForRestore = useCallback(() => {
+  const clearPhotoOutputsState = useCallback(() => {
     setCutoutUrl(null);
     setMaskUrl(null);
     setCutoutOutputId(null);
@@ -894,6 +894,8 @@ export default function PhotoMagicEditor({ store }) {
       ctx?.clearRect(0, 0, canvas.width, canvas.height);
     }
   }, []);
+
+  const clearPhotoOutputsForRestore = clearPhotoOutputsState;
 
   const buildLiftAssetFromSelection = useCallback(() => {
     if (!selectionCutoutUrl) return null;
@@ -1516,36 +1518,7 @@ export default function PhotoMagicEditor({ store }) {
     setShowExportModal(false);
   }, [adjStyles, adjustments, exportFormat, exportQuality, exportScale, sourceLabel]);
 
-  const resetOutputs = useCallback(() => {
-    setCutoutUrl(null);
-    setMaskUrl(null);
-    setCutoutOutputId(null);
-    setMaskOutputId(null);
-    setBackgroundUrl(null);
-    setSelectionCutoutUrl(null);
-    setSelectionMaskUrl(null);
-    setSelectionCutoutOutputId(null);
-    setSelectionMaskOutputId(null);
-    setSelectionMeta(null);
-    setEraseUrl(null);
-    setRelightUrl(null);
-    setRelightMaskUrl(null);
-    setRelightMaskOutputId(null);
-    setExpandUrl(null);
-    setExpandMaskUrl(null);
-    setExpandMaskOutputId(null);
-    setEnhanceUrl(null);
-    setPoints([]);
-    setViewportMode('source');
-    setActiveLiftLayer(null);
-    undoStackRef.current = [];
-    setMaskMetrics({ hasMask: false, paintedPixels: 0, coverage: 0 });
-    const canvas = maskCanvasRef.current;
-    if (canvas) {
-      const ctx = canvas.getContext('2d');
-      ctx?.clearRect(0, 0, canvas.width, canvas.height);
-    }
-  }, []);
+  const resetOutputs = clearPhotoOutputsState;
 
   const uploadImage = useCallback(
     async (file, options = {}) => {
@@ -1795,7 +1768,7 @@ export default function PhotoMagicEditor({ store }) {
 
   useEffect(() => {
     const handlePointerMove = (event) => {
-      if (!liftDragRef.current.dragging || !activeLiftLayer || !photoStageRef.current) return;
+      if (!liftDragRef.current.dragging || !photoStageRef.current) return;
       const rect = photoStageRef.current.getBoundingClientRect();
       const pointerX = ((event.clientX - rect.left) / rect.width) * 100;
       const pointerY = ((event.clientY - rect.top) / rect.height) * 100;
@@ -1817,7 +1790,7 @@ export default function PhotoMagicEditor({ store }) {
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerUp);
     };
-  }, [activeLiftLayer]);
+  }, []);
 
   const addPointFromEvent = useCallback(
     (event) => {
@@ -3692,7 +3665,7 @@ export default function PhotoMagicEditor({ store }) {
                           >
                             <Download className="h-4 w-4" /> Export PNG
                           </Button>
-                          <Button variant="secondary" onClick={() => currentLiftAsset && useLiftedAssetAsSource(currentLiftAsset)} disabled={isBusy || !selectionCutoutUrl} className="w-full justify-center pm-btn-hover">
+                          <Button variant="secondary" onClick={() => currentLiftAsset && useLiftedAssetAsSource(currentLiftAsset)} disabled={isBusy || !currentLiftAsset} className="w-full justify-center pm-btn-hover">
                           <Wand2 className="h-4 w-4" /> Use Lifted Object
                           </Button>
                         </div>
