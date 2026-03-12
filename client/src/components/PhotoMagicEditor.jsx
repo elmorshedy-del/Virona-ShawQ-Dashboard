@@ -487,9 +487,27 @@ const PHOTO_WORKFLOW_STATE_LABELS = {
   maskReady: 'Mask ready',
   removeBgFirst: 'Remove BG first',
   brushOrLift: 'Brush or lift',
-  geminiOffline: 'Gemini offline',
+  selectionOffline: 'Selection offline',
   shadowReady: 'Shadow ready'
 };
+
+const PHOTO_MAGIC_SELECTION_MODES = {
+  PROMPT: 'prompt',
+  CLICK: 'click'
+};
+
+const PHOTO_MAGIC_SELECTION_MODE_OPTIONS = [
+  {
+    value: PHOTO_MAGIC_SELECTION_MODES.PROMPT,
+    label: 'Describe Object',
+    title: 'Type what to isolate, then lift that object from the current photo.'
+  },
+  {
+    value: PHOTO_MAGIC_SELECTION_MODES.CLICK,
+    label: 'Click Object',
+    title: 'Click directly on the photo to lift the object under your cursor.'
+  }
+];
 
 const PHOTO_WORKFLOW_STATE_RESOLVERS = {
   packshot: ({ imageId, isBusy, rmbg2Ready, backgroundReady }) => ({
@@ -522,13 +540,13 @@ const PHOTO_WORKFLOW_STATE_RESOLVERS = {
           : PHOTO_WORKFLOW_STATE_LABELS.brushOrLift,
     disabled: isBusy || !imageId || !standardEraseReady
   }),
-  'magic-lift': ({ imageId, isBusy, geminiReady }) => ({
+  'magic-lift': ({ imageId, isBusy, selectionReady }) => ({
     stateLabel: !imageId
       ? PHOTO_WORKFLOW_STATE_LABELS.needSource
-      : geminiReady
+      : selectionReady
         ? PHOTO_WORKFLOW_STATE_LABELS.ready
-        : PHOTO_WORKFLOW_STATE_LABELS.geminiOffline,
-    disabled: isBusy || !imageId || !geminiReady
+        : PHOTO_WORKFLOW_STATE_LABELS.selectionOffline,
+    disabled: isBusy || !imageId || !selectionReady
   }),
   'ground-subject': ({ imageId, isBusy, relightReady, maskOutputId }) => ({
     stateLabel: !imageId
@@ -605,6 +623,7 @@ export default function PhotoMagicEditor({ store }) {
   const [backgroundPrompt, setBackgroundPrompt] = useState(BACKGROUND_PRESET_OPTIONS[0].prompt);
   const [backgroundPresetId, setBackgroundPresetId] = useState(BACKGROUND_PRESET_OPTIONS[0].id);
 
+  const [selectionInputMode, setSelectionInputMode] = useState(PHOTO_MAGIC_SELECTION_MODES.PROMPT);
   const [selectionPrompt, setSelectionPrompt] = useState('');
   const [selectionCutoutUrl, setSelectionCutoutUrl] = useState(null);
   const [selectionMaskUrl, setSelectionMaskUrl] = useState(null);
@@ -747,6 +766,7 @@ export default function PhotoMagicEditor({ store }) {
   const paintStateRef = useRef({ painting: false, lastX: 0, lastY: 0 });
   const undoStackRef = useRef([]);
   const liftDragRef = useRef({ dragging: false, pointerId: null, offsetX: 0, offsetY: 0 });
+  const runSelectRef = useRef(null);
   const debugRunIdRef = useRef(0);
   const [maskMetrics, setMaskMetrics] = useState({ hasMask: false, paintedPixels: 0, coverage: 0 });
 
@@ -759,6 +779,12 @@ export default function PhotoMagicEditor({ store }) {
   const realEsrganReady = Boolean(aiConfigured && aiModels?.realesrgan);
   const relightReady = Boolean(aiConfigured && aiModels?.relight);
   const geminiReady = Boolean(health?.photo_magic?.guidance?.gemini?.configured);
+  const selectionState = health?.photo_magic?.selection || {};
+  const selectionReady = Boolean(selectionState?.ready ?? geminiReady);
+  const selectionProvider = String(selectionState?.provider || (geminiReady ? 'gemini' : 'selection')).trim();
+  const selectionModel = String(
+    selectionState?.model || (sam2Ready ? 'Gemini Vision + SAM2' : 'Gemini Vision')
+  ).trim();
 
   const hqConfigured = Boolean(health?.photo_magic?.hq?.configured);
   const hqOk = Boolean(health?.photo_magic?.hq?.health?.ok);
@@ -1910,6 +1936,16 @@ export default function PhotoMagicEditor({ store }) {
     return () => window.removeEventListener('resize', handleResize);
   }, [ensureMaskCanvasSize]);
 
+  const applyMagicLiftResult = useCallback((data, summary) => {
+    setSelectionCutoutUrl(data.cutout?.url || null);
+    setSelectionMaskUrl(data.mask?.url || null);
+    setSelectionCutoutOutputId(data.cutout?.output_id || null);
+    setSelectionMaskOutputId(data.mask?.output_id || null);
+    setSelectionMeta(data.selection || null);
+    setViewportMode('compare');
+    setLastRenderSummary(summary || `Lift ready for ${data.selection?.label || 'selected object'}`);
+  }, []);
+
   useEffect(() => {
     const handlePointerMove = (event) => {
       if (!liftDragRef.current.dragging || !photoStageRef.current) return;
@@ -1938,6 +1974,28 @@ export default function PhotoMagicEditor({ store }) {
 
   const addPointFromEvent = useCallback(
     (event) => {
+      if (
+        tool === 'erase'
+        && maskMethod === 'smart'
+        && selectionInputMode === PHOTO_MAGIC_SELECTION_MODES.CLICK
+        && viewportMode === 'source'
+        && selectionReady
+        && !isRunning
+        && imageId
+      ) {
+        const img = imgRef.current;
+        if (!img) return;
+
+        const rect = img.getBoundingClientRect();
+        const x = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+        const y = clamp((event.clientY - rect.top) / rect.height, 0, 1);
+        runSelectRef.current?.({
+          point: { xNorm: x, yNorm: y },
+          mode: PHOTO_MAGIC_SELECTION_MODES.CLICK
+        });
+        return;
+      }
+
       if (tool !== 'remove_bg' || !precisionMode || viewportMode !== 'source') return;
       const img = imgRef.current;
       if (!img) return;
@@ -1948,7 +2006,7 @@ export default function PhotoMagicEditor({ store }) {
       const label = event.altKey || event.metaKey ? 0 : 1;
       setPoints((prev) => [...prev, { x_norm: x, y_norm: y, label }]);
     },
-    [precisionMode, tool, viewportMode]
+    [imageId, isRunning, maskMethod, precisionMode, selectionInputMode, selectionReady, tool, viewportMode]
   );
 
   const applyRemoveBgResult = useCallback((data, summary) => {
@@ -2279,57 +2337,69 @@ export default function PhotoMagicEditor({ store }) {
     store
   ]);
 
-  const runSelect = useCallback(async () => {
-    if (!imageId || !selectionPrompt.trim()) return;
+  const runSelect = useCallback(async ({ prompt = '', point = null, mode = PHOTO_MAGIC_SELECTION_MODES.PROMPT } = {}) => {
+    if (!imageId) return;
+
+    const promptLabel = String(prompt || selectionPrompt || '').trim();
+    const hasPoint = Number.isFinite(Number(point?.xNorm)) && Number.isFinite(Number(point?.yNorm));
+    if (!promptLabel && !hasPoint) return;
 
     setError(null);
     setIsRunning(true);
-    const promptLabel = selectionPrompt.trim();
-    const runId = startDebugRun('Prompt Selection', `Resolving "${promptLabel}"`);
+    const runId = startDebugRun('Magic Lift', hasPoint ? 'Resolving clicked object' : `Resolving "${promptLabel}"`);
     try {
+      const requestBody = {
+        image_id: imageId,
+        max_side: maxSide,
+        mask_dilate_px: maskDilatePx,
+        mask_feather_px: maskFeatherPx
+      };
+      if (promptLabel) requestBody.prompt = promptLabel;
+      if (hasPoint) {
+        requestBody.point_x_norm = point.xNorm;
+        requestBody.point_y_norm = point.yNorm;
+      }
+
       const data = await requestJson({
         runId,
-        scope: 'Prompt Selection',
+        scope: 'Magic Lift',
         step: 'select',
         url: withStore('/creative-studio/photo-magic/select', store),
         options: {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            image_id: imageId,
-            prompt: promptLabel,
-            max_side: maxSide,
-            mask_dilate_px: maskDilatePx,
-            mask_feather_px: maskFeatherPx
-          })
+          body: JSON.stringify(requestBody)
         },
-        successMessage: 'Prompt selection mask resolved',
-        failureMessage: 'Prompt selection failed',
+        successMessage: hasPoint ? 'Click selection resolved' : 'Prompt selection resolved',
+        failureMessage: 'Magic Lift failed',
         successDetails: (payload) => ({
-          label: payload?.selection?.label || promptLabel,
+          mode,
+          label: payload?.selection?.label || promptLabel || 'Selected object',
           confidence: payload?.selection?.confidence || null,
+          provider: payload?.selection?.provider || selectionProvider,
           maskReady: Boolean(payload?.mask?.url)
         })
       });
 
-      setSelectionCutoutUrl(data.cutout?.url || null);
-      setSelectionMaskUrl(data.mask?.url || null);
-      setSelectionCutoutOutputId(data.cutout?.output_id || null);
-      setSelectionMaskOutputId(data.mask?.output_id || null);
-      setSelectionMeta(data.selection || null);
-      setViewportMode('compare');
-      setLastRenderSummary(`Selection locked for ${data.selection?.label || promptLabel}`);
+      const summaryLabel = data?.selection?.label || promptLabel || 'selected object';
+      applyMagicLiftResult(data, `Lift ready for ${summaryLabel}`);
     } catch (nextError) {
       console.error(nextError);
-      const message = nextError?.message || 'Prompt selection failed';
+      const message = nextError?.message || 'Magic Lift failed';
       setError(message);
       setLastRenderSummary(`Failed: ${message}`);
-      logDebug(runId, 'Prompt Selection', 'complete', 'failed', message, { prompt: promptLabel });
+      logDebug(runId, 'Magic Lift', 'complete', 'failed', message, {
+        mode,
+        prompt: promptLabel || null,
+        point: hasPoint ? point : null
+      });
     } finally {
       setIsRunning(false);
       refreshHealth();
     }
-  }, [imageId, logDebug, maskDilatePx, maskFeatherPx, maxSide, refreshHealth, requestJson, selectionPrompt, startDebugRun, store]);
+  }, [applyMagicLiftResult, imageId, logDebug, maskDilatePx, maskFeatherPx, maxSide, refreshHealth, requestJson, selectionPrompt, selectionProvider, startDebugRun, store]);
+
+  runSelectRef.current = runSelect;
 
   const pushUndo = useCallback(() => {
     const canvas = maskCanvasRef.current;
@@ -2857,10 +2927,10 @@ export default function PhotoMagicEditor({ store }) {
       {
         id: 'select',
         title: 'Magic Lift',
-        model: sam2Ready ? 'Gemini Vision + SAM2' : 'Gemini Vision',
-        ready: Boolean(geminiReady),
+        model: selectionModel,
+        ready: Boolean(selectionReady),
         description: 'Detect an object, lift it into an isolated cutout, or route it straight into removal.',
-        error: geminiReady ? '' : 'GEMINI_API_KEY is not configured.'
+        error: selectionState?.error || (selectionReady ? '' : 'Magic Lift selection is not available.')
       },
       {
         id: 'lama',
@@ -2913,17 +2983,18 @@ export default function PhotoMagicEditor({ store }) {
       backgroundReady,
       backgroundState?.error,
       expandReady,
-      geminiReady,
       health?.photo_magic?.hq?.health?.payload?.errors?.sdxl_expand,
       hqOk,
       hqReason,
-      lamaReady,
       enhanceModel,
       enhanceReady,
       enhanceState?.error,
       relightReady,
       rmbg2Ready,
       sam2Ready,
+      selectionModel,
+      selectionReady,
+      selectionState?.error,
       standardEraseModel,
       standardEraseReady,
       standardEraseState?.error
@@ -2971,13 +3042,13 @@ export default function PhotoMagicEditor({ store }) {
       backgroundReady,
       enhanceReady,
       expandReady,
-      geminiReady,
       imageId,
       isBusy,
       latestMaskForErase,
       maskOutputId,
       relightReady,
       rmbg2Ready,
+      selectionReady,
       standardEraseReady
     };
 
@@ -2990,7 +3061,7 @@ export default function PhotoMagicEditor({ store }) {
         stateLabel
       };
     });
-  }, [backgroundReady, enhanceReady, expandReady, geminiReady, imageId, isBusy, latestMaskForErase, maskMethod, maskOutputId, relightReady, rmbg2Ready, standardEraseReady, tool]);
+  }, [backgroundReady, enhanceReady, expandReady, imageId, isBusy, latestMaskForErase, maskMethod, maskOutputId, relightReady, rmbg2Ready, selectionReady, standardEraseReady, tool]);
 
   const packshotWorkflow = photoWorkflowCards.find((item) => item.id === 'packshot') || null;
 
@@ -4024,30 +4095,52 @@ export default function PhotoMagicEditor({ store }) {
                       <ScanSearch className="h-4 w-4 text-indigo-400" />
                       <Label>Magic Lift</Label>
                     </div>
-                    <div className="text-xs text-gray-500 mb-3">Describe the object to lift. AI will isolate it so you can remove it, export it, or place it back on the canvas as a movable layer.</div>
-                    <div className="space-y-3">
+                    <div className="text-xs text-gray-500 mb-3">Lift one object into a reusable cutout. Click directly on the photo for fast selection or describe the object when it is hard to target visually.</div>
+                    <div className="mt-3">
+                      <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Selection Mode</div>
+                      <Toggle value={selectionInputMode} onChange={setSelectionInputMode} options={PHOTO_MAGIC_SELECTION_MODE_OPTIONS} />
+                    </div>
+                    <div className="mt-3 space-y-3">
                       <Slider label="Max Resolution" tooltip="Maximum image dimension" value={maxSide} onChange={(e) => setMaxSide(clamp(toNumber(e.target.value, 2048), 256, 8192))} min={256} max={8192} step={256} />
                       <Slider label="Edge Expansion" tooltip="Grow the boundary outward" value={maskDilatePx} onChange={(e) => setMaskDilatePx(clamp(toNumber(e.target.value, 0), 0, 64))} min={0} max={64} />
                       <Slider label="Edge Softness" tooltip="Smooth the edges" value={maskFeatherPx} onChange={(e) => setMaskFeatherPx(clamp(toNumber(e.target.value, 0), 0, 64))} min={0} max={64} />
                     </div>
-                    <div className="mt-3">
-                      <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">What to detect</div>
-                      <Input value={selectionPrompt} onChange={(e) => setSelectionPrompt(e.target.value)} placeholder="e.g. price tag, logo, shoe, hand..." />
-                    </div>
+                    {selectionInputMode === PHOTO_MAGIC_SELECTION_MODES.PROMPT ? (
+                      <div className="mt-3 pm-section-enter">
+                        <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">What to detect</div>
+                        <Input value={selectionPrompt} onChange={(e) => setSelectionPrompt(e.target.value)} placeholder="e.g. price tag, logo, shoe, hand..." />
+                        <div className="mt-3">
+                          <Button
+                            variant="primary"
+                            onClick={() => runSelect({ mode: PHOTO_MAGIC_SELECTION_MODES.PROMPT })}
+                            disabled={!imageId || isRunning || !selectionReady || !selectionPrompt.trim()}
+                            className="w-full justify-center pm-btn-hover"
+                          >
+                            <ScanSearch className="h-4 w-4" />
+                            Lift from Prompt
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50/45 p-3 pm-section-enter">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-[11px] font-bold uppercase tracking-widest text-indigo-500">Click to Lift</div>
+                            <div className="mt-1 text-xs leading-5 text-gray-500">Click directly on the photo preview to isolate the object under your cursor. The lifted object will appear here as soon as the mask resolves.</div>
+                          </div>
+                          <StatusPill ok={selectionReady} label={selectionReady ? 'Click ready' : 'Selection offline'} />
+                        </div>
+                      </div>
+                    )}
                     {selectionMeta ? (
                       <div className="mt-3 rounded-xl border border-emerald-100 bg-emerald-50/50 p-2.5 pm-section-enter">
                         <div className="flex items-center justify-between">
                           <span className="text-sm font-medium text-gray-900">{selectionMeta.label || 'Detected'}</span>
                           <span className="text-[11px] font-mono font-semibold text-emerald-600">{Math.round((selectionMeta.confidence || 0) * 100)}%</span>
                         </div>
+                        <div className="mt-1 text-[11px] font-medium uppercase tracking-[0.16em] text-emerald-600/80">{selectionProvider}</div>
                       </div>
                     ) : null}
-                    <div className="mt-3">
-                      <Button variant="primary" onClick={runSelect} disabled={!imageId || isRunning || !geminiReady || !selectionPrompt.trim()} className="w-full justify-center pm-btn-hover">
-                        <ScanSearch className="h-4 w-4" />
-                        Lift Object
-                      </Button>
-                    </div>
                     {selectionMaskUrl ? (
                       <div className="mt-2 space-y-2 pm-section-enter">
                         <div className="grid gap-2 sm:grid-cols-2">
