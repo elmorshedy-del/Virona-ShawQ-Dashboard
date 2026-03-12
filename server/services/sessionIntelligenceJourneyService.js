@@ -4,6 +4,8 @@ import { getDb } from '../db/database.js';
 const JOURNEY_BUILDER_VERSION = 1;
 const JOURNEY_DEFAULT_LIMIT = 50;
 const JOURNEY_MAX_LIMIT = 500;
+const JOURNEY_ANALYSIS_DEFAULT_LIMIT = 5000;
+const JOURNEY_ANALYSIS_MAX_LIMIT = 20000;
 const JOURNEY_STEPS_MAX = 128;
 const JOURNEY_RETURN_LOOKAHEAD_DAYS = 7;
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -421,10 +423,10 @@ function resolveJourneyRange({ date = null, startDate = null, endDate = null } =
   };
 }
 
-function normalizeLimit(limit, fallback = JOURNEY_DEFAULT_LIMIT) {
+function normalizeLimit(limit, fallback = JOURNEY_DEFAULT_LIMIT, maxLimit = JOURNEY_MAX_LIMIT) {
   const numericValue = Number.parseInt(limit, 10);
   if (!Number.isFinite(numericValue)) return fallback;
-  return Math.min(JOURNEY_MAX_LIMIT, Math.max(1, numericValue));
+  return Math.min(maxLimit, Math.max(1, numericValue));
 }
 
 function buildEventTimestamp(row) {
@@ -1207,6 +1209,46 @@ function selectSessionsForRange(db, store, range, limit) {
   `).all(store, range.start, range.end, limit);
 }
 
+function formatJourneyAnalysisRow(journeyRow) {
+  const data = safeJsonParse(journeyRow?.data_json) || {};
+  return {
+    session_id: journeyRow.session_id,
+    session_number: journeyRow.session_number || null,
+    shopper_number: journeyRow.shopper_number || null,
+    client_id: journeyRow.client_id || null,
+    user_id: journeyRow.user_id || null,
+    journey_date: journeyRow.journey_date || null,
+    journey_confidence: journeyRow.journey_confidence || null,
+    entry_source: journeyRow.entry_source || null,
+    entry_medium: journeyRow.entry_medium || null,
+    entry_campaign: journeyRow.entry_campaign || null,
+    entry_device_type: journeyRow.entry_device_type || null,
+    entry_device_os: journeyRow.entry_device_os || null,
+    entry_country_code: journeyRow.entry_country_code || null,
+    first_product_id: journeyRow.first_product_id || null,
+    first_product_label: journeyRow.first_product_label || null,
+    last_product_before_cart_id: journeyRow.last_product_before_cart_id || null,
+    last_product_before_cart_label: journeyRow.last_product_before_cart_label || null,
+    last_product_id: journeyRow.last_product_id || null,
+    last_product_label: journeyRow.last_product_label || null,
+    cart_entered_at: journeyRow.cart_entered_at || null,
+    checkout_started_at: journeyRow.checkout_started_at || null,
+    last_checkout_step: journeyRow.last_checkout_step || null,
+    payment_info_submitted_at: journeyRow.payment_info_submitted_at || null,
+    purchase_at: journeyRow.purchase_at || null,
+    purchased_in_session: Boolean(journeyRow.purchased_in_session),
+    exit_step: journeyRow.exit_step || null,
+    last_meaningful_event_name: journeyRow.last_meaningful_event_name || null,
+    product_view_count: journeyRow.product_view_count || 0,
+    technical_issue_count: journeyRow.technical_issue_count || 0,
+    friction_signal_count: journeyRow.friction_signal_count || 0,
+    sequence: Array.isArray(data.sequence) ? data.sequence : [],
+    event_breakdown: data.event_breakdown && typeof data.event_breakdown === 'object' && !Array.isArray(data.event_breakdown)
+      ? data.event_breakdown
+      : {}
+  };
+}
+
 function formatJourneyListRow(journeyRow) {
   const data = safeJsonParse(journeyRow?.data_json) || {};
   return {
@@ -1287,6 +1329,33 @@ export function getSessionIntelligenceJourneys(store, {
     totalSessions: sessionRows.length,
     rebuilt,
     rows
+  };
+}
+
+export function getSessionIntelligenceJourneyRowsForAnalysis(store, {
+  date = null,
+  startDate = null,
+  endDate = null,
+  limit = JOURNEY_ANALYSIS_DEFAULT_LIMIT,
+  rebuild = false
+} = {}) {
+  const db = getDb();
+  const normalizedStore = safeString(store).trim() || 'shawq';
+  const range = resolveJourneyRange({ date, startDate, endDate });
+  const max = normalizeLimit(limit, JOURNEY_ANALYSIS_DEFAULT_LIMIT, JOURNEY_ANALYSIS_MAX_LIMIT);
+  const sessionRows = selectSessionsForRange(db, normalizedStore, range, max);
+  const { journeys, rebuilt } = buildOrRefreshJourneysForList(db, normalizedStore, sessionRows, { rebuild });
+
+  return {
+    store: normalizedStore,
+    period: {
+      label: range.label,
+      start: range.start,
+      end: range.end
+    },
+    totalSessions: sessionRows.length,
+    rebuilt,
+    rows: journeys.map(formatJourneyAnalysisRow)
   };
 }
 
