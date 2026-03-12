@@ -43,6 +43,7 @@ import {
   getSessionIntelligenceJourneyDetail,
   getSessionIntelligenceJourneys
 } from '../services/sessionIntelligenceJourneyService.js';
+import { getSessionIntelligenceNormalizedFunnel } from '../services/sessionIntelligenceNormalizationService.js';
 import { issueSessionIntelligenceAdminCookie, validateSessionIntelligenceAdminRequest } from '../utils/sessionIntelligenceSurveyAccess.js';
 
 const router = express.Router();
@@ -533,6 +534,36 @@ router.get('/journeys', requireSurveyAdminSession, (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] journeys error:', error);
     res.status(500).json({ success: false, error: 'Failed to load journeys' });
+  }
+});
+
+router.get('/normalized/funnel', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const date = req.query.date || null;
+    const startDate = req.query.startDate || req.query.start || null;
+    const endDate = req.query.endDate || req.query.end || null;
+    const baselineDays = req.query.baselineDays ? parseInt(req.query.baselineDays, 10) : undefined;
+    const rebuild = normalizeFlag(req.query.rebuild);
+    const journeyLimit = req.query.limit ? parseInt(req.query.limit, 10) : undefined;
+
+    const report = getSessionIntelligenceNormalizedFunnel(store, {
+      date,
+      startDate,
+      endDate,
+      baselineDays,
+      rebuild,
+      journeyLimit
+    });
+
+    if (!report.success) {
+      return res.status(400).json(report);
+    }
+
+    res.json(report);
+  } catch (error) {
+    console.error('[SessionIntelligence] normalized funnel error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load normalized funnel metrics' });
   }
 });
 
