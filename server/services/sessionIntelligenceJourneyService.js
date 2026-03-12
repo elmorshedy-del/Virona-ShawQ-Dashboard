@@ -1243,7 +1243,9 @@ function formatJourneyAnalysisRow(journeyRow) {
     technical_issue_count: journeyRow.technical_issue_count || 0,
     friction_signal_count: journeyRow.friction_signal_count || 0,
     sequence: Array.isArray(data.sequence) ? data.sequence : [],
-    event_breakdown: data.event_breakdown && typeof data.event_breakdown === 'object' ? data.event_breakdown : {}
+    event_breakdown: data.event_breakdown && typeof data.event_breakdown === 'object' && !Array.isArray(data.event_breakdown)
+      ? data.event_breakdown
+      : {}
   };
 }
 

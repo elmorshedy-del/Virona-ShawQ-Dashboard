@@ -537,7 +537,7 @@ router.get('/journeys', requireSurveyAdminSession, (req, res) => {
   }
 });
 
-router.get('/normalized/funnel', (req, res) => {
+router.get('/normalized/funnel', requireSurveyAdminSession, (req, res) => {
   try {
     const store = req.query.store || 'shawq';
     const date = req.query.date || null;
