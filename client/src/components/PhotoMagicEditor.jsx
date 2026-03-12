@@ -477,6 +477,95 @@ const PHOTO_WORKFLOW_SHORTCUTS = [
   }
 ];
 
+const PHOTO_WORKFLOW_STATE_LABELS = {
+  ready: 'Ready',
+  runNow: 'Run now',
+  needSource: 'Need source',
+  offline: 'Offline',
+  cutoutOffline: 'Cutout offline',
+  backgroundOffline: 'BG offline',
+  maskReady: 'Mask ready',
+  removeBgFirst: 'Remove BG first',
+  brushOrLift: 'Brush or lift',
+  geminiOffline: 'Gemini offline',
+  shadowReady: 'Shadow ready'
+};
+
+const PHOTO_WORKFLOW_STATE_RESOLVERS = {
+  packshot: ({ imageId, isBusy, rmbg2Ready, backgroundReady }) => ({
+    stateLabel: !imageId
+      ? PHOTO_WORKFLOW_STATE_LABELS.needSource
+      : !rmbg2Ready
+        ? PHOTO_WORKFLOW_STATE_LABELS.cutoutOffline
+        : !backgroundReady
+          ? PHOTO_WORKFLOW_STATE_LABELS.backgroundOffline
+          : PHOTO_WORKFLOW_STATE_LABELS.runNow,
+    disabled: isBusy || !imageId || !rmbg2Ready || !backgroundReady
+  }),
+  'background-studio': ({ imageId, isBusy, backgroundReady, maskOutputId }) => ({
+    stateLabel: !imageId
+      ? PHOTO_WORKFLOW_STATE_LABELS.needSource
+      : !backgroundReady
+        ? PHOTO_WORKFLOW_STATE_LABELS.offline
+        : maskOutputId
+          ? PHOTO_WORKFLOW_STATE_LABELS.maskReady
+          : PHOTO_WORKFLOW_STATE_LABELS.removeBgFirst,
+    disabled: isBusy || !imageId || !backgroundReady
+  }),
+  'object-remover': ({ imageId, isBusy, standardEraseReady, latestMaskForErase }) => ({
+    stateLabel: !imageId
+      ? PHOTO_WORKFLOW_STATE_LABELS.needSource
+      : !standardEraseReady
+        ? PHOTO_WORKFLOW_STATE_LABELS.offline
+        : latestMaskForErase
+          ? PHOTO_WORKFLOW_STATE_LABELS.maskReady
+          : PHOTO_WORKFLOW_STATE_LABELS.brushOrLift,
+    disabled: isBusy || !imageId || !standardEraseReady
+  }),
+  'magic-lift': ({ imageId, isBusy, geminiReady }) => ({
+    stateLabel: !imageId
+      ? PHOTO_WORKFLOW_STATE_LABELS.needSource
+      : geminiReady
+        ? PHOTO_WORKFLOW_STATE_LABELS.ready
+        : PHOTO_WORKFLOW_STATE_LABELS.geminiOffline,
+    disabled: isBusy || !imageId || !geminiReady
+  }),
+  'ground-subject': ({ imageId, isBusy, relightReady, maskOutputId }) => ({
+    stateLabel: !imageId
+      ? PHOTO_WORKFLOW_STATE_LABELS.needSource
+      : !relightReady
+        ? PHOTO_WORKFLOW_STATE_LABELS.offline
+        : maskOutputId
+          ? PHOTO_WORKFLOW_STATE_LABELS.shadowReady
+          : PHOTO_WORKFLOW_STATE_LABELS.removeBgFirst,
+    disabled: isBusy || !imageId || !relightReady
+  }),
+  'extend-canvas': ({ imageId, isBusy, expandReady }) => ({
+    stateLabel: !imageId
+      ? PHOTO_WORKFLOW_STATE_LABELS.needSource
+      : expandReady
+        ? PHOTO_WORKFLOW_STATE_LABELS.ready
+        : PHOTO_WORKFLOW_STATE_LABELS.offline,
+    disabled: isBusy || !imageId || !expandReady
+  }),
+  'enhance-image': ({ imageId, isBusy, enhanceReady }) => ({
+    stateLabel: !imageId
+      ? PHOTO_WORKFLOW_STATE_LABELS.needSource
+      : enhanceReady
+        ? PHOTO_WORKFLOW_STATE_LABELS.ready
+        : PHOTO_WORKFLOW_STATE_LABELS.offline,
+    disabled: isBusy || !imageId || !enhanceReady
+  })
+};
+
+function getPhotoWorkflowState(workflowId, context) {
+  const resolveState = PHOTO_WORKFLOW_STATE_RESOLVERS[workflowId];
+  return resolveState ? resolveState(context) : {
+    stateLabel: PHOTO_WORKFLOW_STATE_LABELS.ready,
+    disabled: context.isBusy
+  };
+}
+
 function getBackgroundPresetById(presetId) {
   return BACKGROUND_PRESET_OPTIONS.find((item) => item.id === presetId);
 }
@@ -2877,34 +2966,22 @@ export default function PhotoMagicEditor({ store }) {
             : tool === 'enhance'
               ? 'enhance-image'
               : null;
+    const workflowStateContext = {
+      backgroundReady,
+      enhanceReady,
+      expandReady,
+      geminiReady,
+      imageId,
+      isBusy,
+      latestMaskForErase,
+      maskOutputId,
+      relightReady,
+      rmbg2Ready,
+      standardEraseReady
+    };
 
     return PHOTO_WORKFLOW_SHORTCUTS.map((item) => {
-      let stateLabel = 'Ready';
-      let disabled = isBusy;
-
-      if (item.id === 'packshot') {
-        stateLabel = !imageId ? 'Need source' : !rmbg2Ready ? 'Cutout offline' : !backgroundReady ? 'BG offline' : 'Run now';
-        disabled = isBusy || !imageId || !rmbg2Ready || !backgroundReady;
-      } else if (item.id === 'background-studio') {
-        stateLabel = !imageId ? 'Need source' : !backgroundReady ? 'Offline' : maskOutputId ? 'Mask ready' : 'Remove BG first';
-        disabled = isBusy || !imageId || !backgroundReady;
-      } else if (item.id === 'object-remover') {
-        stateLabel = !imageId ? 'Need source' : !standardEraseReady ? 'Offline' : latestMaskForErase ? 'Mask ready' : 'Brush or lift';
-        disabled = isBusy || !imageId || !standardEraseReady;
-      } else if (item.id === 'magic-lift') {
-        stateLabel = !imageId ? 'Need source' : geminiReady ? 'Ready' : 'Gemini offline';
-        disabled = isBusy || !imageId || !geminiReady;
-      } else if (item.id === 'ground-subject') {
-        stateLabel = !imageId ? 'Need source' : !relightReady ? 'Offline' : maskOutputId ? 'Shadow ready' : 'Remove BG first';
-        disabled = isBusy || !imageId || !relightReady;
-      } else if (item.id === 'extend-canvas') {
-        stateLabel = !imageId ? 'Need source' : expandReady ? 'Ready' : 'Offline';
-        disabled = isBusy || !imageId || !expandReady;
-      } else if (item.id === 'enhance-image') {
-        stateLabel = !imageId ? 'Need source' : enhanceReady ? 'Ready' : 'Offline';
-        disabled = isBusy || !imageId || !enhanceReady;
-      }
-
+      const { stateLabel, disabled } = getPhotoWorkflowState(item.id, workflowStateContext);
       return {
         ...item,
         active: item.id === currentWorkflowId,
@@ -2912,7 +2989,7 @@ export default function PhotoMagicEditor({ store }) {
         stateLabel
       };
     });
-  }, [backgroundReady, cutoutUrl, enhanceReady, expandReady, geminiReady, imageId, isBusy, latestMaskForErase, maskMethod, maskOutputId, relightReady, rmbg2Ready, standardEraseReady, tool]);
+  }, [backgroundReady, enhanceReady, expandReady, geminiReady, imageId, isBusy, latestMaskForErase, maskMethod, maskOutputId, relightReady, rmbg2Ready, standardEraseReady, tool]);
 
   const packshotWorkflow = photoWorkflowCards.find((item) => item.id === 'packshot') || null;
 
