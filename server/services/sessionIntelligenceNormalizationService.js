@@ -2,6 +2,7 @@ import {
   SESSION_INTELLIGENCE_FUNNEL_STAGES,
   SESSION_INTELLIGENCE_NORMALIZATION_CONFIG,
   buildNormalizedFunnelMetrics,
+  buildNormalizedProductMetrics,
   getFunnelStageLabel
 } from './sessionIntelligenceNormalizationMath.js';
 import { getSessionIntelligenceJourneyRowsForAnalysis } from './sessionIntelligenceJourneyService.js';
@@ -81,6 +82,56 @@ function formatComparisonSummary(status) {
   return 'Within usual range';
 }
 
+function getAnalysisJourneys(store, { currentRange, baselineRange, rebuild, journeyLimit }) {
+  const effectiveJourneyLimit = normalizeJourneyLimit(journeyLimit);
+  const currentJourneys = getSessionIntelligenceJourneyRowsForAnalysis(store, {
+    startDate: currentRange.startDate,
+    endDate: currentRange.endDate,
+    limit: effectiveJourneyLimit,
+    rebuild
+  });
+  const baselineJourneys = getSessionIntelligenceJourneyRowsForAnalysis(store, {
+    startDate: baselineRange.startDate,
+    endDate: baselineRange.endDate,
+    limit: effectiveJourneyLimit,
+    rebuild: false
+  });
+
+  return {
+    effectiveJourneyLimit,
+    currentJourneys,
+    baselineJourneys
+  };
+}
+
+function buildSharedReportEnvelope({ store, currentRange, baselineRange, effectiveJourneyLimit, currentJourneys, baselineJourneys }) {
+  return {
+    store: safeString(store).trim() || 'shawq',
+    currentPeriod: {
+      label: currentRange.label,
+      startDate: currentRange.startDate,
+      endDate: currentRange.endDate,
+      totalJourneys: currentJourneys.totalSessions,
+      rebuiltJourneys: currentJourneys.rebuilt
+    },
+    baselinePeriod: {
+      label: baselineRange.label,
+      startDate: baselineRange.startDate,
+      endDate: baselineRange.endDate,
+      baselineDays: baselineRange.baselineDays,
+      totalJourneys: baselineJourneys.totalSessions,
+      rebuiltJourneys: baselineJourneys.rebuilt
+    },
+    config: {
+      baselineDays: baselineRange.baselineDays,
+      minimumReachedJourneys: SESSION_INTELLIGENCE_NORMALIZATION_CONFIG.minimumReachedJourneys,
+      shrinkagePriorStrengthJourneys: SESSION_INTELLIGENCE_NORMALIZATION_CONFIG.shrinkagePriorStrengthJourneys,
+      steadyGapThreshold: SESSION_INTELLIGENCE_NORMALIZATION_CONFIG.steadyGapThreshold,
+      journeyLimit: effectiveJourneyLimit
+    }
+  };
+}
+
 export function getSessionIntelligenceNormalizedFunnel(store, {
   date = null,
   startDate = null,
@@ -94,21 +145,12 @@ export function getSessionIntelligenceNormalizedFunnel(store, {
     return { success: false, error: 'Missing valid date or startDate/endDate (YYYY-MM-DD).' };
   }
 
-  const effectiveBaselineRange = buildBaselineRange(currentRange, baselineDays);
-  const effectiveJourneyLimit = normalizeJourneyLimit(journeyLimit);
-
-  const currentJourneys = getSessionIntelligenceJourneyRowsForAnalysis(store, {
-    startDate: currentRange.startDate,
-    endDate: currentRange.endDate,
-    limit: effectiveJourneyLimit,
-    rebuild
-  });
-  const baselineJourneys = getSessionIntelligenceJourneyRowsForAnalysis(store, {
-    startDate: effectiveBaselineRange.startDate,
-    endDate: effectiveBaselineRange.endDate,
-    limit: effectiveJourneyLimit,
-    rebuild: false
-  });
+  const baselineRange = buildBaselineRange(currentRange, baselineDays);
+  const {
+    effectiveJourneyLimit,
+    currentJourneys,
+    baselineJourneys
+  } = getAnalysisJourneys(store, { currentRange, baselineRange, rebuild, journeyLimit });
 
   const metrics = buildNormalizedFunnelMetrics({
     currentJourneys: currentJourneys.rows,
@@ -119,29 +161,7 @@ export function getSessionIntelligenceNormalizedFunnel(store, {
   return {
     success: true,
     data: {
-      store: safeString(store).trim() || 'shawq',
-      currentPeriod: {
-        label: currentRange.label,
-        startDate: currentRange.startDate,
-        endDate: currentRange.endDate,
-        totalJourneys: currentJourneys.totalSessions,
-        rebuiltJourneys: currentJourneys.rebuilt
-      },
-      baselinePeriod: {
-        label: effectiveBaselineRange.label,
-        startDate: effectiveBaselineRange.startDate,
-        endDate: effectiveBaselineRange.endDate,
-        baselineDays: effectiveBaselineRange.baselineDays,
-        totalJourneys: baselineJourneys.totalSessions,
-        rebuiltJourneys: baselineJourneys.rebuilt
-      },
-      config: {
-        baselineDays: effectiveBaselineRange.baselineDays,
-        minimumReachedJourneys: SESSION_INTELLIGENCE_NORMALIZATION_CONFIG.minimumReachedJourneys,
-        shrinkagePriorStrengthJourneys: SESSION_INTELLIGENCE_NORMALIZATION_CONFIG.shrinkagePriorStrengthJourneys,
-        steadyGapThreshold: SESSION_INTELLIGENCE_NORMALIZATION_CONFIG.steadyGapThreshold,
-        journeyLimit: effectiveJourneyLimit
-      },
+      ...buildSharedReportEnvelope({ store, currentRange, baselineRange, effectiveJourneyLimit, currentJourneys, baselineJourneys }),
       stages: metrics.stages,
       transitions: metrics.transitions.map((transition) => ({
         ...transition,
@@ -153,6 +173,56 @@ export function getSessionIntelligenceNormalizedFunnel(store, {
       stageLabels: SESSION_INTELLIGENCE_FUNNEL_STAGES.map((stageKey) => ({
         stageKey,
         label: getFunnelStageLabel(stageKey)
+      }))
+    }
+  };
+}
+
+export function getSessionIntelligenceNormalizedProducts(store, {
+  date = null,
+  startDate = null,
+  endDate = null,
+  baselineDays = SESSION_INTELLIGENCE_NORMALIZATION_CONFIG.baselineDays,
+  rebuild = false,
+  journeyLimit = NORMALIZED_ANALYSIS_DEFAULT_LIMIT
+} = {}) {
+  const currentRange = resolveCurrentRange({ date, startDate, endDate });
+  if (!currentRange) {
+    return { success: false, error: 'Missing valid date or startDate/endDate (YYYY-MM-DD).' };
+  }
+
+  const baselineRange = buildBaselineRange(currentRange, baselineDays);
+  const {
+    effectiveJourneyLimit,
+    currentJourneys,
+    baselineJourneys
+  } = getAnalysisJourneys(store, { currentRange, baselineRange, rebuild, journeyLimit });
+
+  const metrics = buildNormalizedProductMetrics({
+    currentJourneys: currentJourneys.rows,
+    baselineJourneys: baselineJourneys.rows,
+    config: SESSION_INTELLIGENCE_NORMALIZATION_CONFIG
+  });
+
+  return {
+    success: true,
+    data: {
+      ...buildSharedReportEnvelope({ store, currentRange, baselineRange, effectiveJourneyLimit, currentJourneys, baselineJourneys }),
+      attributionMode: 'anchored_journey_product',
+      totals: metrics.totals,
+      products: metrics.products.map((product) => ({
+        ...product,
+        comparison: {
+          ...product.comparison,
+          summary: formatComparisonSummary(product.comparison.primaryTransition?.comparison?.status || 'limited_data')
+        },
+        transitions: product.transitions.map((transition) => ({
+          ...transition,
+          comparison: {
+            ...transition.comparison,
+            summary: formatComparisonSummary(transition.comparison.status)
+          }
+        }))
       }))
     }
   };
