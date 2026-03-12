@@ -2093,7 +2093,7 @@ export default function PhotoMagicEditor({ store }) {
   const runPackshotAutopilot = useCallback(async () => {
     if (!imageId || !rmbg2Ready) return;
 
-    const preset = getBackgroundPresetById(PACKSHOT_AUTOPILOT_PRESET_ID);
+    const preset = getBackgroundPresetById(PACKSHOT_AUTOPILOT_PRESET_ID) || BACKGROUND_PRESET_OPTIONS[0];
     setError(null);
     setTool('remove_bg');
     applyBackgroundPreset(preset.id);
