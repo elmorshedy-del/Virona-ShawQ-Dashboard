@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   buildNormalizedFunnelMetrics,
   buildNormalizedProductMetrics,
+  buildNormalizedSegmentMetrics,
   getAnchoredJourneyProduct,
+  getJourneySegment,
   hasJourneyReachedStage,
   shrinkBinomialRate
 } from '../services/sessionIntelligenceNormalizationMath.js';
@@ -198,4 +200,64 @@ test('buildNormalizedProductMetrics flags products that move into cart less ofte
   assert.equal(hoodie.comparison.primaryTransition.toStage, 'atc');
   assert.equal(hoodie.comparison.primaryTransition.comparison.status, 'weaker_than_usual');
   assert.ok(hoodie.comparison.primaryTransition.comparison.missedAdvancedJourneys > 5);
+});
+
+
+test('getJourneySegment normalizes device and source labels for merchant-safe segments', () => {
+  const journey = makeJourney({
+    entry_device_os: 'ios',
+    entry_device_type: 'mobile',
+    entry_source: 'ig'
+  });
+
+  assert.deepEqual(getJourneySegment(journey, 'device'), {
+    segmentKey: 'device:ios',
+    segmentLabel: 'iOS',
+    dimension: 'device'
+  });
+  assert.deepEqual(getJourneySegment(journey, 'source'), {
+    segmentKey: 'source:instagram',
+    segmentLabel: 'Instagram',
+    dimension: 'source'
+  });
+  assert.deepEqual(getJourneySegment(makeJourney({ entry_source: '' }), 'source'), {
+    segmentKey: 'source:direct',
+    segmentLabel: 'Direct',
+    dimension: 'source'
+  });
+});
+
+test('buildNormalizedSegmentMetrics flags device cohorts that leak earlier than usual', () => {
+  const makeDeviceJourney = ({ deviceOs, advanced }) => makeJourney({
+    entry_device_os: deviceOs,
+    entry_device_type: 'mobile',
+    product_view_count: 1,
+    sequence: advanced ? ['product', 'cart'] : ['product'],
+    event_breakdown: advanced ? { add_to_cart_clicked: 1, product_added_to_cart: 1 } : {},
+    cart_entered_at: advanced ? '2026-03-11 12:00:00' : null
+  });
+
+  const currentJourneys = [
+    ...Array.from({ length: 40 }, (_, index) => makeDeviceJourney({ deviceOs: 'ios', advanced: index < 8 })),
+    ...Array.from({ length: 30 }, (_, index) => makeDeviceJourney({ deviceOs: 'android', advanced: index < 12 }))
+  ];
+
+  const baselineJourneys = [
+    ...Array.from({ length: 60 }, (_, index) => makeDeviceJourney({ deviceOs: 'ios', advanced: index < 24 })),
+    ...Array.from({ length: 40 }, (_, index) => makeDeviceJourney({ deviceOs: 'android', advanced: index < 16 }))
+  ];
+
+  const metrics = buildNormalizedSegmentMetrics({
+    currentJourneys,
+    baselineJourneys,
+    dimension: 'device'
+  });
+  const ios = metrics.segments.find((segment) => segment.segmentKey === 'device:ios');
+
+  assert.ok(ios);
+  assert.equal(metrics.segments[0].segmentKey, 'device:ios');
+  assert.equal(ios.comparison.primaryTransition.fromStage, 'product');
+  assert.equal(ios.comparison.primaryTransition.toStage, 'atc');
+  assert.equal(ios.comparison.primaryTransition.comparison.status, 'weaker_than_usual');
+  assert.ok(ios.comparison.primaryTransition.comparison.missedAdvancedJourneys > 5);
 });

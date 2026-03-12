@@ -34,6 +34,8 @@ export const SESSION_INTELLIGENCE_PRODUCT_NORMALIZATION_STAGES = Object.freeze([
   'purchase'
 ]);
 
+export const SESSION_INTELLIGENCE_SEGMENT_DIMENSIONS = Object.freeze(['device', 'source']);
+
 const PRODUCT_STAGE_STEP_KEYS = new Set(['product']);
 const CHECKOUT_STAGE_STEP_KEYS = new Set(['checkout_contact', 'checkout_shipping', 'checkout_payment', 'checkout_review']);
 const PAYMENT_STAGE_STEP_KEYS = new Set(['checkout_payment', 'checkout_review']);
@@ -51,7 +53,28 @@ const ATC_EVENT_NAMES = new Set([
 const PURCHASE_EVENT_NAMES = new Set(['checkout_completed', 'purchase_reconciled']);
 const PRODUCT_KEY_ID_PREFIX = 'id:';
 const PRODUCT_KEY_LABEL_PREFIX = 'label:';
-const PRODUCT_COMPARISON_SORT_PRECISION = 1000;
+const COHORT_COMPARISON_SORT_PRECISION = 1000;
+const SOURCE_SEGMENT_LABELS = Object.freeze({
+  direct: 'Direct',
+  instagram: 'Instagram',
+  facebook: 'Facebook',
+  google: 'Google',
+  tiktok: 'TikTok',
+  snapchat: 'Snapchat',
+  email: 'Email',
+  pinterest: 'Pinterest'
+});
+const SOURCE_SEGMENT_ALIASES = Object.freeze({
+  direct: new Set(['', '(direct)', '(none)', 'direct', 'none']),
+  instagram: new Set(['ig', 'instagram', 'instagram_ads']),
+  facebook: new Set(['fb', 'facebook', 'meta']),
+  google: new Set(['google', 'google_ads', 'adwords']),
+  tiktok: new Set(['tt', 'tiktok', 'tik_tok']),
+  snapchat: new Set(['snap', 'snapchat']),
+  email: new Set(['email', 'klaviyo', 'mailchimp']),
+  pinterest: new Set(['pinterest', 'pin'])
+});
+const DESKTOP_DEVICE_OS_KEYS = new Set(['windows', 'macos', 'linux', 'chromeos']);
 
 function safeFiniteNumber(value, fallback = 0) {
   const numericValue = Number(value);
@@ -332,28 +355,91 @@ export function getAnchoredJourneyProduct(journeyRow) {
   return null;
 }
 
-function buildAnchoredProductCohorts(journeyRows) {
+function titleCaseSegmentLabel(value) {
+  const normalized = safeString(value).trim();
+  if (!normalized) return 'Unknown';
+  return normalized
+    .split(/[\s_\-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+}
+
+function normalizeSourceSegmentLabel(entrySource) {
+  const normalizedSource = safeString(entrySource).trim().toLowerCase();
+  for (const [sourceKey, aliases] of Object.entries(SOURCE_SEGMENT_ALIASES)) {
+    if (aliases.has(normalizedSource)) return SOURCE_SEGMENT_LABELS[sourceKey] || titleCaseSegmentLabel(sourceKey);
+  }
+  for (const [sourceKey, sourceLabel] of Object.entries(SOURCE_SEGMENT_LABELS)) {
+    if (normalizedSource.includes(sourceKey)) return sourceLabel;
+  }
+  return titleCaseSegmentLabel(normalizedSource);
+}
+
+function normalizeDeviceSegmentLabel(journeyRow) {
+  const normalizedDeviceOs = safeString(journeyRow?.entry_device_os).trim().toLowerCase();
+  if (normalizedDeviceOs === 'ios') return 'iOS';
+  if (normalizedDeviceOs === 'android') return 'Android';
+  if (DESKTOP_DEVICE_OS_KEYS.has(normalizedDeviceOs)) return 'Desktop';
+
+  const normalizedDeviceType = safeString(journeyRow?.entry_device_type).trim().toLowerCase();
+  if (normalizedDeviceType === 'desktop') return 'Desktop';
+  if (normalizedDeviceType === 'tablet') return 'Tablet';
+  if (normalizedDeviceType === 'mobile') return 'Mobile';
+  return 'Unknown';
+}
+
+function buildJourneyCohorts(journeyRows, resolveCohort) {
   const cohorts = new Map();
   for (const journeyRow of Array.isArray(journeyRows) ? journeyRows : []) {
-    const anchoredProduct = getAnchoredJourneyProduct(journeyRow);
-    if (!anchoredProduct) continue;
-    const existing = cohorts.get(anchoredProduct.productKey) || {
-      ...anchoredProduct,
+    const cohort = typeof resolveCohort === 'function' ? resolveCohort(journeyRow) : null;
+    if (!cohort?.cohortKey) continue;
+    const existing = cohorts.get(cohort.cohortKey) || {
+      ...cohort,
       journeys: []
     };
-    if (!existing.productId && anchoredProduct.productId) {
-      existing.productId = anchoredProduct.productId;
-    }
-    if (!existing.productLabel && anchoredProduct.productLabel) {
-      existing.productLabel = anchoredProduct.productLabel;
+    for (const [key, value] of Object.entries(cohort)) {
+      if (key === 'journeys') continue;
+      if ((existing[key] == null || existing[key] === '') && value != null && value !== '') {
+        existing[key] = value;
+      }
     }
     existing.journeys.push(journeyRow);
-    cohorts.set(anchoredProduct.productKey, existing);
+    cohorts.set(cohort.cohortKey, existing);
   }
   return cohorts;
 }
 
-function getPrimaryProductComparison(transitions) {
+function buildStagesWithBaseline(currentStages, baselineStages) {
+  return currentStages.map((stage) => ({
+    ...stage,
+    baselineReachedJourneys: baselineStages.find((candidate) => candidate.stageKey === stage.stageKey)?.reachedJourneys ?? 0
+  }));
+}
+
+function buildCohortPurchaseComparison(currentStages, baselineStages, currentJourneysCount, baselineJourneysCount) {
+  const currentPurchaseCount = safeFiniteNumber(currentStages.find((stage) => stage.stageKey === 'purchase')?.reachedJourneys, 0);
+  const baselinePurchaseCount = safeFiniteNumber(baselineStages.find((stage) => stage.stageKey === 'purchase')?.reachedJourneys, 0);
+  const currentPurchaseRate = currentJourneysCount > 0 ? currentPurchaseCount / currentJourneysCount : null;
+  const baselinePurchaseRate = baselineJourneysCount > 0 ? baselinePurchaseCount / baselineJourneysCount : null;
+  const purchaseRateGap = baselinePurchaseRate != null && currentPurchaseRate != null
+    ? baselinePurchaseRate - currentPurchaseRate
+    : null;
+  const expectedPurchases = baselinePurchaseRate != null ? currentJourneysCount * baselinePurchaseRate : null;
+  const missedPurchases = expectedPurchases != null ? Math.max(0, expectedPurchases - currentPurchaseCount) : null;
+
+  return {
+    currentPurchaseCount,
+    baselinePurchaseCount,
+    currentPurchaseRate,
+    baselinePurchaseRate,
+    purchaseRateGap,
+    expectedPurchases,
+    missedPurchases
+  };
+}
+
+function getPrimaryCohortComparison(transitions) {
   const normalizedTransitions = Array.isArray(transitions) ? transitions : [];
   const weakTransitions = normalizedTransitions.filter((transition) => transition?.comparison?.status === 'weaker_than_usual');
   if (weakTransitions.length) {
@@ -370,6 +456,120 @@ function getPrimaryProductComparison(transitions) {
     || null;
 }
 
+function buildCohortRankingScore(primaryTransition, missedPurchases) {
+  return Math.round((
+    safeFiniteNumber(primaryTransition?.comparison?.missedAdvancedJourneys, 0)
+    + safeFiniteNumber(missedPurchases, 0)
+  ) * COHORT_COMPARISON_SORT_PRECISION) / COHORT_COMPARISON_SORT_PRECISION;
+}
+
+function sortComparableCohorts(items, labelKey) {
+  items.sort((left, right) => {
+    const scoreGap = safeFiniteNumber(right?.comparison?.rankingScore, 0) - safeFiniteNumber(left?.comparison?.rankingScore, 0);
+    if (scoreGap !== 0) return scoreGap;
+    const currentJourneyGap = safeFiniteNumber(right?.current?.journeys, 0) - safeFiniteNumber(left?.current?.journeys, 0);
+    if (currentJourneyGap !== 0) return currentJourneyGap;
+    return safeString(left?.[labelKey]).localeCompare(safeString(right?.[labelKey]));
+  });
+}
+
+function buildComparableCohortMetrics({
+  currentCohorts,
+  baselineCohorts,
+  stageSequence,
+  config,
+  buildOutput
+}) {
+  const items = [];
+
+  for (const cohort of currentCohorts.values()) {
+    const baselineCohort = baselineCohorts.get(cohort.cohortKey) || null;
+    const currentStages = buildFunnelStageCounts(cohort.journeys, stageSequence);
+    const baselineStages = buildFunnelStageCounts(baselineCohort?.journeys || [], stageSequence);
+    const transitions = buildNormalizedTransitionMetrics({
+      currentStageCounts: currentStages,
+      baselineStageCounts: baselineStages,
+      stageSequence,
+      config
+    });
+    const currentJourneysCount = cohort.journeys.length;
+    const baselineJourneysCount = baselineCohort?.journeys?.length || 0;
+    const purchaseComparison = buildCohortPurchaseComparison(
+      currentStages,
+      baselineStages,
+      currentJourneysCount,
+      baselineJourneysCount
+    );
+    const primaryTransition = getPrimaryCohortComparison(transitions);
+    const rankingScore = buildCohortRankingScore(primaryTransition, purchaseComparison.missedPurchases);
+
+    items.push(buildOutput({
+      cohort,
+      baselineCohort,
+      currentJourneysCount,
+      baselineJourneysCount,
+      currentStages,
+      baselineStages,
+      transitions,
+      purchaseComparison,
+      primaryTransition,
+      rankingScore
+    }));
+  }
+
+  return items;
+}
+
+function buildAnchoredProductCohorts(journeyRows) {
+  return buildJourneyCohorts(journeyRows, (journeyRow) => {
+    const anchoredProduct = getAnchoredJourneyProduct(journeyRow);
+    if (!anchoredProduct) return null;
+    return {
+      cohortKey: anchoredProduct.productKey,
+      productKey: anchoredProduct.productKey,
+      productId: anchoredProduct.productId,
+      productLabel: anchoredProduct.productLabel || 'Unknown product',
+      attributionSource: anchoredProduct.attributionSource
+    };
+  });
+}
+
+export function getJourneySegment(journeyRow, dimension) {
+  const normalizedDimension = safeString(dimension).trim().toLowerCase();
+  if (normalizedDimension === 'device') {
+    const segmentLabel = normalizeDeviceSegmentLabel(journeyRow);
+    return {
+      segmentKey: `device:${segmentLabel.toLowerCase()}`,
+      segmentLabel,
+      dimension: 'device'
+    };
+  }
+
+  if (normalizedDimension === 'source') {
+    const segmentLabel = normalizeSourceSegmentLabel(journeyRow?.entry_source);
+    return {
+      segmentKey: `source:${segmentLabel.toLowerCase()}`,
+      segmentLabel,
+      dimension: 'source'
+    };
+  }
+
+  return null;
+}
+
+function buildJourneySegmentCohorts(journeyRows, dimension) {
+  return buildJourneyCohorts(journeyRows, (journeyRow) => {
+    const segment = getJourneySegment(journeyRow, dimension);
+    if (!segment) return null;
+    return {
+      cohortKey: segment.segmentKey,
+      segmentKey: segment.segmentKey,
+      segmentLabel: segment.segmentLabel,
+      dimension: segment.dimension
+    };
+  });
+}
+
 export function buildNormalizedProductMetrics({
   currentJourneys,
   baselineJourneys,
@@ -379,72 +579,49 @@ export function buildNormalizedProductMetrics({
   const normalizedBaselineJourneys = Array.isArray(baselineJourneys) ? baselineJourneys : [];
   const currentCohorts = buildAnchoredProductCohorts(normalizedCurrentJourneys);
   const baselineCohorts = buildAnchoredProductCohorts(normalizedBaselineJourneys);
-  const products = [];
-
-  for (const cohort of currentCohorts.values()) {
-    const baselineCohort = baselineCohorts.get(cohort.productKey) || null;
-    const currentStages = buildFunnelStageCounts(cohort.journeys, SESSION_INTELLIGENCE_PRODUCT_NORMALIZATION_STAGES);
-    const baselineStages = buildFunnelStageCounts(baselineCohort?.journeys || [], SESSION_INTELLIGENCE_PRODUCT_NORMALIZATION_STAGES);
-    const transitions = buildNormalizedTransitionMetrics({
-      currentStageCounts: currentStages,
-      baselineStageCounts: baselineStages,
-      stageSequence: SESSION_INTELLIGENCE_PRODUCT_NORMALIZATION_STAGES,
-      config
-    });
-    const currentPurchaseCount = safeFiniteNumber(currentStages.find((stage) => stage.stageKey === 'purchase')?.reachedJourneys, 0);
-    const baselinePurchaseCount = safeFiniteNumber(baselineStages.find((stage) => stage.stageKey === 'purchase')?.reachedJourneys, 0);
-    const currentJourneysCount = cohort.journeys.length;
-    const baselineJourneysCount = baselineCohort?.journeys?.length || 0;
-    const currentPurchaseRate = currentJourneysCount > 0 ? currentPurchaseCount / currentJourneysCount : null;
-    const baselinePurchaseRate = baselineJourneysCount > 0 ? baselinePurchaseCount / baselineJourneysCount : null;
-    const purchaseRateGap = baselinePurchaseRate != null && currentPurchaseRate != null
-      ? baselinePurchaseRate - currentPurchaseRate
-      : null;
-    const expectedPurchases = baselinePurchaseRate != null ? currentJourneysCount * baselinePurchaseRate : null;
-    const missedPurchases = expectedPurchases != null ? Math.max(0, expectedPurchases - currentPurchaseCount) : null;
-    const primaryTransition = getPrimaryProductComparison(transitions);
-    const rankingScore = Math.round((
-      safeFiniteNumber(primaryTransition?.comparison?.missedAdvancedJourneys, 0)
-      + safeFiniteNumber(missedPurchases, 0)
-    ) * PRODUCT_COMPARISON_SORT_PRECISION) / PRODUCT_COMPARISON_SORT_PRECISION;
-
-    products.push({
+  const products = buildComparableCohortMetrics({
+    currentCohorts,
+    baselineCohorts,
+    stageSequence: SESSION_INTELLIGENCE_PRODUCT_NORMALIZATION_STAGES,
+    config,
+    buildOutput: ({
+      cohort,
+      currentJourneysCount,
+      baselineJourneysCount,
+      currentStages,
+      baselineStages,
+      transitions,
+      purchaseComparison,
+      primaryTransition,
+      rankingScore
+    }) => ({
       productKey: cohort.productKey,
       productId: cohort.productId,
       productLabel: cohort.productLabel || 'Unknown product',
       attributionSource: cohort.attributionSource,
       current: {
         journeys: currentJourneysCount,
-        purchases: currentPurchaseCount,
-        purchaseRate: currentPurchaseRate
+        purchases: purchaseComparison.currentPurchaseCount,
+        purchaseRate: purchaseComparison.currentPurchaseRate
       },
       baseline: {
         journeys: baselineJourneysCount,
-        purchases: baselinePurchaseCount,
-        purchaseRate: baselinePurchaseRate
+        purchases: purchaseComparison.baselinePurchaseCount,
+        purchaseRate: purchaseComparison.baselinePurchaseRate
       },
       comparison: {
         primaryTransition,
-        purchaseRateGap,
-        expectedPurchases,
-        missedPurchases,
+        purchaseRateGap: purchaseComparison.purchaseRateGap,
+        expectedPurchases: purchaseComparison.expectedPurchases,
+        missedPurchases: purchaseComparison.missedPurchases,
         rankingScore
       },
-      stages: currentStages.map((stage) => ({
-        ...stage,
-        baselineReachedJourneys: baselineStages.find((candidate) => candidate.stageKey === stage.stageKey)?.reachedJourneys ?? 0
-      })),
+      stages: buildStagesWithBaseline(currentStages, baselineStages),
       transitions
-    });
-  }
-
-  products.sort((left, right) => {
-    const scoreGap = safeFiniteNumber(right?.comparison?.rankingScore, 0) - safeFiniteNumber(left?.comparison?.rankingScore, 0);
-    if (scoreGap !== 0) return scoreGap;
-    const currentJourneyGap = safeFiniteNumber(right?.current?.journeys, 0) - safeFiniteNumber(left?.current?.journeys, 0);
-    if (currentJourneyGap !== 0) return currentJourneyGap;
-    return safeString(left?.productLabel).localeCompare(safeString(right?.productLabel));
+    })
   });
+
+  sortComparableCohorts(products, 'productLabel');
 
   return {
     totals: {
@@ -454,5 +631,84 @@ export function buildNormalizedProductMetrics({
       baselineProducts: baselineCohorts.size
     },
     products
+  };
+}
+
+export function buildNormalizedSegmentMetrics({
+  currentJourneys,
+  baselineJourneys,
+  dimension,
+  config = SESSION_INTELLIGENCE_NORMALIZATION_CONFIG
+}) {
+  const normalizedDimension = safeString(dimension).trim().toLowerCase();
+  if (!SESSION_INTELLIGENCE_SEGMENT_DIMENSIONS.includes(normalizedDimension)) {
+    return {
+      totals: {
+        currentJourneys: Array.isArray(currentJourneys) ? currentJourneys.length : 0,
+        baselineJourneys: Array.isArray(baselineJourneys) ? baselineJourneys.length : 0,
+        currentSegments: 0,
+        baselineSegments: 0
+      },
+      segments: []
+    };
+  }
+
+  const normalizedCurrentJourneys = Array.isArray(currentJourneys) ? currentJourneys : [];
+  const normalizedBaselineJourneys = Array.isArray(baselineJourneys) ? baselineJourneys : [];
+  const currentCohorts = buildJourneySegmentCohorts(normalizedCurrentJourneys, normalizedDimension);
+  const baselineCohorts = buildJourneySegmentCohorts(normalizedBaselineJourneys, normalizedDimension);
+  const segments = buildComparableCohortMetrics({
+    currentCohorts,
+    baselineCohorts,
+    stageSequence: SESSION_INTELLIGENCE_FUNNEL_STAGES,
+    config,
+    buildOutput: ({
+      cohort,
+      currentJourneysCount,
+      baselineJourneysCount,
+      currentStages,
+      baselineStages,
+      transitions,
+      purchaseComparison,
+      primaryTransition,
+      rankingScore
+    }) => ({
+      segmentKey: cohort.segmentKey,
+      segmentLabel: cohort.segmentLabel,
+      dimension: cohort.dimension,
+      current: {
+        journeys: currentJourneysCount,
+        purchases: purchaseComparison.currentPurchaseCount,
+        purchaseRate: purchaseComparison.currentPurchaseRate,
+        journeyShare: normalizedCurrentJourneys.length > 0 ? currentJourneysCount / normalizedCurrentJourneys.length : null
+      },
+      baseline: {
+        journeys: baselineJourneysCount,
+        purchases: purchaseComparison.baselinePurchaseCount,
+        purchaseRate: purchaseComparison.baselinePurchaseRate,
+        journeyShare: normalizedBaselineJourneys.length > 0 ? baselineJourneysCount / normalizedBaselineJourneys.length : null
+      },
+      comparison: {
+        primaryTransition,
+        purchaseRateGap: purchaseComparison.purchaseRateGap,
+        expectedPurchases: purchaseComparison.expectedPurchases,
+        missedPurchases: purchaseComparison.missedPurchases,
+        rankingScore
+      },
+      stages: buildStagesWithBaseline(currentStages, baselineStages),
+      transitions
+    })
+  });
+
+  sortComparableCohorts(segments, 'segmentLabel');
+
+  return {
+    totals: {
+      currentJourneys: normalizedCurrentJourneys.length,
+      baselineJourneys: normalizedBaselineJourneys.length,
+      currentSegments: segments.length,
+      baselineSegments: baselineCohorts.size
+    },
+    segments
   };
 }

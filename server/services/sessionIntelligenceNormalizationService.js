@@ -1,8 +1,10 @@
 import {
   SESSION_INTELLIGENCE_FUNNEL_STAGES,
   SESSION_INTELLIGENCE_NORMALIZATION_CONFIG,
+  SESSION_INTELLIGENCE_SEGMENT_DIMENSIONS,
   buildNormalizedFunnelMetrics,
   buildNormalizedProductMetrics,
+  buildNormalizedSegmentMetrics,
   getFunnelStageLabel
 } from './sessionIntelligenceNormalizationMath.js';
 import { getSessionIntelligenceJourneyRowsForAnalysis } from './sessionIntelligenceJourneyService.js';
@@ -217,6 +219,68 @@ export function getSessionIntelligenceNormalizedProducts(store, {
           summary: formatComparisonSummary(product.comparison.primaryTransition?.comparison?.status || 'limited_data')
         },
         transitions: product.transitions.map((transition) => ({
+          ...transition,
+          comparison: {
+            ...transition.comparison,
+            summary: formatComparisonSummary(transition.comparison.status)
+          }
+        }))
+      }))
+    }
+  };
+}
+
+
+export function getSessionIntelligenceNormalizedSegments(store, {
+  dimension = 'device',
+  date = null,
+  startDate = null,
+  endDate = null,
+  baselineDays = SESSION_INTELLIGENCE_NORMALIZATION_CONFIG.baselineDays,
+  rebuild = false,
+  journeyLimit = NORMALIZED_ANALYSIS_DEFAULT_LIMIT
+} = {}) {
+  const normalizedDimension = safeString(dimension).trim().toLowerCase();
+  if (!SESSION_INTELLIGENCE_SEGMENT_DIMENSIONS.includes(normalizedDimension)) {
+    return {
+      success: false,
+      error: `Unsupported dimension "${normalizedDimension || dimension}". Use one of: ${SESSION_INTELLIGENCE_SEGMENT_DIMENSIONS.join(', ')}`
+    };
+  }
+
+  const currentRange = resolveCurrentRange({ date, startDate, endDate });
+  if (!currentRange) {
+    return { success: false, error: 'Missing valid date or startDate/endDate (YYYY-MM-DD).' };
+  }
+
+  const baselineRange = buildBaselineRange(currentRange, baselineDays);
+  const {
+    effectiveJourneyLimit,
+    currentJourneys,
+    baselineJourneys
+  } = getAnalysisJourneys(store, { currentRange, baselineRange, rebuild, journeyLimit });
+
+  const metrics = buildNormalizedSegmentMetrics({
+    currentJourneys: currentJourneys.rows,
+    baselineJourneys: baselineJourneys.rows,
+    dimension: normalizedDimension,
+    config: SESSION_INTELLIGENCE_NORMALIZATION_CONFIG
+  });
+
+  return {
+    success: true,
+    data: {
+      ...buildSharedReportEnvelope({ store, currentRange, baselineRange, effectiveJourneyLimit, currentJourneys, baselineJourneys }),
+      dimension: normalizedDimension,
+      supportedDimensions: [...SESSION_INTELLIGENCE_SEGMENT_DIMENSIONS],
+      totals: metrics.totals,
+      segments: metrics.segments.map((segment) => ({
+        ...segment,
+        comparison: {
+          ...segment.comparison,
+          summary: formatComparisonSummary(segment.comparison.primaryTransition?.comparison?.status || 'limited_data')
+        },
+        transitions: segment.transitions.map((transition) => ({
           ...transition,
           comparison: {
             ...transition.comparison,
