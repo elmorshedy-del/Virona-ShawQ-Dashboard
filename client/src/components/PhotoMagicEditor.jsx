@@ -271,6 +271,28 @@ const formatVideoTime = (seconds) => {
   return `${m}:${s.toString().padStart(2, '0')}`;
 };
 
+const VIDEO_TRIM_EPSILON_SECONDS = 0.15;
+const LIFT_TRAY_LIMIT = 8;
+const LIFT_LAYER_DEFAULT_X_PERCENT = 50;
+const LIFT_LAYER_DEFAULT_Y_PERCENT = 52;
+const LIFT_LAYER_DEFAULT_SCALE = 1;
+const LIFT_LAYER_DEFAULT_ROTATION_DEGREES = 0;
+const LIFT_LAYER_WIDTH_PERCENT = 28;
+const LIFT_LAYER_MIN_WIDTH_PX = 96;
+const LIFT_LAYER_MAX_WIDTH_PX = 280;
+const LIFT_SCALE_MIN = 0.45;
+const LIFT_SCALE_MAX = 2.4;
+const LIFT_SCALE_STEP = 0.05;
+const LIFT_ROTATION_MIN = -45;
+const LIFT_ROTATION_MAX = 45;
+const LIFT_ROTATION_STEP = 1;
+
+function segmentOverlapsTrimWindow(segment, trimStart, trimEnd) {
+  const segStart = toNumber(segment?.start, 0);
+  const segEnd = toNumber(segment?.end, segStart);
+  return segEnd >= (trimStart - VIDEO_TRIM_EPSILON_SECONDS) && segStart <= (trimEnd + VIDEO_TRIM_EPSILON_SECONDS);
+}
+
 /* ── Photo Adjustment Presets ──────────────────────────────── */
 const DEFAULT_ADJUSTMENTS = {
   brightness: 0, contrast: 0, exposure: 0, highlights: 0, shadows: 0,
@@ -445,6 +467,8 @@ export default function PhotoMagicEditor({ store }) {
   const [selectionCutoutOutputId, setSelectionCutoutOutputId] = useState(null);
   const [selectionMaskOutputId, setSelectionMaskOutputId] = useState(null);
   const [selectionMeta, setSelectionMeta] = useState(null);
+  const [liftedAssets, setLiftedAssets] = useState([]);
+  const [activeLiftLayer, setActiveLiftLayer] = useState(null);
 
   const [maxSide, setMaxSide] = useState(2048);
   const [precisionMode, setPrecisionMode] = useState(false);
@@ -574,9 +598,11 @@ export default function PhotoMagicEditor({ store }) {
   const hasAdjustments = useMemo(() => Object.keys(DEFAULT_ADJUSTMENTS).some((k) => adjustments[k] !== DEFAULT_ADJUSTMENTS[k]), [adjustments]);
 
   const imgRef = useRef(null);
+  const photoStageRef = useRef(null);
   const maskCanvasRef = useRef(null);
   const paintStateRef = useRef({ painting: false, lastX: 0, lastY: 0 });
   const undoStackRef = useRef([]);
+  const liftDragRef = useRef({ dragging: false, pointerId: null, offsetX: 0, offsetY: 0 });
   const debugRunIdRef = useRef(0);
   const [maskMetrics, setMaskMetrics] = useState({ hasMask: false, paintedPixels: 0, coverage: 0 });
 
@@ -860,12 +886,77 @@ export default function PhotoMagicEditor({ store }) {
     setPoints([]);
     setViewportMode('source');
     undoStackRef.current = [];
+    setActiveLiftLayer(null);
     setMaskMetrics({ hasMask: false, paintedPixels: 0, coverage: 0 });
     const canvas = maskCanvasRef.current;
     if (canvas) {
       const ctx = canvas.getContext('2d');
       ctx?.clearRect(0, 0, canvas.width, canvas.height);
     }
+  }, []);
+
+  const buildLiftAssetFromSelection = useCallback(() => {
+    if (!selectionCutoutUrl) return null;
+    const label = selectionMeta?.label || selectionPrompt.trim() || 'Lifted object';
+    const outputId = selectionCutoutOutputId || selectionMaskOutputId || slugify(label);
+    return {
+      id: `lift-${outputId}`,
+      outputId,
+      label,
+      url: selectionCutoutUrl,
+      maskUrl: selectionMaskUrl || null,
+      createdAt: selectionMeta?.timestamp || Date.now()
+    };
+  }, [selectionCutoutOutputId, selectionMaskOutputId, selectionCutoutUrl, selectionMaskUrl, selectionMeta?.label, selectionMeta?.timestamp, selectionPrompt]);
+
+  const rememberLiftAsset = useCallback((asset) => {
+    if (!asset?.url) return asset;
+    setLiftedAssets((prev) => {
+      const existing = prev.find((item) => item.outputId === asset.outputId && item.url === asset.url);
+      if (existing) return prev;
+      return [asset, ...prev].slice(0, LIFT_TRAY_LIMIT);
+    });
+    return asset;
+  }, []);
+
+  const exportLiftedAsset = useCallback((asset) => {
+    if (!asset?.url) return;
+    const link = document.createElement('a');
+    link.href = asset.url;
+    link.download = `${slugify(asset.label || 'lifted-object')}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }, []);
+
+  const placeLiftedAsset = useCallback((asset) => {
+    if (!asset?.url) return;
+    rememberLiftAsset(asset);
+    setActiveLiftLayer({
+      id: asset.id,
+      label: asset.label || 'Lifted object',
+      url: asset.url,
+      x: LIFT_LAYER_DEFAULT_X_PERCENT,
+      y: LIFT_LAYER_DEFAULT_Y_PERCENT,
+      scale: LIFT_LAYER_DEFAULT_SCALE,
+      rotation: LIFT_LAYER_DEFAULT_ROTATION_DEGREES
+    });
+    setViewportMode('source');
+  }, [rememberLiftAsset]);
+
+  const saveCurrentLiftToTray = useCallback(() => {
+    const asset = buildLiftAssetFromSelection();
+    if (!asset) return;
+    rememberLiftAsset(asset);
+  }, [buildLiftAssetFromSelection, rememberLiftAsset]);
+
+  const removeLiftedAsset = useCallback((assetId) => {
+    setLiftedAssets((prev) => prev.filter((item) => item.id !== assetId));
+    setActiveLiftLayer((prev) => (prev?.id === assetId ? null : prev));
+  }, []);
+
+  const clearLiftPlacement = useCallback(() => {
+    setActiveLiftLayer(null);
   }, []);
 
   const pushPhotoUndo = useCallback(() => {
@@ -1137,6 +1228,50 @@ export default function PhotoMagicEditor({ store }) {
     }
   }, [overlayScanInterval, overlayScanMaxFrames, store, videoId]);
 
+  const videoTrimWindowEnd = videoTrimEnd ?? videoDuration;
+  const videoTrimActive = Boolean(
+    videoDuration > 0 &&
+    (videoTrimStart > VIDEO_TRIM_EPSILON_SECONDS || Math.abs(videoTrimWindowEnd - videoDuration) > VIDEO_TRIM_EPSILON_SECONDS)
+  );
+
+  const resolveVideoCleanSegments = useCallback((segmentsInput) => {
+    const segments = Array.isArray(segmentsInput) ? segmentsInput : [];
+    if (!segments.length) return [];
+
+    if (selectedOverlaySegIdx !== null && selectedOverlaySegIdx >= 0 && selectedOverlaySegIdx < segments.length) {
+      return [segments[selectedOverlaySegIdx]];
+    }
+
+    if (!videoTrimActive) return segments;
+    return segments.filter((segment) => segmentOverlapsTrimWindow(segment, videoTrimStart, videoTrimWindowEnd));
+  }, [selectedOverlaySegIdx, videoTrimActive, videoTrimStart, videoTrimWindowEnd]);
+
+  const selectedVideoCleanSegment = useMemo(() => {
+    if (selectedOverlaySegIdx === null || selectedOverlaySegIdx < 0 || selectedOverlaySegIdx >= overlaySegments.length) return null;
+    return overlaySegments[selectedOverlaySegIdx];
+  }, [overlaySegments, selectedOverlaySegIdx]);
+
+  const videoCleanSegments = useMemo(() => resolveVideoCleanSegments(overlaySegments), [overlaySegments, resolveVideoCleanSegments]);
+
+  const videoCleanScopeSummary = useMemo(() => {
+    if (selectedVideoCleanSegment) {
+      return `Targeting segment ${selectedOverlaySegIdx + 1} from ${formatVideoTime(selectedVideoCleanSegment.start)} to ${formatVideoTime(selectedVideoCleanSegment.end)}.`;
+    }
+    if (videoTrimActive) {
+      if (videoCleanSegments.length) {
+        return `Cleaning ${videoCleanSegments.length} detected segment${videoCleanSegments.length === 1 ? '' : 's'} inside the trim range ${formatVideoTime(videoTrimStart)} to ${formatVideoTime(videoTrimWindowEnd)}.`;
+      }
+      return `No detected overlays overlap the current trim range ${formatVideoTime(videoTrimStart)} to ${formatVideoTime(videoTrimWindowEnd)}.`;
+    }
+    return overlaySegments.length
+      ? `Cleaning all ${overlaySegments.length} detected overlay segment${overlaySegments.length === 1 ? '' : 's'} in the clip.`
+      : 'Scan for overlays, then clean only the selected segment or current trim range.';
+  }, [overlaySegments.length, selectedOverlaySegIdx, selectedVideoCleanSegment, videoCleanSegments.length, videoTrimActive, videoTrimStart, videoTrimWindowEnd]);
+
+  const videoCleanActionLabel = selectedVideoCleanSegment
+    ? 'Clean Selected Overlay'
+    : (videoTrimActive ? 'Clean Trim Range' : 'Clean Overlay');
+
   // ── Video: Overlay export ──
   const exportOverlays = useCallback(async () => {
     if (!videoId || !overlaySegments.length) return;
@@ -1168,13 +1303,14 @@ export default function PhotoMagicEditor({ store }) {
     setIsVideoProcessing(true);
     const runId = startDebugRun('Video Clean Overlay', 'Cleaning detected overlays from the clip');
     try {
-      let segments = overlaySegments;
-      if (!segments.length) {
+      let scannedSegments = overlaySegments;
+      if (!scannedSegments.length) {
         logDebug(runId, 'Video Clean Overlay', 'scan', 'running', 'Scanning overlays before cleanup');
-        segments = await scanOverlays();
+        scannedSegments = await scanOverlays();
       }
+      const segments = resolveVideoCleanSegments(scannedSegments);
       if (!segments.length) {
-        throw new Error('No overlays were detected to clean from this video.');
+        throw new Error(videoTrimActive ? 'No overlays were detected inside the current trim range.' : 'No overlays were detected to clean from this video.');
       }
 
       pushVideoUndo();
@@ -1217,7 +1353,7 @@ export default function PhotoMagicEditor({ store }) {
       setIsVideoProcessing(false);
       refreshVideoHealth();
     }
-  }, [applyVideoSourcePayload, logDebug, overlaySegments, pushVideoUndo, refreshVideoHealth, requestJson, scanOverlays, startDebugRun, store, videoId]);
+  }, [applyVideoSourcePayload, logDebug, overlaySegments, pushVideoUndo, refreshVideoHealth, requestJson, resolveVideoCleanSegments, scanOverlays, startDebugRun, store, videoId, videoTrimActive]);
 
   const runVideoRemoveBackground = useCallback(async () => {
     if (!videoId) return;
@@ -1401,6 +1537,7 @@ export default function PhotoMagicEditor({ store }) {
     setEnhanceUrl(null);
     setPoints([]);
     setViewportMode('source');
+    setActiveLiftLayer(null);
     undoStackRef.current = [];
     setMaskMetrics({ hasMask: false, paintedPixels: 0, coverage: 0 });
     const canvas = maskCanvasRef.current;
@@ -1594,6 +1731,15 @@ export default function PhotoMagicEditor({ store }) {
     [logDebug, pushPhotoUndo, startDebugRun, uploadImage]
   );
 
+  const useLiftedAssetAsSource = useCallback((asset) => {
+    if (!asset?.url) return;
+    promoteOutputToSource({
+      url: asset.url,
+      stageLabel: asset.label ? `${asset.label} lift` : 'Lifted source',
+      nextTool: 'relight'
+    });
+  }, [promoteOutputToSource]);
+
   const onPickFile = useCallback(() => {
     fileInputRef.current?.click?.();
   }, []);
@@ -1646,6 +1792,32 @@ export default function PhotoMagicEditor({ store }) {
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, [ensureMaskCanvasSize]);
+
+  useEffect(() => {
+    const handlePointerMove = (event) => {
+      if (!liftDragRef.current.dragging || !activeLiftLayer || !photoStageRef.current) return;
+      const rect = photoStageRef.current.getBoundingClientRect();
+      const pointerX = ((event.clientX - rect.left) / rect.width) * 100;
+      const pointerY = ((event.clientY - rect.top) / rect.height) * 100;
+      const x = clamp(pointerX - liftDragRef.current.offsetX, 0, 100);
+      const y = clamp(pointerY - liftDragRef.current.offsetY, 0, 100);
+      setActiveLiftLayer((prev) => (prev ? { ...prev, x, y } : prev));
+    };
+
+    const handlePointerUp = () => {
+      liftDragRef.current.dragging = false;
+      liftDragRef.current.pointerId = null;
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [activeLiftLayer]);
 
   const addPointFromEvent = useCallback(
     (event) => {
@@ -2761,6 +2933,7 @@ export default function PhotoMagicEditor({ store }) {
   const isBusy = isUploading || isRunning;
   const cleanPlateMaskReady = maskMetrics.hasMask;
   const maskCoverageLabel = `${(maskMetrics.coverage * 100).toFixed(maskMetrics.coverage > 0 && maskMetrics.coverage < 0.1 ? 1 : 0)}%`;
+  const currentLiftAsset = selectionCutoutUrl ? buildLiftAssetFromSelection() : null;
 
   const renderCanvas = () => {
     if (!imageSrc) {
@@ -2836,7 +3009,7 @@ export default function PhotoMagicEditor({ store }) {
 
     return (
       <div className="flex min-h-[720px] items-center justify-center p-10">
-        <div className="relative inline-block select-none" onClick={addPointFromEvent}>
+        <div ref={photoStageRef} className="relative inline-block select-none" onClick={addPointFromEvent}>
           <div className="relative rounded-xl border border-gray-100 bg-gray-50 overflow-hidden" style={sourcePreviewStyles}>
             <img
               ref={imgRef}
@@ -2849,6 +3022,40 @@ export default function PhotoMagicEditor({ store }) {
             {adjustments.vignette > 0 && <div className="pm-vignette-overlay" style={{ '--pm-vignette': adjStyles['--pm-vignette'] }} />}
             {adjustments.grain > 0 && <div className="pm-grain-overlay" style={{ '--pm-grain': adjStyles['--pm-grain'] }} />}
           </div>
+
+          {activeLiftLayer ? (
+            <div
+              className="absolute cursor-grab active:cursor-grabbing"
+              style={{
+                left: `${activeLiftLayer.x}%`,
+                top: `${activeLiftLayer.y}%`,
+                width: `${LIFT_LAYER_WIDTH_PERCENT}%`,
+                minWidth: LIFT_LAYER_MIN_WIDTH_PX,
+                maxWidth: LIFT_LAYER_MAX_WIDTH_PX,
+                transform: `translate(-50%, -50%) rotate(${activeLiftLayer.rotation}deg) scale(${activeLiftLayer.scale})`,
+                transformOrigin: 'center center'
+              }}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                const rect = photoStageRef.current?.getBoundingClientRect();
+                if (rect) {
+                  const pointerX = ((event.clientX - rect.left) / rect.width) * 100;
+                  const pointerY = ((event.clientY - rect.top) / rect.height) * 100;
+                  liftDragRef.current.offsetX = pointerX - activeLiftLayer.x;
+                  liftDragRef.current.offsetY = pointerY - activeLiftLayer.y;
+                } else {
+                  liftDragRef.current.offsetX = 0;
+                  liftDragRef.current.offsetY = 0;
+                }
+                liftDragRef.current.dragging = true;
+                liftDragRef.current.pointerId = event.pointerId;
+              }}
+            >
+              <div className="rounded-2xl border border-white/70 bg-white/18 p-2 shadow-[0_18px_50px_-18px_rgba(0,0,0,0.5)] backdrop-blur-sm">
+                <img src={activeLiftLayer.url} alt={activeLiftLayer.label} className="block w-full object-contain drop-shadow-[0_22px_36px_rgba(0,0,0,0.22)]" />
+              </div>
+            </div>
+          ) : null}
 
           {(tool === 'remove_bg' || tool === 'erase') && activeMaskUrl && (
             <img
@@ -3429,7 +3636,7 @@ export default function PhotoMagicEditor({ store }) {
                       <ScanSearch className="h-4 w-4 text-indigo-400" />
                       <Label>Magic Lift</Label>
                     </div>
-                    <div className="text-xs text-gray-500 mb-3">Describe the object to lift. AI will isolate it so you can remove it from the scene or promote it into its own source.</div>
+                    <div className="text-xs text-gray-500 mb-3">Describe the object to lift. AI will isolate it so you can remove it, export it, or place it back on the canvas as a movable layer.</div>
                     <div className="space-y-3">
                       <Slider label="Max Resolution" tooltip="Maximum image dimension" value={maxSide} onChange={(e) => setMaxSide(clamp(toNumber(e.target.value, 2048), 256, 8192))} min={256} max={8192} step={256} />
                       <Slider label="Edge Expansion" tooltip="Grow the boundary outward" value={maskDilatePx} onChange={(e) => setMaskDilatePx(clamp(toNumber(e.target.value, 0), 0, 64))} min={0} max={64} />
@@ -3454,13 +3661,41 @@ export default function PhotoMagicEditor({ store }) {
                       </Button>
                     </div>
                     {selectionMaskUrl ? (
-                      <div className="mt-2 space-y-1.5 pm-section-enter">
+                      <div className="mt-2 space-y-2 pm-section-enter">
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <Button
+                            variant="primary"
+                            onClick={() => currentLiftAsset && placeLiftedAsset(currentLiftAsset)}
+                            disabled={isBusy || !currentLiftAsset}
+                            className="w-full justify-center pm-btn-hover"
+                          >
+                            <Layers3 className="h-4 w-4" /> Place on Canvas
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            onClick={saveCurrentLiftToTray}
+                            disabled={isBusy || !currentLiftAsset}
+                            className="w-full justify-center pm-btn-hover"
+                          >
+                            <Sparkles className="h-4 w-4" /> Save to Tray
+                          </Button>
+                        </div>
                         <Button variant="primary" onClick={() => { applyMaskArtifactToCanvas(selectionMaskUrl); setMaskMethod('brush'); }} disabled={isBusy} className="w-full justify-center pm-btn-hover">
                           <Eraser className="h-4 w-4" /> Send to Remover
                         </Button>
-                        <Button variant="secondary" onClick={() => promoteOutputToSource({ url: selectionCutoutUrl, stageLabel: selectionMeta?.label ? `${selectionMeta.label} lift` : 'Lifted object', nextTool: 'relight' })} disabled={isBusy || !selectionCutoutUrl} className="w-full justify-center pm-btn-hover">
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <Button
+                            variant="secondary"
+                            onClick={() => currentLiftAsset && exportLiftedAsset(currentLiftAsset)}
+                            disabled={isBusy || !currentLiftAsset}
+                            className="w-full justify-center pm-btn-hover"
+                          >
+                            <Download className="h-4 w-4" /> Export PNG
+                          </Button>
+                          <Button variant="secondary" onClick={() => currentLiftAsset && useLiftedAssetAsSource(currentLiftAsset)} disabled={isBusy || !selectionCutoutUrl} className="w-full justify-center pm-btn-hover">
                           <Wand2 className="h-4 w-4" /> Use Lifted Object
-                        </Button>
+                          </Button>
+                        </div>
                       </div>
                     ) : null}
                   </div>
@@ -3715,6 +3950,92 @@ export default function PhotoMagicEditor({ store }) {
                 ))}
               </div>
             </div>
+
+            {(activeLiftLayer || liftedAssets.length > 0) ? (
+              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm pm-section-enter">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <Label>Lifted Assets</Label>
+                    <div className="mt-1 text-xs text-gray-500">
+                      Keep isolated objects handy, place them back on the canvas, or reuse them as new sources.
+                    </div>
+                  </div>
+                  <StatusPill
+                    ok={Boolean(activeLiftLayer || liftedAssets.length)}
+                    label={activeLiftLayer ? 'Active' : `${liftedAssets.length} saved`}
+                  />
+                </div>
+
+                {activeLiftLayer ? (
+                  <div className="mt-4 rounded-2xl border border-indigo-100 bg-indigo-50/50 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium text-gray-900">{activeLiftLayer.label}</div>
+                        <div className="mt-1 text-[10px] font-mono uppercase tracking-[0.18em] text-indigo-500">Placed on canvas</div>
+                      </div>
+                      <Button variant="ghost" onClick={clearLiftPlacement} className="px-2 py-1 text-xs">
+                        Clear
+                      </Button>
+                    </div>
+                    <div className="mt-3 space-y-3">
+                      <Slider
+                        label="Scale"
+                        value={activeLiftLayer.scale}
+                        onChange={(event) => setActiveLiftLayer((prev) => (prev ? { ...prev, scale: clamp(toNumber(event.target.value, prev.scale), LIFT_SCALE_MIN, LIFT_SCALE_MAX) } : prev))}
+                        min={LIFT_SCALE_MIN}
+                        max={LIFT_SCALE_MAX}
+                        step={LIFT_SCALE_STEP}
+                      />
+                      <Slider
+                        label="Rotation"
+                        value={activeLiftLayer.rotation}
+                        onChange={(event) => setActiveLiftLayer((prev) => (prev ? { ...prev, rotation: clamp(toNumber(event.target.value, prev.rotation), LIFT_ROTATION_MIN, LIFT_ROTATION_MAX) } : prev))}
+                        min={LIFT_ROTATION_MIN}
+                        max={LIFT_ROTATION_MAX}
+                        step={LIFT_ROTATION_STEP}
+                      />
+                    </div>
+                  </div>
+                ) : null}
+
+                {liftedAssets.length ? (
+                  <div className="mt-4 space-y-3">
+                    {liftedAssets.map((asset) => {
+                      const assetActive = activeLiftLayer?.id === asset.id;
+                      return (
+                        <div key={asset.id} className={cn('rounded-2xl border p-3 transition-colors', assetActive ? 'border-indigo-200 bg-indigo-50/40' : 'border-gray-100 bg-gray-50/70')}>
+                          <div className="flex items-start gap-3">
+                            <div className="h-16 w-16 overflow-hidden rounded-xl border border-gray-100 bg-white" style={makeTransparentBg()}>
+                              <img src={asset.url} alt={asset.label} className="block h-full w-full object-contain" />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-sm font-medium text-gray-900">{asset.label}</div>
+                              <div className="mt-1 text-[10px] font-mono uppercase tracking-[0.18em] text-gray-400">
+                                {assetActive ? 'Active on canvas' : 'Lifted object'}
+                              </div>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <Button variant={assetActive ? 'primary' : 'secondary'} onClick={() => placeLiftedAsset(asset)} className="px-3 py-1.5 text-xs">
+                                  <Layers3 className="h-3.5 w-3.5" /> {assetActive ? 'Reposition' : 'Place'}
+                                </Button>
+                                <Button variant="secondary" onClick={() => useLiftedAssetAsSource(asset)} className="px-3 py-1.5 text-xs">
+                                  <Upload className="h-3.5 w-3.5" /> Use as Source
+                                </Button>
+                                <Button variant="secondary" onClick={() => exportLiftedAsset(asset)} className="px-3 py-1.5 text-xs">
+                                  <Download className="h-3.5 w-3.5" /> Export
+                                </Button>
+                                <Button variant="ghost" onClick={() => removeLiftedAsset(asset.id)} className="px-2 py-1.5 text-xs">
+                                  Remove
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             {showDebugPanel ? (
               <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
@@ -4036,6 +4357,9 @@ export default function PhotoMagicEditor({ store }) {
                       ? `Ready via ${videoCleanState?.model || 'Bria Video Eraser'}`
                       : (videoCleanState?.error || 'Video overlay cleanup is not ready yet.')}
                   </div>
+                  <div className="rounded-xl border border-gray-100 bg-gray-50/80 px-3 py-2 text-[11px] leading-5 text-gray-500">
+                    {videoCleanScopeSummary}
+                  </div>
                   <Slider label="Interval" tooltip="Seconds between frames" value={overlayScanInterval} onChange={(e) => setOverlayScanInterval(+e.target.value)} min={0.5} max={5} step={0.5} />
                   <Slider label="Max Frames" value={overlayScanMaxFrames} onChange={(e) => setOverlayScanMaxFrames(+e.target.value)} min={10} max={120} step={5} />
                   <div className="grid gap-2 sm:grid-cols-2">
@@ -4055,7 +4379,7 @@ export default function PhotoMagicEditor({ store }) {
                       className="w-full py-2 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
                       style={{ background: 'linear-gradient(135deg, #111827, #374151)' }}
                     >
-                      {isVideoProcessing ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Cleaning...</> : <><Eraser className="h-3.5 w-3.5" /> Clean Overlay</>}
+                      {isVideoProcessing ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Cleaning...</> : <><Eraser className="h-3.5 w-3.5" /> {videoCleanActionLabel}</>}
                     </button>
                   </div>
                 </div>
@@ -4300,6 +4624,8 @@ export default function PhotoMagicEditor({ store }) {
               <>
                 <span>Source · {sourceStage}</span>
                 <span>Result · {primaryOutput?.title || 'None'}</span>
+                <span>Lifted · {liftedAssets.length}</span>
+                <span>Canvas · {activeLiftLayer ? activeLiftLayer.label : 'None'}</span>
                 <span>Undo · {photoHistory.length}</span>
                 <span>{isUploading ? 'Uploading...' : isRunning ? 'Processing...' : lastRenderSummary}</span>
               </>
