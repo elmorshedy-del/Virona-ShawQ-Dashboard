@@ -41,7 +41,8 @@ import VideoResizerPanel from './VideoResizerPanel';
 import ProductHubPanel from './ProductHubPanel';
 
 const API_BASE = '/api';
-const withStore = (path, store) => `${API_BASE}${path}${path.includes('?') ? '&' : '?'}store=${encodeURIComponent(store ?? 'vironax')}`;
+const DEFAULT_STORE_SCOPE = 'default-tenant';
+const withStore = (path, store) => `${API_BASE}${path}${path.includes('?') ? '&' : '?'}store=${encodeURIComponent(store ?? DEFAULT_STORE_SCOPE)}`;
 
 const cn = (...classes) => classes.filter(Boolean).join(' ');
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -425,6 +426,60 @@ const BACKGROUND_PRESET_OPTIONS = [
   { id: 'editorial-dark', label: 'Editorial Dark', prompt: 'dark editorial studio backdrop with subtle spotlight falloff, premium fashion campaign mood, realistic floor grounding' },
   { id: 'sunlit-window', label: 'Sunlit Window', prompt: 'bright window-lit studio corner, soft sunlight wash, natural grounded shadow, premium catalog photography' }
 ];
+
+const PACKSHOT_AUTOPILOT_PRESET_ID = 'clean-white';
+const PACKSHOT_AUTOPILOT_SUMMARY = 'Storefront packshot ready for export or enhancement.';
+const PACKSHOT_PARTIAL_SUMMARY = 'Cutout ready. Finish the background studio pass for a storefront packshot.';
+const PACKSHOT_SHADOW_FOLLOWUP = 'Packshot ready. Use Ground Subject only when you want a stronger floor shadow.';
+
+const PHOTO_WORKFLOW_SHORTCUTS = [
+  {
+    id: 'packshot',
+    label: 'Packshot',
+    description: 'One-click storefront cleanup with cutout and a studio-ready background.',
+    icon: Wand2
+  },
+  {
+    id: 'background-studio',
+    label: 'Background',
+    description: 'Swap the scene while keeping the current subject grounded and centered.',
+    icon: Sparkles
+  },
+  {
+    id: 'object-remover',
+    label: 'Remove',
+    description: 'Brush or target unwanted logos, tags, and objects for cleanup.',
+    icon: Eraser
+  },
+  {
+    id: 'magic-lift',
+    label: 'Magic Lift',
+    description: 'Isolate one object so it can be reused, exported, or sent into removal.',
+    icon: ScanSearch
+  },
+  {
+    id: 'ground-subject',
+    label: 'Ground',
+    description: 'Add a more believable contact shadow after cutout or background changes.',
+    icon: Sunset
+  },
+  {
+    id: 'extend-canvas',
+    label: 'Extend',
+    description: 'Grow the frame for new placements and ad aspect ratios.',
+    icon: Crop
+  },
+  {
+    id: 'enhance-image',
+    label: 'Enhance',
+    description: 'Upscale and polish supplier photos before export.',
+    icon: Zap
+  }
+];
+
+function getBackgroundPresetById(presetId) {
+  return BACKGROUND_PRESET_OPTIONS.find((item) => item.id === presetId) || BACKGROUND_PRESET_OPTIONS[0];
+}
 
 export default function PhotoMagicEditor({ store }) {
   const [health, setHealth] = useState(null);
@@ -1807,6 +1862,32 @@ export default function PhotoMagicEditor({ store }) {
     [precisionMode, tool, viewportMode]
   );
 
+  const applyRemoveBgResult = useCallback((data, summary) => {
+    setCutoutUrl(data.cutout?.url || null);
+    setMaskUrl(data.mask?.url || null);
+    setCutoutOutputId(data.cutout?.output_id || null);
+    setMaskOutputId(data.mask?.output_id || null);
+    setBackgroundUrl(null);
+    setViewportMode('compare');
+    setLastRenderSummary(summary || `Auto cutout ready ${data.width || imageMeta?.width || '?'}x${data.height || imageMeta?.height || '?'}`);
+    return data.mask?.output_id || null;
+  }, [imageMeta?.height, imageMeta?.width]);
+
+  const applyBackgroundResult = useCallback((data, summary) => {
+    setBackgroundUrl(data.url || null);
+    setViewportMode('compare');
+    setLastRenderSummary(summary || `Background scene ready${data.engine ? ` via ${data.engine}` : ''}`);
+  }, []);
+
+  const applyGroundShadowResult = useCallback((data, summary) => {
+    setRelightUrl(data.url || null);
+    setRelightMaskUrl(data.mask?.url || null);
+    setRelightMaskOutputId(data.mask?.output_id || null);
+    setViewportMode('compare');
+    setTool('relight');
+    setLastRenderSummary(summary || 'Ground shadow ready');
+  }, []);
+
   const runRemoveBg = useCallback(async () => {
     if (!imageId) return;
 
@@ -1834,13 +1915,7 @@ export default function PhotoMagicEditor({ store }) {
         })
       });
 
-      setCutoutUrl(data.cutout?.url || null);
-      setMaskUrl(data.mask?.url || null);
-      setCutoutOutputId(data.cutout?.output_id || null);
-      setMaskOutputId(data.mask?.output_id || null);
-      setBackgroundUrl(null);
-      setViewportMode('compare');
-      setLastRenderSummary(`Auto cutout ready ${data.width || imageMeta?.width || '?'}x${data.height || imageMeta?.height || '?'}`);
+      applyRemoveBgResult(data);
     } catch (nextError) {
       console.error(nextError);
       const message = nextError?.message || 'Foreground isolation failed';
@@ -1851,7 +1926,7 @@ export default function PhotoMagicEditor({ store }) {
       setIsRunning(false);
       refreshHealth();
     }
-  }, [imageId, imageMeta?.height, imageMeta?.width, logDebug, maxSide, refreshHealth, requestJson, startDebugRun, store]);
+  }, [applyRemoveBgResult, imageId, logDebug, maxSide, refreshHealth, requestJson, startDebugRun, store]);
 
   const runRefine = useCallback(async () => {
     if (!imageId || !points.length) return;
@@ -1884,13 +1959,7 @@ export default function PhotoMagicEditor({ store }) {
         })
       });
 
-      setCutoutUrl(data.cutout?.url || null);
-      setMaskUrl(data.mask?.url || null);
-      setCutoutOutputId(data.cutout?.output_id || null);
-      setMaskOutputId(data.mask?.output_id || null);
-      setBackgroundUrl(null);
-      setViewportMode('compare');
-      setLastRenderSummary(`Precision mask ready with ${points.length} guide points`);
+      applyRemoveBgResult(data, `Precision mask ready with ${points.length} guide points`);
     } catch (nextError) {
       console.error(nextError);
       const message = nextError?.message || 'SAM2 refine failed';
@@ -1901,10 +1970,10 @@ export default function PhotoMagicEditor({ store }) {
       setIsRunning(false);
       refreshHealth();
     }
-  }, [imageId, logDebug, maskDilatePx, maskFeatherPx, maxSide, points, refreshHealth, requestJson, startDebugRun, store]);
+  }, [applyRemoveBgResult, imageId, logDebug, maskDilatePx, maskFeatherPx, maxSide, points, refreshHealth, requestJson, startDebugRun, store]);
 
   const applyBackgroundPreset = useCallback((presetId) => {
-    const preset = BACKGROUND_PRESET_OPTIONS.find((item) => item.id === presetId);
+    const preset = getBackgroundPresetById(presetId);
     if (!preset) return;
     setBackgroundPresetId(preset.id);
     setBackgroundPrompt(preset.prompt);
@@ -1944,9 +2013,7 @@ export default function PhotoMagicEditor({ store }) {
         })
       });
 
-      setBackgroundUrl(data.url || null);
-      setViewportMode('compare');
-      setLastRenderSummary(`Background scene ready${data.engine ? ` via ${data.engine}` : ''}`);
+      applyBackgroundResult(data);
     } catch (nextError) {
       console.error(nextError);
       const message = nextError?.message || 'Background generation failed';
@@ -1958,6 +2025,7 @@ export default function PhotoMagicEditor({ store }) {
       refreshHealth();
     }
   }, [
+    applyBackgroundResult,
     backgroundPresetId,
     backgroundPrompt,
     imageId,
@@ -2009,12 +2077,7 @@ export default function PhotoMagicEditor({ store }) {
         })
       });
 
-      setRelightUrl(data.url || null);
-      setRelightMaskUrl(data.mask?.url || null);
-      setRelightMaskOutputId(data.mask?.output_id || null);
-      setViewportMode('compare');
-      setTool('relight');
-      setLastRenderSummary(`${groundShadowPreset.label} ground shadow ready`);
+      applyGroundShadowResult(data, `${groundShadowPreset.label} ground shadow ready`);
     } catch (nextError) {
       console.error(nextError);
       const message = nextError?.message || 'Grounding shadow failed';
@@ -2025,7 +2088,107 @@ export default function PhotoMagicEditor({ store }) {
       setIsRunning(false);
       refreshHealth();
     }
-  }, [groundShadowStyle, imageId, logDebug, maskOutputId, refreshHealth, requestJson, startDebugRun, store]);
+  }, [applyGroundShadowResult, groundShadowStyle, imageId, logDebug, maskOutputId, refreshHealth, requestJson, startDebugRun, store]);
+
+  const runPackshotAutopilot = useCallback(async () => {
+    if (!imageId || !rmbg2Ready) return;
+
+    const preset = getBackgroundPresetById(PACKSHOT_AUTOPILOT_PRESET_ID);
+    setError(null);
+    setTool('remove_bg');
+    applyBackgroundPreset(preset.id);
+    setIsRunning(true);
+    const runId = startDebugRun('Packshot Autopilot', `Building ${preset.label} storefront packshot`);
+
+    try {
+      const cutoutData = await requestJson({
+        runId,
+        scope: 'Packshot Autopilot',
+        step: 'remove-bg',
+        url: withStore('/creative-studio/photo-magic/remove-bg', store),
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_id: imageId, engine: 'rmbg2', max_side: maxSide })
+        },
+        successMessage: 'Subject isolated for packshot',
+        failureMessage: 'Packshot cutout failed',
+        successDetails: (payload) => ({
+          cutoutReady: Boolean(payload?.cutout?.url),
+          maskReady: Boolean(payload?.mask?.url)
+        })
+      });
+
+      const nextMaskOutputId = applyRemoveBgResult(cutoutData, PACKSHOT_PARTIAL_SUMMARY);
+
+      if (!backgroundReady || !nextMaskOutputId) {
+        logDebug(runId, 'Packshot Autopilot', 'complete', 'success', PACKSHOT_PARTIAL_SUMMARY, {
+          cutoutReady: Boolean(cutoutData?.cutout?.url),
+          backgroundReady,
+          maskReady: Boolean(nextMaskOutputId)
+        });
+        return;
+      }
+
+      const backgroundData = await requestJson({
+        runId,
+        scope: 'Packshot Autopilot',
+        step: 'background',
+        url: withStore('/creative-studio/photo-magic/background', store),
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_id: imageId,
+            mask_output_id: nextMaskOutputId,
+            prompt: preset.prompt,
+            max_side: maxSide,
+            mask_dilate_px: maskDilatePx,
+            mask_feather_px: maskFeatherPx
+          })
+        },
+        successMessage: 'Packshot background generated',
+        failureMessage: 'Packshot background failed',
+        successDetails: (payload) => ({
+          outputReady: Boolean(payload?.url),
+          engine: payload?.engine || null
+        })
+      });
+
+      applyBackgroundResult(backgroundData, PACKSHOT_SHADOW_FOLLOWUP);
+      logDebug(runId, 'Packshot Autopilot', 'complete', 'success', PACKSHOT_AUTOPILOT_SUMMARY, {
+        provider: backgroundProvider,
+        model: backgroundModel,
+        preset: preset.id
+      });
+    } catch (nextError) {
+      console.error(nextError);
+      const message = nextError?.message || 'Packshot autopilot failed';
+      setError(message);
+      setLastRenderSummary(`Failed: ${message}`);
+      logDebug(runId, 'Packshot Autopilot', 'complete', 'failed', message);
+    } finally {
+      setIsRunning(false);
+      refreshHealth();
+    }
+  }, [
+    applyBackgroundPreset,
+    applyBackgroundResult,
+    applyRemoveBgResult,
+    backgroundModel,
+    backgroundProvider,
+    backgroundReady,
+    imageId,
+    logDebug,
+    maskDilatePx,
+    maskFeatherPx,
+    maxSide,
+    refreshHealth,
+    requestJson,
+    rmbg2Ready,
+    startDebugRun,
+    store
+  ]);
 
   const runSelect = useCallback(async () => {
     if (!imageId || !selectionPrompt.trim()) return;
@@ -2694,6 +2857,116 @@ export default function PhotoMagicEditor({ store }) {
   }, [expandReady]);
 
   const stageConfig = TOOL_DEFINITIONS[tool] || TOOL_DEFINITIONS['erase'];
+  const photoWorkflowSummary = useMemo(() => {
+    if (!imageId) return 'Start with Upload or Shopify import, then run Packshot for the fastest storefront-ready result.';
+    if (backgroundUrl) return 'Packshot, removal, and enhancement all stay tied to the same source chain from here.';
+    if (maskOutputId) return 'Your subject matte is ready. Background Studio, Ground Subject, and removal can run without re-isolating.';
+    if (cutoutUrl) return 'Cutout is ready. Use Background Studio next, or jump into removal for product cleanup.';
+    return 'Choose the quickest next step for this product photo: packshot, background, cleanup, or enhancement.';
+  }, [backgroundUrl, cutoutUrl, imageId, maskOutputId]);
+
+  const photoWorkflowCards = useMemo(() => {
+    const currentWorkflowId = tool === 'erase'
+      ? (maskMethod === 'smart' ? 'magic-lift' : 'object-remover')
+      : tool === 'remove_bg'
+        ? 'background-studio'
+        : tool === 'relight'
+          ? 'ground-subject'
+          : tool === 'expand'
+            ? 'extend-canvas'
+            : tool === 'enhance'
+              ? 'enhance-image'
+              : null;
+
+    return PHOTO_WORKFLOW_SHORTCUTS.map((item) => {
+      let stateLabel = 'Ready';
+      let disabled = isBusy;
+
+      if (item.id === 'packshot') {
+        stateLabel = !imageId ? 'Need source' : !rmbg2Ready ? 'Cutout offline' : !backgroundReady ? 'BG offline' : 'Run now';
+        disabled = isBusy || !imageId || !rmbg2Ready || !backgroundReady;
+      } else if (item.id === 'background-studio') {
+        stateLabel = !imageId ? 'Need source' : !backgroundReady ? 'Offline' : maskOutputId ? 'Mask ready' : 'Remove BG first';
+        disabled = isBusy || !imageId || !backgroundReady;
+      } else if (item.id === 'object-remover') {
+        stateLabel = !imageId ? 'Need source' : !standardEraseReady ? 'Offline' : latestMaskForErase ? 'Mask ready' : 'Brush or lift';
+        disabled = isBusy || !imageId || !standardEraseReady;
+      } else if (item.id === 'magic-lift') {
+        stateLabel = !imageId ? 'Need source' : geminiReady ? 'Ready' : 'Gemini offline';
+        disabled = isBusy || !imageId || !geminiReady;
+      } else if (item.id === 'ground-subject') {
+        stateLabel = !imageId ? 'Need source' : !relightReady ? 'Offline' : maskOutputId ? 'Shadow ready' : 'Remove BG first';
+        disabled = isBusy || !imageId || !relightReady;
+      } else if (item.id === 'extend-canvas') {
+        stateLabel = !imageId ? 'Need source' : expandReady ? 'Ready' : 'Offline';
+        disabled = isBusy || !imageId || !expandReady;
+      } else if (item.id === 'enhance-image') {
+        stateLabel = !imageId ? 'Need source' : enhanceReady ? 'Ready' : 'Offline';
+        disabled = isBusy || !imageId || !enhanceReady;
+      }
+
+      return {
+        ...item,
+        active: item.id === currentWorkflowId,
+        disabled,
+        stateLabel
+      };
+    });
+  }, [backgroundReady, cutoutUrl, enhanceReady, expandReady, geminiReady, imageId, isBusy, latestMaskForErase, maskMethod, maskOutputId, relightReady, rmbg2Ready, standardEraseReady, tool]);
+
+  const packshotWorkflow = photoWorkflowCards.find((item) => item.id === 'packshot') || null;
+
+  const runPhotoWorkflow = useCallback((workflowId) => {
+    setError(null);
+
+    if (workflowId === 'packshot') {
+      runPackshotAutopilot();
+      return;
+    }
+
+    if (workflowId === 'background-studio') {
+      setTool('remove_bg');
+      setViewportMode('source');
+      applyBackgroundPreset(backgroundPresetId || PACKSHOT_AUTOPILOT_PRESET_ID);
+      return;
+    }
+
+    if (workflowId === 'object-remover') {
+      setTool('erase');
+      setMaskMethod('brush');
+      setViewportMode('source');
+      return;
+    }
+
+    if (workflowId === 'magic-lift') {
+      setTool('erase');
+      setMaskMethod('smart');
+      setViewportMode('source');
+      return;
+    }
+
+    if (workflowId === 'ground-subject') {
+      setTool('remove_bg');
+      if (imageId && maskOutputId && relightReady && !isBusy) {
+        runGroundShadow();
+      } else {
+        setViewportMode('source');
+      }
+      return;
+    }
+
+    if (workflowId === 'extend-canvas') {
+      setTool('expand');
+      setViewportMode('source');
+      return;
+    }
+
+    if (workflowId === 'enhance-image') {
+      setTool('enhance');
+      setViewportMode('source');
+    }
+  }, [applyBackgroundPreset, backgroundPresetId, imageId, isBusy, maskOutputId, relightReady, runGroundShadow, runPackshotAutopilot]);
+
   const outputCards = useMemo(() => {
     if (tool === 'remove_bg') {
       const cards = [
@@ -3460,10 +3733,24 @@ export default function PhotoMagicEditor({ store }) {
                     <div className="mt-1 text-sm font-medium text-gray-900">{primaryOutput?.title || 'No render yet'}</div>
                     <div className="mt-0.5 text-xs text-gray-500">{lastRenderSummary}</div>
                   </div>
+                  <div className="grid grid-cols-3 gap-2 pt-1">
+                    <div className="rounded-xl border border-gray-100 bg-gray-50/70 px-3 py-2">
+                      <div className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Source Chain</div>
+                      <div className="mt-1 text-sm font-semibold text-gray-900">{sourceHistory.length}</div>
+                    </div>
+                    <div className="rounded-xl border border-gray-100 bg-gray-50/70 px-3 py-2">
+                      <div className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Undo</div>
+                      <div className="mt-1 text-sm font-semibold text-gray-900">{photoHistory.length}</div>
+                    </div>
+                    <div className="rounded-xl border border-gray-100 bg-gray-50/70 px-3 py-2">
+                      <div className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Lifted</div>
+                      <div className="mt-1 text-sm font-semibold text-gray-900">{liftedAssets.length}</div>
+                    </div>
+                  </div>
                   {sourceHistory.length > 1 ? (
                     <div className="flex flex-wrap gap-2 pt-1">
                       {sourceHistory.map((step, index) => (
-                        <span key={`${step}-${index}`} className={cn(
+                        <span key={`source-history-${index}-${step}`} className={cn(
                           'rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]',
                           index === sourceHistory.length - 1 ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-500'
                         )}>
@@ -3472,6 +3759,57 @@ export default function PhotoMagicEditor({ store }) {
                       ))}
                     </div>
                   ) : null}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <Label>Commerce Workflows</Label>
+                    <div className="mt-1 text-xs leading-5 text-gray-500">{photoWorkflowSummary}</div>
+                  </div>
+                  <StatusPill ok={Boolean(imageId)} label={imageId ? 'Source ready' : 'Need source'} />
+                </div>
+                <div className="mt-4">
+                  <Button
+                    variant="primary"
+                    onClick={() => runPhotoWorkflow('packshot')}
+                    disabled={packshotWorkflow?.disabled}
+                    className="w-full justify-center pm-btn-hover"
+                  >
+                    <Wand2 className="h-4 w-4 pm-sparkle-icon" />
+                    Storefront Packshot
+                  </Button>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  {photoWorkflowCards.filter((item) => item.id !== 'packshot').map((item) => {
+                    const Icon = item.icon;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => runPhotoWorkflow(item.id)}
+                        disabled={item.disabled}
+                        className={cn(
+                          'rounded-2xl border px-3 py-3 text-left transition-all disabled:cursor-not-allowed disabled:opacity-45',
+                          item.active
+                            ? 'border-indigo-200 bg-indigo-50/70 shadow-sm'
+                            : 'border-gray-100 bg-gray-50/70 hover:border-gray-200 hover:bg-white'
+                        )}
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className={cn('flex h-8 w-8 items-center justify-center rounded-xl border', item.active ? 'border-indigo-200 bg-white text-indigo-600' : 'border-gray-200 bg-white text-gray-500')}>
+                            <Icon className="h-4 w-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold text-gray-900">{item.label}</div>
+                            <div className="mt-0.5 text-[10px] font-mono uppercase tracking-[0.18em] text-gray-400">{item.stateLabel}</div>
+                          </div>
+                        </div>
+                        <div className="mt-2 text-xs leading-5 text-gray-500">{item.description}</div>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
