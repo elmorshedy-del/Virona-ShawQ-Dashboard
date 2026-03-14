@@ -88,6 +88,31 @@ function requireStoreParam(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
 
+function parseNormalizationQuery(req, {
+  defaultDimension = null,
+  includeTopLimit = false
+} = {}) {
+  const parsed = {
+    store: req.query.store || 'shawq',
+    date: req.query.date || null,
+    startDate: req.query.startDate || req.query.start || null,
+    endDate: req.query.endDate || req.query.end || null,
+    baselineDays: req.query.baselineDays ? parseInt(req.query.baselineDays, 10) : undefined,
+    rebuild: normalizeFlag(req.query.rebuild),
+    journeyLimit: req.query.limit ? parseInt(req.query.limit, 10) : undefined
+  };
+
+  if (defaultDimension) {
+    parsed.dimension = req.query.dimension || defaultDimension;
+  }
+
+  if (includeTopLimit) {
+    parsed.topLimit = req.query.topLimit ? parseInt(req.query.topLimit, 10) : undefined;
+  }
+
+  return parsed;
+}
+
 router.post('/admin-session', (req, res) => {
   const validation = validateSessionIntelligenceAdminRequest(req);
   if (!validation.ok) {
@@ -545,22 +570,8 @@ router.get('/journeys', requireSurveyAdminSession, (req, res) => {
 
 router.get('/normalized/funnel', requireSurveyAdminSession, (req, res) => {
   try {
-    const store = req.query.store || 'shawq';
-    const date = req.query.date || null;
-    const startDate = req.query.startDate || req.query.start || null;
-    const endDate = req.query.endDate || req.query.end || null;
-    const baselineDays = req.query.baselineDays ? parseInt(req.query.baselineDays, 10) : undefined;
-    const rebuild = normalizeFlag(req.query.rebuild);
-    const journeyLimit = req.query.limit ? parseInt(req.query.limit, 10) : undefined;
-
-    const report = getSessionIntelligenceNormalizedFunnel(store, {
-      date,
-      startDate,
-      endDate,
-      baselineDays,
-      rebuild,
-      journeyLimit
-    });
+    const { store, ...options } = parseNormalizationQuery(req);
+    const report = getSessionIntelligenceNormalizedFunnel(store, options);
 
     if (!report.success) {
       return res.status(400).json(report);
@@ -575,22 +586,8 @@ router.get('/normalized/funnel', requireSurveyAdminSession, (req, res) => {
 
 router.get('/normalized/products', requireSurveyAdminSession, (req, res) => {
   try {
-    const store = req.query.store || 'shawq';
-    const date = req.query.date || null;
-    const startDate = req.query.startDate || req.query.start || null;
-    const endDate = req.query.endDate || req.query.end || null;
-    const baselineDays = req.query.baselineDays ? parseInt(req.query.baselineDays, 10) : undefined;
-    const rebuild = normalizeFlag(req.query.rebuild);
-    const journeyLimit = req.query.limit ? parseInt(req.query.limit, 10) : undefined;
-
-    const report = getSessionIntelligenceNormalizedProducts(store, {
-      date,
-      startDate,
-      endDate,
-      baselineDays,
-      rebuild,
-      journeyLimit
-    });
+    const { store, ...options } = parseNormalizationQuery(req);
+    const report = getSessionIntelligenceNormalizedProducts(store, options);
 
     if (!report.success) {
       return res.status(400).json(report);
@@ -605,24 +602,8 @@ router.get('/normalized/products', requireSurveyAdminSession, (req, res) => {
 
 router.get('/normalized/segments', requireSurveyAdminSession, (req, res) => {
   try {
-    const store = req.query.store || 'shawq';
-    const dimension = req.query.dimension || 'device';
-    const date = req.query.date || null;
-    const startDate = req.query.startDate || req.query.start || null;
-    const endDate = req.query.endDate || req.query.end || null;
-    const baselineDays = req.query.baselineDays ? parseInt(req.query.baselineDays, 10) : undefined;
-    const rebuild = normalizeFlag(req.query.rebuild);
-    const journeyLimit = req.query.limit ? parseInt(req.query.limit, 10) : undefined;
-
-    const report = getSessionIntelligenceNormalizedSegments(store, {
-      dimension,
-      date,
-      startDate,
-      endDate,
-      baselineDays,
-      rebuild,
-      journeyLimit
-    });
+    const { store, ...options } = parseNormalizationQuery(req, { defaultDimension: 'device' });
+    const report = getSessionIntelligenceNormalizedSegments(store, options);
 
     if (!report.success) {
       return res.status(400).json(report);
@@ -637,24 +618,8 @@ router.get('/normalized/segments', requireSurveyAdminSession, (req, res) => {
 
 router.get('/normalized/money-leaks', requireSurveyAdminSession, (req, res) => {
   try {
-    const store = req.query.store || 'shawq';
-    const date = req.query.date || null;
-    const startDate = req.query.startDate || req.query.start || null;
-    const endDate = req.query.endDate || req.query.end || null;
-    const baselineDays = req.query.baselineDays ? parseInt(req.query.baselineDays, 10) : undefined;
-    const rebuild = normalizeFlag(req.query.rebuild);
-    const journeyLimit = req.query.limit ? parseInt(req.query.limit, 10) : undefined;
-    const topLimit = req.query.topLimit ? parseInt(req.query.topLimit, 10) : undefined;
-
-    const report = getSessionIntelligenceNormalizedMoneyLeaks(store, {
-      date,
-      startDate,
-      endDate,
-      baselineDays,
-      rebuild,
-      journeyLimit,
-      topLimit
-    });
+    const { store, ...options } = parseNormalizationQuery(req, { includeTopLimit: true });
+    const report = getSessionIntelligenceNormalizedMoneyLeaks(store, options);
 
     if (!report.success) {
       return res.status(400).json(report);
@@ -669,24 +634,8 @@ router.get('/normalized/money-leaks', requireSurveyAdminSession, (req, res) => {
 
 router.get('/normalized/brief', requireSurveyAdminSession, (req, res) => {
   try {
-    const store = req.query.store || 'shawq';
-    const date = req.query.date || null;
-    const startDate = req.query.startDate || req.query.start || null;
-    const endDate = req.query.endDate || req.query.end || null;
-    const baselineDays = req.query.baselineDays ? parseInt(req.query.baselineDays, 10) : undefined;
-    const rebuild = normalizeFlag(req.query.rebuild);
-    const journeyLimit = req.query.limit ? parseInt(req.query.limit, 10) : undefined;
-    const topLimit = req.query.topLimit ? parseInt(req.query.topLimit, 10) : undefined;
-
-    const report = getSessionIntelligenceNormalizedBrief(store, {
-      date,
-      startDate,
-      endDate,
-      baselineDays,
-      rebuild,
-      journeyLimit,
-      topLimit
-    });
+    const { store, ...options } = parseNormalizationQuery(req, { includeTopLimit: true });
+    const report = getSessionIntelligenceNormalizedBrief(store, options);
 
     if (!report.success) {
       return res.status(400).json(report);
