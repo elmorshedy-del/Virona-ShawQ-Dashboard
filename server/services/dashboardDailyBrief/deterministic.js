@@ -29,6 +29,17 @@ const GLM_REWRITE_MARKERS = Object.freeze([
   'json'
 ]);
 
+const GLM_PARAGRAPH_GUARDRAILS = Object.freeze({
+  minimumWordCount: 35,
+  minimumSentenceCount: 2
+});
+
+export const DASHBOARD_DAILY_BRIEF_RESOLUTION_STRATEGY = Object.freeze({
+  llm: 'llm',
+  glmSanitized: 'glm_sanitized',
+  deterministic: 'deterministic'
+});
+
 const FUNNEL_STEP_PRIORITY = Object.freeze([
   { key: 'purchaseIc', label: 'checkout-to-purchase' },
   { key: 'atcLpv', label: 'landing-page-to-cart' },
@@ -320,6 +331,48 @@ function buildDeterministicExecutiveParagraph(packet = {}) {
   return normalizeParagraph(parts.filter(Boolean).join(' '));
 }
 
+function sanitizeGlmParagraph(paragraph) {
+  const normalized = String(paragraph || '').trim();
+  if (!normalized) return '';
+
+  const cleanedLines = normalized
+    .replace(/```json/gi, '```')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => {
+      const lowerLine = line.toLowerCase();
+      return !GLM_REWRITE_MARKERS.some((marker) => lowerLine.includes(marker));
+    });
+
+  const cleaned = coerceSingleParagraphText(cleanedLines.join(' '))
+    .replace(/^here(?:'s| is)\s+(?:the\s+)?(?:brief|summary|note)\s*[:.-]\s*/i, '')
+    .replace(/^final\s+(?:brief|summary|note)\s*[:.-]\s*/i, '')
+    .trim();
+
+  return normalizeParagraph(cleaned, '');
+}
+
+function isUsableGlmParagraph(paragraph) {
+  const normalized = coerceSingleParagraphText(paragraph);
+  if (!normalized) return false;
+
+  const lowerParagraph = normalized.toLowerCase();
+  if (GLM_REWRITE_MARKERS.some((marker) => lowerParagraph.includes(marker))) {
+    return false;
+  }
+
+  const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+  const sentenceCount = normalized
+    .split(/[.!?]+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+    .length;
+
+  return wordCount >= GLM_PARAGRAPH_GUARDRAILS.minimumWordCount
+    && sentenceCount >= GLM_PARAGRAPH_GUARDRAILS.minimumSentenceCount;
+}
+
 function needsGlmExecutiveRewrite(paragraph) {
   const normalized = coerceSingleParagraphText(paragraph).toLowerCase();
   if (!normalized) return true;
@@ -329,10 +382,29 @@ function needsGlmExecutiveRewrite(paragraph) {
 export function resolveDashboardDailyBriefParagraph({ packet, llmResponse, parsedParagraph, rawResponseText }) {
   const rawParagraph = normalizeParagraph(parsedParagraph, normalizeParagraph(rawResponseText, 'No daily brief was produced.'));
   if (!isGlmModel(llmResponse?.model)) {
-    return rawParagraph;
+    return {
+      paragraph: rawParagraph,
+      resolutionStrategy: DASHBOARD_DAILY_BRIEF_RESOLUTION_STRATEGY.llm
+    };
   }
+
   if (!needsGlmExecutiveRewrite(rawParagraph)) {
-    return rawParagraph;
+    return {
+      paragraph: rawParagraph,
+      resolutionStrategy: DASHBOARD_DAILY_BRIEF_RESOLUTION_STRATEGY.llm
+    };
   }
-  return buildDeterministicExecutiveParagraph(packet);
+
+  const sanitizedParagraph = sanitizeGlmParagraph(parsedParagraph || rawResponseText);
+  if (isUsableGlmParagraph(sanitizedParagraph)) {
+    return {
+      paragraph: sanitizedParagraph,
+      resolutionStrategy: DASHBOARD_DAILY_BRIEF_RESOLUTION_STRATEGY.glmSanitized
+    };
+  }
+
+  return {
+    paragraph: buildDeterministicExecutiveParagraph(packet),
+    resolutionStrategy: DASHBOARD_DAILY_BRIEF_RESOLUTION_STRATEGY.deterministic
+  };
 }

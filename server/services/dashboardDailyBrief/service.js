@@ -433,12 +433,13 @@ async function generateFreshDashboardDailyBrief({
   const responseText = String(llmResponse?.text || '').trim();
 
   const parsed = parseJsonObject(responseText);
-  const paragraph = resolveDashboardDailyBriefParagraph({
+  const paragraphResolution = resolveDashboardDailyBriefParagraph({
     packet,
     llmResponse,
     parsedParagraph: parsed?.paragraph,
     rawResponseText: responseText
   });
+  const paragraph = paragraphResolution?.paragraph || 'No daily brief was produced.';
   const estimatedOutputTokens = estimateTokenCount(responseText);
   const estimatedCostUsd = estimateProviderRunCostUsd({
     provider: llmResponse.provider,
@@ -465,7 +466,8 @@ async function generateFreshDashboardDailyBrief({
       anchorEndDate: resolvedSource?.anchorEndDate || null,
       include,
       fallbackUsed: Boolean(llmResponse.fallbackUsed),
-      fallbackReason: llmResponse.fallbackReason || null
+      fallbackReason: llmResponse.fallbackReason || null,
+      resolutionStrategy: paragraphResolution?.resolutionStrategy || 'llm'
     }
   });
 }
