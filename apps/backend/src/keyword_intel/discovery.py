@@ -36,10 +36,13 @@ def _safe_get(url: str, timeout: int = 12) -> str:
     return response.text
 
 
+import logging
+
 def _try_get(url: str, timeout: int = PRODUCT_PAGE_TIMEOUT_SEC) -> str:
     try:
         return _safe_get(url, timeout=timeout)
-    except Exception:
+    except Exception as exc:
+        logging.warning("Failed to fetch URL %s: %s", url, exc)
         return ""
 
 
