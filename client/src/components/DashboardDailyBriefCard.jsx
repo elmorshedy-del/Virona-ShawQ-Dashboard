@@ -34,6 +34,14 @@ function formatBriefDate(value) {
   });
 }
 
+function formatEstimatedCostUsd(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  if (numeric < 0.01) return `~$${numeric.toFixed(4)}`;
+  if (numeric < 0.1) return `~$${numeric.toFixed(3)}`;
+  return `~$${numeric.toFixed(2)}`;
+}
+
 function buildPreview(markdown) {
   const normalized = String(markdown || '')
     .replace(/\*\*/g, '')
@@ -116,6 +124,7 @@ export default function DashboardDailyBriefCard({ apiBase = '/api', storeId, cla
   }, [loadBrief, storeId]);
 
   const previewText = useMemo(() => buildPreview(brief?.paragraph), [brief?.paragraph]);
+  const estimatedCostLabel = useMemo(() => formatEstimatedCostUsd(brief?.estimatedCostUsd), [brief?.estimatedCostUsd]);
   const targetBriefDate = getFallbackYesterdayBriefDate();
   const isBusy = loading || regenerating;
 
@@ -142,6 +151,11 @@ export default function DashboardDailyBriefCard({ apiBase = '/api', storeId, cla
               {brief?.model ? <span>{formatModelLabel(brief.model)}</span> : null}
               {brief?.createdAt ? <span>Generated {new Date(brief.createdAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</span> : null}
             </div>
+            {estimatedCostLabel ? (
+              <div className="mt-1 text-[11px] text-gray-400">
+                Estimated model cost {estimatedCostLabel}
+              </div>
+            ) : null}
             {!expanded && error && (
               <p className="mt-3 text-sm leading-6 text-rose-700">{error}</p>
             )}

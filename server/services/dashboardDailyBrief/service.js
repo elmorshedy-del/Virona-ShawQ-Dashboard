@@ -131,17 +131,32 @@ function estimateTokenCount(text) {
   return Math.max(1, Math.ceil(normalized.length / DASHBOARD_DAILY_BRIEF_DEFAULTS.estimatedCharsPerToken));
 }
 
-function estimateRunCostUsd({ inputTokens, outputTokens }) {
-  const inputCost = (inputTokens / 1_000_000) * DASHBOARD_DAILY_BRIEF_DEFAULTS.inputUsdPerMillionTokens;
-  const outputCost = (outputTokens / 1_000_000) * DASHBOARD_DAILY_BRIEF_DEFAULTS.outputUsdPerMillionTokens;
+function estimateRunCostUsd({ inputTokens, outputTokens, inputUsdPerMillionTokens, outputUsdPerMillionTokens }) {
+  const inputCost = (inputTokens / 1_000_000) * inputUsdPerMillionTokens;
+  const outputCost = (outputTokens / 1_000_000) * outputUsdPerMillionTokens;
   return round(inputCost + outputCost, 6);
 }
 
 function estimateProviderRunCostUsd({ provider, inputTokens, outputTokens }) {
-  if (provider !== DASHBOARD_DAILY_BRIEF_DEFAULTS.provider) {
-    return null;
+  if (provider === DASHBOARD_DAILY_BRIEF_DEFAULTS.provider) {
+    return estimateRunCostUsd({
+      inputTokens,
+      outputTokens,
+      inputUsdPerMillionTokens: DASHBOARD_DAILY_BRIEF_DEFAULTS.inputUsdPerMillionTokens,
+      outputUsdPerMillionTokens: DASHBOARD_DAILY_BRIEF_DEFAULTS.outputUsdPerMillionTokens
+    });
   }
-  return estimateRunCostUsd({ inputTokens, outputTokens });
+
+  if (provider === DASHBOARD_DAILY_BRIEF_DEFAULTS.fallbackProvider) {
+    return estimateRunCostUsd({
+      inputTokens,
+      outputTokens,
+      inputUsdPerMillionTokens: DASHBOARD_DAILY_BRIEF_DEFAULTS.fallbackInputUsdPerMillionTokens,
+      outputUsdPerMillionTokens: DASHBOARD_DAILY_BRIEF_DEFAULTS.fallbackOutputUsdPerMillionTokens
+    });
+  }
+
+  return null;
 }
 
 function normalizeRequestedBriefDate(briefDate) {
