@@ -20,7 +20,8 @@ function sendDashboardDailyBriefError(res, error, contextLabel) {
 router.get('/', async (req, res) => {
   try {
     const brief = await getOrCreateDashboardDailyBrief({
-      store: req.query.store
+      store: req.query.store,
+      briefDate: req.query.briefDate
     });
 
     res.json({
@@ -36,6 +37,7 @@ router.post('/generate', async (req, res) => {
   try {
     const brief = await generateDashboardDailyBrief({
       store: req.body?.store,
+      briefDate: req.body?.briefDate,
       force: Boolean(req.body?.force)
     });
 
