@@ -37,36 +37,23 @@ const FUNNEL_STEP_PRIORITY = Object.freeze([
   { key: 'ctr', label: 'click-through rate' }
 ]);
 
-function scoreEntity(row = {}) {
-  const flags = Array.isArray(row?.flags) ? row.flags : [];
-  let score = 0;
-
-  if (flags.includes('winner')) score += 100;
-  if (flags.includes('zero_purchase_spend')) score += 90;
-  if (flags.includes('weak_roas')) score += 80;
-  if (flags.includes('new_conversion_signal')) score += 70;
-  if (flags.includes('purchase_ic_down')) score += 60;
-  if (flags.includes('atc_lpv_down')) score += 50;
-
-  score += toFiniteNumber(row?.spendShare) || 0;
-  score += (toFiniteNumber(row?.metaPurchases) || 0) / 1000;
-  score += (toFiniteNumber(row?.spend) || 0) / 100000;
-
-  return score;
+function hasRowSignal(row = {}) {
+  return (toFiniteNumber(row?.spend) || 0) > 0
+    || (toFiniteNumber(row?.metaPurchases) || 0) > 0
+    || (Array.isArray(row?.flags) && row.flags.length > 0);
 }
 
-function scoreGeo(row = {}) {
-  const flags = Array.isArray(row?.flags) ? row.flags : [];
-  let score = 0;
+function pickFirstFlaggedOrFirstSignal(rows = []) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return null;
+  }
 
-  if (flags.includes('weak_roas')) score += 90;
-  if (flags.includes('roas_down_vs_baseline')) score += 80;
-  if (flags.includes('purchase_ic_down')) score += 70;
+  const firstFlaggedRow = rows.find((row) => Array.isArray(row?.flags) && row.flags.length > 0);
+  if (firstFlaggedRow) {
+    return firstFlaggedRow;
+  }
 
-  score += (toFiniteNumber(row?.metaPurchases) || 0) / 1000;
-  score += (toFiniteNumber(row?.spend) || 0) / 100000;
-
-  return score;
+  return rows.find((row) => hasRowSignal(row)) || null;
 }
 
 function isGlmModel(model) {
@@ -134,11 +121,7 @@ function pickPrimaryEntity(packet = {}) {
   ];
 
   for (const group of groups) {
-    if (!Array.isArray(group.rows) || group.rows.length === 0) continue;
-    const rankedRows = [...group.rows]
-      .filter((candidate) => candidate && ((toFiniteNumber(candidate?.spend) || 0) > 0 || (Array.isArray(candidate?.flags) && candidate.flags.length > 0)))
-      .sort((left, right) => scoreEntity(right) - scoreEntity(left));
-    const row = rankedRows[0] || null;
+    const row = pickFirstFlaggedOrFirstSignal(group.rows);
     if (row) {
       return { ...row, entityLabel: group.label };
     }
@@ -149,13 +132,7 @@ function pickPrimaryEntity(packet = {}) {
 
 function pickPrimaryGeo(packet = {}) {
   const geoRows = Array.isArray(packet?.topGeos) ? packet.topGeos : [];
-  if (!geoRows.length) return null;
-
-  const rankedRows = [...geoRows]
-    .filter((row) => row && ((toFiniteNumber(row?.spend) || 0) > 0 || (Array.isArray(row?.flags) && row.flags.length > 0)))
-    .sort((left, right) => scoreGeo(right) - scoreGeo(left));
-
-  return rankedRows[0] || null;
+  return pickFirstFlaggedOrFirstSignal(geoRows);
 }
 
 function buildBaselinePaceSentence(account = {}) {
