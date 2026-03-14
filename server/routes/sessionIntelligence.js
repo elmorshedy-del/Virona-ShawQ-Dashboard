@@ -49,6 +49,7 @@ import {
   getSessionIntelligenceNormalizedProducts,
   getSessionIntelligenceNormalizedSegments
 } from '../services/sessionIntelligenceNormalizationService.js';
+import { getSessionIntelligenceNormalizedBrief } from '../services/sessionIntelligenceNormalizationBriefService.js';
 import { issueSessionIntelligenceAdminCookie, validateSessionIntelligenceAdminRequest } from '../utils/sessionIntelligenceSurveyAccess.js';
 
 const router = express.Router();
@@ -663,6 +664,38 @@ router.get('/normalized/money-leaks', requireSurveyAdminSession, (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] normalized money leaks error:', error);
     res.status(500).json({ success: false, error: 'Failed to load normalized money leak ranking' });
+  }
+});
+
+router.get('/normalized/brief', requireSurveyAdminSession, (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const date = req.query.date || null;
+    const startDate = req.query.startDate || req.query.start || null;
+    const endDate = req.query.endDate || req.query.end || null;
+    const baselineDays = req.query.baselineDays ? parseInt(req.query.baselineDays, 10) : undefined;
+    const rebuild = normalizeFlag(req.query.rebuild);
+    const journeyLimit = req.query.limit ? parseInt(req.query.limit, 10) : undefined;
+    const topLimit = req.query.topLimit ? parseInt(req.query.topLimit, 10) : undefined;
+
+    const report = getSessionIntelligenceNormalizedBrief(store, {
+      date,
+      startDate,
+      endDate,
+      baselineDays,
+      rebuild,
+      journeyLimit,
+      topLimit
+    });
+
+    if (!report.success) {
+      return res.status(400).json(report);
+    }
+
+    res.json(report);
+  } catch (error) {
+    console.error('[SessionIntelligence] normalized brief error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load normalized brief' });
   }
 });
 
