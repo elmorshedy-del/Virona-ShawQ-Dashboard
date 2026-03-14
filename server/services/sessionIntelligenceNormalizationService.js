@@ -22,9 +22,11 @@ const NORMALIZED_MONEY_LEAK_CONFIG = Object.freeze({
   defaultSegmentTopLimit: 5,
   minimumProductOrdersForDedicatedAov: 3
 });
+const ORDER_SOURCE_CACHE_TTL_MS = 15 * 60 * 1000;
 const SHOPIFY_ORDERS_TABLE = 'shopify_orders';
 const SALLA_ORDERS_TABLE = 'salla_orders';
 const SHOPIFY_ORDER_ITEMS_TABLE = 'shopify_order_items';
+const storeOrderTableCache = new Map();
 
 function safeString(value) {
   if (value == null) return '';
@@ -159,29 +161,51 @@ function tableExists(db, tableName) {
   );
 }
 
-function getOrderCountForTable(db, tableName, store, startDate, endDate) {
-  if (!tableExists(db, tableName)) return 0;
-  const row = db.prepare(`
-    SELECT COUNT(*) AS orders
-    FROM ${tableName}
-    WHERE store = ?
-      AND date BETWEEN ? AND ?
-      AND COALESCE(is_excluded, 0) = 0
-  `).get(store, startDate, endDate);
-  return safeFiniteNumber(row?.orders, 0);
+function getCachedStoreOrderTable(store) {
+  const cacheKey = safeString(store).trim().toLowerCase();
+  if (!cacheKey) return null;
+  const cached = storeOrderTableCache.get(cacheKey);
+  if (!cached) return null;
+  if ((Date.now() - cached.cachedAtMs) > ORDER_SOURCE_CACHE_TTL_MS) {
+    storeOrderTableCache.delete(cacheKey);
+    return null;
+  }
+  return cached.tableName || null;
 }
 
-function resolveOrdersTableForStore(db, store, startDate, endDate) {
-  const candidateTables = [SHOPIFY_ORDERS_TABLE, SALLA_ORDERS_TABLE]
-    .filter((tableName) => tableExists(db, tableName))
-    .map((tableName) => ({
-      tableName,
-      orders: getOrderCountForTable(db, tableName, store, startDate, endDate)
-    }))
-    .filter((candidate) => candidate.orders > 0)
-    .sort((left, right) => right.orders - left.orders);
+function cacheStoreOrderTable(store, tableName) {
+  const cacheKey = safeString(store).trim().toLowerCase();
+  if (!cacheKey || !safeString(tableName).trim()) return;
+  storeOrderTableCache.set(cacheKey, {
+    tableName,
+    cachedAtMs: Date.now()
+  });
+}
 
-  return candidateTables[0]?.tableName || null;
+function hasOrdersForStore(db, tableName, store) {
+  if (!tableExists(db, tableName)) return 0;
+  const row = db.prepare(`
+    SELECT 1 AS has_orders
+    FROM ${tableName}
+    WHERE store = ?
+      AND COALESCE(is_excluded, 0) = 0
+    LIMIT 1
+  `).get(store);
+  return Boolean(row?.has_orders);
+}
+
+function resolveOrdersTableForStore(db, store) {
+  const cachedTableName = getCachedStoreOrderTable(store);
+  if (cachedTableName) return cachedTableName;
+
+  const candidateTables = [SHOPIFY_ORDERS_TABLE, SALLA_ORDERS_TABLE];
+  for (const tableName of candidateTables) {
+    if (!hasOrdersForStore(db, tableName, store)) continue;
+    cacheStoreOrderTable(store, tableName);
+    return tableName;
+  }
+
+  return null;
 }
 
 function getStoreAverageOrderValue(db, ordersTable, store, startDate, endDate) {
@@ -275,7 +299,7 @@ function buildRevenueReferenceContext(db, store, {
 }) {
   const referenceStartDate = baselineRange.startDate;
   const referenceEndDate = currentRange.endDate;
-  const ordersTable = resolveOrdersTableForStore(db, store, referenceStartDate, referenceEndDate);
+  const ordersTable = resolveOrdersTableForStore(db, store);
   const storeAov = getStoreAverageOrderValue(db, ordersTable, store, referenceStartDate, referenceEndDate);
   const productAovs = getProductAverageOrderValues(db, store, referenceStartDate, referenceEndDate, productIds);
 
