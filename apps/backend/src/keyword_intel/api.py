@@ -605,8 +605,9 @@ def push_google_ads(payload: PushGoogleAdsRequest) -> dict:
         )
         customer_id = payload.customer_id or settings.google_ads_customer_id
         if not customer_id:
-            raise RuntimeError(
-                "missing_customer_id:provide customer_id or GOOGLE_ADS_CUSTOMER_ID"
+            raise HTTPException(
+                status_code=400,
+                detail="missing_customer_id:provide customer_id or GOOGLE_ADS_CUSTOMER_ID",
             )
 
         pusher = GoogleAdsCampaignPusher(settings=settings)
