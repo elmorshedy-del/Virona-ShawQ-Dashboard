@@ -78,8 +78,12 @@ export default function CreativeDNATab() {
         if (!cancelled) {
           setProfile(payload);
         }
-      } catch {
-        // no saved profile yet
+      } catch (err) {
+        // A 404 error is expected if the profile doesn't exist yet.
+        // Other errors should be logged to aid debugging.
+        if (!err.message?.includes("404")) {
+          console.error("Failed to load Creative DNA profile:", err);
+        }
       }
     }
     void loadExisting();
