@@ -401,6 +401,32 @@ export function initDb() {
     ON campaign_intelligence_llm_briefs(store, scope_key, brief_date, created_at)
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dashboard_daily_briefs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      brief_date TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'daily',
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      reasoning_effort TEXT NOT NULL DEFAULT 'xhigh',
+      estimated_input_tokens INTEGER DEFAULT 0,
+      estimated_output_tokens INTEGER DEFAULT 0,
+      estimated_cost_usd REAL DEFAULT 0,
+      packet_json TEXT NOT NULL,
+      brief_markdown TEXT NOT NULL,
+      metadata_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, brief_date)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_dashboard_daily_briefs_store_date
+    ON dashboard_daily_briefs(store, brief_date, created_at)
+  `);
+
   // Backfill missing notification columns for existing databases
   try {
     db.exec(`ALTER TABLE notifications ADD COLUMN country TEXT`);

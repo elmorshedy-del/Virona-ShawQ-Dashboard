@@ -32,6 +32,7 @@ import watchtowerRouter from './routes/watchtower.js';
 import croForensicsRouter from './routes/croForensics.js';
 import conversionUiFixLabRouter from './routes/conversionUiFixLab.js';
 import campaignIntelligenceRouter from './routes/campaignIntelligence.js';
+import dashboardDailyBriefRouter from './routes/dashboardDailyBrief.js';
 import blackboxRouter from './routes/blackbox.js';
 import { backfillBlackboxFromShopifyPixelEvents } from './services/blackboxService.js';
 import { ensureFaceModelsLoaded } from './services/testimonialExtractorService.js';
@@ -53,6 +54,7 @@ import { runQueuedInvestigationJobs } from './services/sessionIntelligenceInvest
 import { scheduleCreativeFunnelSummaryJobs } from './services/creativeFunnelSummaryService.js';
 import { runCampaignIntelligenceDailyTrainer } from './services/campaignIntelligence/trainer.js';
 import { runCampaignIntelligenceDailyBriefs } from './services/campaignIntelligence/briefScheduler.js';
+import { runDashboardDailyBriefs } from './services/dashboardDailyBrief/scheduler.js';
 import { formatDateAsGmt3 } from './utils/dateUtils.js';
 import { resolveExchangeRateProviders } from './services/exchangeRateConfig.js';
 import {
@@ -294,6 +296,7 @@ app.use('/api/testimonials', testimonialExtractorRouter);
 app.use('/api/cro-forensics', croForensicsRouter);
 app.use('/api/conversion-ui-fix-lab', conversionUiFixLabRouter);
 app.use('/api/campaign-intelligence', campaignIntelligenceRouter);
+app.use('/api/dashboard-daily-brief', dashboardDailyBriefRouter);
 app.use('/api/blackbox', blackboxRouter);
 
 // Serve static files in production
@@ -751,6 +754,17 @@ setTimeout(() => {
     });
 }, 35000);
 scheduleGmt3DailyJob('campaign intelligence daily brief', runCampaignIntelligenceDailyBriefs);
+
+setTimeout(() => {
+  runDashboardDailyBriefs()
+    .then((result) => {
+      console.log('[Dashboard Daily Brief] Startup run complete:', result);
+    })
+    .catch((error) => {
+      console.warn('[Dashboard Daily Brief] Startup run failed:', error?.message || error);
+    });
+}, 40000);
+scheduleGmt3DailyJob('dashboard daily brief', runDashboardDailyBriefs);
 
 setTimeout(() => {
   const bootstrapDays = resolveExchangeBootstrapDays();
