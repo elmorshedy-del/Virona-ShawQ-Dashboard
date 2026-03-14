@@ -563,10 +563,15 @@ function resolveRangeWindow({
   });
 
   const requestedEndDate = parseIsoDate(endDate);
-  let resolvedEndDate = requestedEndDate || latestScopeDate || getCurrentDashboardDate() || new Date().toISOString().slice(0, 10);
+  const latestCompletedDashboardDate = getLatestCompletedDashboardDate();
+  let resolvedEndDate =
+    requestedEndDate ||
+    latestScopeDate ||
+    latestCompletedDashboardDate ||
+    getCurrentDashboardDate() ||
+    new Date().toISOString().slice(0, 10);
 
   if (!requestedEndDate && latestScopeDate) {
-    const latestCompletedDashboardDate = getLatestCompletedDashboardDate();
     if (latestCompletedDashboardDate && latestScopeDate > latestCompletedDashboardDate) {
       const isFirstLifecycleDay = lifecycleStartDate != null && lifecycleStartDate === latestScopeDate;
       resolvedEndDate = isFirstLifecycleDay ? latestScopeDate : latestCompletedDashboardDate;

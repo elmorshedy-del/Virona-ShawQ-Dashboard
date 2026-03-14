@@ -30,6 +30,7 @@ import ExchangeRateDebug from './components/ExchangeRateDebug';
 import CurrencyToggle from './components/CurrencyToggle';
 import LiveCheckoutIndicator from './components/LiveCheckoutIndicator';
 import PerformancePulseStrip from './components/PerformancePulseStrip';
+import DashboardDailyBriefCard from './components/DashboardDailyBriefCard';
 import CustomerInsightsTab from './components/CustomerInsightsTab';
 import WatchtowerTab from './components/WatchtowerTab';
 import CROForensicsTab from './components/CROForensicsTab';
@@ -6022,6 +6023,11 @@ function DashboardTab({
         formatNumber={formatNumber}
       />
 
+      <DashboardDailyBriefCard
+        apiBase={API_BASE}
+        storeId={store?.id}
+      />
+
       {/* Smart Alerts */}
       <div className="bg-white rounded-xl p-6 shadow-sm">
         <div className="flex items-start justify-between flex-wrap gap-3">
@@ -8812,6 +8818,11 @@ function MobileDashboardTab({
           <div className="mt-3 text-xs text-gray-500">No trend data available for this range.</div>
         )}
       </div>
+
+      <DashboardDailyBriefCard
+        apiBase={API_BASE}
+        storeId={store?.id}
+      />
 
       <div className="bg-white rounded-xl p-4 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-900">Top Campaigns</h3>
