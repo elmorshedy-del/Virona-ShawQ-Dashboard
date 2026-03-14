@@ -55,6 +55,9 @@ const parsedGoogleAdsRefreshMs = Number(import.meta.env.VITE_GOOGLE_ADS_AUTO_REF
 const GOOGLE_ADS_AUTO_REFRESH_MS = Number.isFinite(parsedGoogleAdsRefreshMs) && parsedGoogleAdsRefreshMs >= 15000
   ? parsedGoogleAdsRefreshMs
   : DEFAULT_GOOGLE_ADS_AUTO_REFRESH_MS;
+const BUSINESS_DAY_TIMEZONE = 'Europe/Istanbul';
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
+const MINIMUM_BUCKET_PROJECTION_ELAPSED_DAYS = 2;
 
 const fetchJson = async (url, fallback = null, options = {}) => {
   try {
@@ -85,7 +88,19 @@ const getLocalDateString = (date = new Date()) => {
 };
 
 const getIstanbulDateString = (date = new Date()) =>
-  new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(date);
+  new Intl.DateTimeFormat('en-CA', { timeZone: BUSINESS_DAY_TIMEZONE }).format(date);
+
+const getRemainingDayFractionInTimezone = (date = new Date(), timezone = BUSINESS_DAY_TIMEZONE) => {
+  const localizedDate = new Date(date.toLocaleString('en-US', { timeZone: timezone }));
+  if (Number.isNaN(localizedDate.getTime())) return 0;
+
+  const elapsedMilliseconds = (
+    (((localizedDate.getHours() * 60) + localizedDate.getMinutes()) * 60 + localizedDate.getSeconds()) * 1000
+    + localizedDate.getMilliseconds()
+  );
+
+  return Math.max(0, Math.min(1, 1 - (elapsedMilliseconds / MILLISECONDS_PER_DAY)));
+};
 
 const getMonthKey = (date = new Date()) => {
   const year = date.getFullYear();
@@ -4148,7 +4163,10 @@ function DashboardTab({
       return { data: [], lastBucketIncomplete: false, hasProjection: false };
     }
 
-    const todayLocalString = getLocalDateString(new Date());
+    const now = new Date();
+    const todayLocalString = getLocalDateString(now);
+    const todayBusinessString = getIstanbulDateString(now);
+    const remainingBusinessDayFraction = getRemainingDayFractionInTimezone(now);
     const today = parseLocalDate(todayLocalString);
     if (!today) {
       return { data: [], lastBucketIncomplete: false, hasProjection: false };
@@ -4162,8 +4180,6 @@ function DashboardTab({
     let hasProjection = false;
     let projectionSourceIndex = null;
     let projectedTotals = null;
-
-    const msInDay = 1000 * 60 * 60 * 24;
 
     const getWeightedPace = () => {
       // Simple: average of last 7 days (or available days)
@@ -4185,7 +4201,7 @@ function DashboardTab({
 
       if (dayCount === 0) {
         // Fallback: use bucket data / elapsed days
-        const elapsedDays = Math.floor((today - parseLocalDate(lastPoint.bucketStartDate)) / (1000 * 60 * 60 * 24)) + 1;
+        const elapsedDays = Math.floor((today - parseLocalDate(lastPoint.bucketStartDate)) / MILLISECONDS_PER_DAY) + 1;
         const safeElapsed = Math.max(elapsedDays, 1);
         return {
           orders: toNumber(lastPoint.orders) / safeElapsed,
@@ -4205,11 +4221,14 @@ function DashboardTab({
       const bucketStart = parseLocalDate(lastPoint.bucketStartDate);
       const bucketEnd = parseLocalDate(bucketExpectedEnd);
       if (bucketStart && bucketEnd) {
-        const elapsedDays = Math.floor((today - bucketStart) / msInDay) + 1;
-        const totalDays = Math.floor((bucketEnd - bucketStart) / msInDay) + 1;
+        const elapsedDays = Math.floor((today - bucketStart) / MILLISECONDS_PER_DAY) + 1;
+        const totalDays = Math.floor((bucketEnd - bucketStart) / MILLISECONDS_PER_DAY) + 1;
         const remainingDays = Math.max(totalDays - elapsedDays, 0);
+        const projectionDays = remainingDays === 0 && bucketExpectedEnd === todayBusinessString
+          ? remainingBusinessDayFraction
+          : remainingDays;
 
-        if (elapsedDays >= 2 && remainingDays > 0) {
+        if (elapsedDays >= MINIMUM_BUCKET_PROJECTION_ELAPSED_DAYS && projectionDays > 0) {
           let pace = getWeightedPace();
           const safeElapsed = Math.max(elapsedDays, 1);
           if (!pace.orders) {
@@ -4222,9 +4241,10 @@ function DashboardTab({
             pace.spend = toNumber(lastPoint.spend) / safeElapsed;
           }
 
-          const projectedOrders = toNumber(lastPoint.orders) + pace.orders * remainingDays;
-          const projectedRevenue = toNumber(lastPoint.revenue) + pace.revenue * remainingDays;
-          const projectedSpend = toNumber(lastPoint.spend) + pace.spend * remainingDays;
+          // Keep the existing projection model and only extend it through the closing day's remaining fraction.
+          const projectedOrders = toNumber(lastPoint.orders) + pace.orders * projectionDays;
+          const projectedRevenue = toNumber(lastPoint.revenue) + pace.revenue * projectionDays;
+          const projectedSpend = toNumber(lastPoint.spend) + pace.spend * projectionDays;
 
           const projectedAov = projectedOrders > 0 ? projectedRevenue / projectedOrders : 0;
           const projectedCac = projectedOrders > 0 ? projectedSpend / projectedOrders : 0;
