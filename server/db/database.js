@@ -15,6 +15,10 @@ const DEVELOPMENT_SHARED_DB_DISCOVERY = Object.freeze({
 });
 
 let db = null;
+let dbPath = null;
+let metaReadDb = null;
+let metaReadDbPath = null;
+let loggedDevelopmentMetaDbPath = null;
 
 function inspectDashboardDb(candidatePath) {
   const summary = {
@@ -142,12 +146,17 @@ function resolveDatabasePath() {
   }
 
   const localDbPath = path.join(__dirname, `../../data/${LOCAL_DASHBOARD_DB_FILENAME}`);
-  const sharedDevelopmentDbPath = resolveDevelopmentSharedDatabasePath(localDbPath);
-  return sharedDevelopmentDbPath || localDbPath;
+  return localDbPath;
+}
+
+function resolveMetaReadDatabasePath() {
+  const primaryDbPath = dbPath || resolveDatabasePath();
+  const sharedDevelopmentDbPath = resolveDevelopmentSharedDatabasePath(primaryDbPath);
+  return sharedDevelopmentDbPath || primaryDbPath;
 }
 
 export function initDb() {
-  const dbPath = resolveDatabasePath();
+  dbPath = resolveDatabasePath();
 
   // Ensure data directory exists
   const dataDir = path.dirname(dbPath);
@@ -531,6 +540,116 @@ export function initDb() {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_dashboard_daily_briefs_store_date
     ON dashboard_daily_briefs(store, brief_date, created_at)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dashboard_daily_account_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      snapshot_date TEXT NOT NULL,
+      spend REAL DEFAULT 0,
+      impressions INTEGER DEFAULT 0,
+      clicks INTEGER DEFAULT 0,
+      landing_page_views INTEGER DEFAULT 0,
+      add_to_cart INTEGER DEFAULT 0,
+      checkouts_initiated INTEGER DEFAULT 0,
+      meta_purchases INTEGER DEFAULT 0,
+      shopify_orders INTEGER DEFAULT 0,
+      revenue REAL DEFAULT 0,
+      ctr REAL DEFAULT 0,
+      lpv_click REAL DEFAULT 0,
+      atc_lpv REAL DEFAULT 0,
+      ic_atc REAL DEFAULT 0,
+      purchase_ic REAL DEFAULT 0,
+      roas REAL DEFAULT 0,
+      aov REAL DEFAULT 0,
+      cac REAL DEFAULT 0,
+      metadata_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, snapshot_date)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_dashboard_daily_account_snapshots_store_date
+    ON dashboard_daily_account_snapshots(store, scope_key, snapshot_date)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dashboard_daily_entity_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      snapshot_date TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      entity_name TEXT NOT NULL,
+      parent_entity_id TEXT,
+      parent_entity_name TEXT,
+      grandparent_entity_id TEXT,
+      grandparent_entity_name TEXT,
+      status TEXT DEFAULT 'UNKNOWN',
+      effective_status TEXT DEFAULT 'UNKNOWN',
+      spend REAL DEFAULT 0,
+      impressions INTEGER DEFAULT 0,
+      reach INTEGER DEFAULT 0,
+      clicks INTEGER DEFAULT 0,
+      landing_page_views INTEGER DEFAULT 0,
+      add_to_cart INTEGER DEFAULT 0,
+      checkouts_initiated INTEGER DEFAULT 0,
+      meta_purchases INTEGER DEFAULT 0,
+      shopify_orders INTEGER DEFAULT 0,
+      revenue REAL DEFAULT 0,
+      ctr REAL DEFAULT 0,
+      lpv_click REAL DEFAULT 0,
+      atc_lpv REAL DEFAULT 0,
+      ic_atc REAL DEFAULT 0,
+      purchase_ic REAL DEFAULT 0,
+      roas REAL DEFAULT 0,
+      aov REAL DEFAULT 0,
+      cac REAL DEFAULT 0,
+      cpm REAL DEFAULT 0,
+      cpc REAL DEFAULT 0,
+      frequency REAL DEFAULT 0,
+      metadata_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, snapshot_date, entity_type, entity_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_dashboard_daily_entity_snapshots_lookup
+    ON dashboard_daily_entity_snapshots(store, scope_key, snapshot_date, entity_type)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_dashboard_daily_entity_snapshots_parent
+    ON dashboard_daily_entity_snapshots(store, scope_key, entity_type, parent_entity_id, snapshot_date)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dashboard_daily_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      event_date TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT,
+      entity_name TEXT,
+      event_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      detail TEXT,
+      metadata_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_dashboard_daily_events_store_date
+    ON dashboard_daily_events(store, scope_key, event_date, entity_type)
   `);
 
   // Backfill missing notification columns for existing databases
@@ -1342,4 +1461,35 @@ export function getDb() {
     initDb();
   }
   return db;
+}
+
+export function getMetaReadDb() {
+  const primaryDb = getDb();
+  const preferredMetaDbPath = resolveMetaReadDatabasePath();
+
+  if (!preferredMetaDbPath || preferredMetaDbPath === dbPath) {
+    return primaryDb;
+  }
+
+  if (metaReadDb && metaReadDbPath === preferredMetaDbPath) {
+    return metaReadDb;
+  }
+
+  if (metaReadDb && metaReadDb !== primaryDb) {
+    try {
+      metaReadDb.close();
+    } catch (_error) {
+      // Best-effort cleanup for dev-only read replica handle.
+    }
+  }
+
+  metaReadDb = new Database(preferredMetaDbPath, { readonly: true, fileMustExist: true });
+  metaReadDbPath = preferredMetaDbPath;
+
+  if (loggedDevelopmentMetaDbPath !== preferredMetaDbPath) {
+    console.log(`[DB] Using Meta read SQLite database at ${preferredMetaDbPath}`);
+    loggedDevelopmentMetaDbPath = preferredMetaDbPath;
+  }
+
+  return metaReadDb;
 }

@@ -1,4 +1,3 @@
-import { round } from '../campaignIntelligence/utils.js';
 import { DASHBOARD_DAILY_BRIEF_DEFAULTS } from './constants.js';
 
 const AMOUNT_FORMATTER = new Intl.NumberFormat('en-US', {
@@ -59,6 +58,27 @@ export function normalizeParagraph(paragraph, fallback = 'No daily brief was pro
     return normalized;
   }
   return `${normalized.slice(0, DASHBOARD_DAILY_BRIEF_DEFAULTS.maxParagraphChars - 3).trim()}...`;
+}
+
+export function round(value, digits = 2) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  const factor = 10 ** digits;
+  return Math.round(numeric * factor) / factor;
+}
+
+export function safeDivide(numerator, denominator, fallback = 0) {
+  const top = Number(numerator);
+  const bottom = Number(denominator);
+  if (!Number.isFinite(top) || !Number.isFinite(bottom) || bottom === 0) {
+    return fallback;
+  }
+  return top / bottom;
+}
+
+export function parseIsoDate(value) {
+  const normalized = String(value || '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : null;
 }
 
 export function toFiniteNumber(value) {
