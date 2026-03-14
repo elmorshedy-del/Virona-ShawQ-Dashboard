@@ -43,21 +43,16 @@ app = FastAPI(title=APP_TITLE, version=APP_VERSION)
 
 
 def _cors_origins() -> list[str]:
-    merged: list[str] = []
-    env_origins: list[str] = []
+    all_origins: list[str] = list(DEFAULT_CORS_ORIGINS)
     for env_key in CREATIVE_DNA_CORS_ENV_KEYS:
         raw_value = os.getenv(env_key, "")
         if raw_value.strip():
-            env_origins.extend(
+            all_origins.extend(
                 origin.strip()
                 for origin in raw_value.split(",")
                 if origin.strip()
             )
-    for origin in [*DEFAULT_CORS_ORIGINS, *env_origins]:
-        if origin in merged:
-            continue
-        merged.append(origin)
-    return merged
+    return list(dict.fromkeys(all_origins))
 
 
 app.add_middleware(
@@ -157,7 +152,7 @@ def _extract_response_error(response: requests.Response | None) -> str:
 
     try:
         payload = response.json()
-    except Exception:
+    except requests.exceptions.JSONDecodeError:
         payload = None
 
     if isinstance(payload, dict):
