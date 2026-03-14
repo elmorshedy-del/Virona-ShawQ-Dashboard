@@ -1,6 +1,4 @@
-import { SUPPORTED_STORES } from '../campaignIntelligence/constants.js';
-
-export { SUPPORTED_STORES };
+export const SUPPORTED_STORES = new Set(['vironax', 'shawq']);
 
 export const DASHBOARD_DAILY_BRIEF_SCOPE_KEY = 'dashboard:all-campaigns';
 
@@ -50,4 +48,10 @@ export const DASHBOARD_DAILY_BRIEF_THRESHOLDS = Object.freeze({
   meaningfulFunnelDeltaRatio: 0.12,
   recentLaunchDays: 7,
   quietEntityDays: 3
+});
+
+export const DASHBOARD_DAILY_BRIEF_SNAPSHOT_EVENT_THRESHOLDS = Object.freeze({
+  meaningfulSpendChangeRatio: 0.4,
+  minimumSpendForShiftEvent: 25,
+  minimumSpendForLaunchEvent: 15
 });

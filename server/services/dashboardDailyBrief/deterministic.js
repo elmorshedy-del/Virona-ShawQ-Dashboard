@@ -1,4 +1,3 @@
-import { round, safeDivide } from '../campaignIntelligence/utils.js';
 import {
   DASHBOARD_DAILY_BRIEF_DEFAULTS,
   DASHBOARD_DAILY_BRIEF_THRESHOLDS
@@ -10,6 +9,8 @@ import {
   formatMetric,
   formatPercentFromRatio,
   normalizeParagraph,
+  round,
+  safeDivide,
   toFiniteNumber
 } from './utils.js';
 
@@ -35,6 +36,38 @@ const FUNNEL_STEP_PRIORITY = Object.freeze([
   { key: 'icAtc', label: 'cart-to-checkout' },
   { key: 'ctr', label: 'click-through rate' }
 ]);
+
+function scoreEntity(row = {}) {
+  const flags = Array.isArray(row?.flags) ? row.flags : [];
+  let score = 0;
+
+  if (flags.includes('winner')) score += 100;
+  if (flags.includes('zero_purchase_spend')) score += 90;
+  if (flags.includes('weak_roas')) score += 80;
+  if (flags.includes('new_conversion_signal')) score += 70;
+  if (flags.includes('purchase_ic_down')) score += 60;
+  if (flags.includes('atc_lpv_down')) score += 50;
+
+  score += toFiniteNumber(row?.spendShare) || 0;
+  score += (toFiniteNumber(row?.metaPurchases) || 0) / 1000;
+  score += (toFiniteNumber(row?.spend) || 0) / 100000;
+
+  return score;
+}
+
+function scoreGeo(row = {}) {
+  const flags = Array.isArray(row?.flags) ? row.flags : [];
+  let score = 0;
+
+  if (flags.includes('weak_roas')) score += 90;
+  if (flags.includes('roas_down_vs_baseline')) score += 80;
+  if (flags.includes('purchase_ic_down')) score += 70;
+
+  score += (toFiniteNumber(row?.metaPurchases) || 0) / 1000;
+  score += (toFiniteNumber(row?.spend) || 0) / 100000;
+
+  return score;
+}
 
 function isGlmModel(model) {
   const normalized = String(model || '').trim().toLowerCase();
@@ -102,15 +135,27 @@ function pickPrimaryEntity(packet = {}) {
 
   for (const group of groups) {
     if (!Array.isArray(group.rows) || group.rows.length === 0) continue;
-    const row = group.rows.find((candidate) => Array.isArray(candidate?.flags) && candidate.flags.length > 0)
-      || group.rows.find((candidate) => (toFiniteNumber(candidate?.spend) || 0) > 0)
-      || null;
+    const rankedRows = [...group.rows]
+      .filter((candidate) => candidate && ((toFiniteNumber(candidate?.spend) || 0) > 0 || (Array.isArray(candidate?.flags) && candidate.flags.length > 0)))
+      .sort((left, right) => scoreEntity(right) - scoreEntity(left));
+    const row = rankedRows[0] || null;
     if (row) {
       return { ...row, entityLabel: group.label };
     }
   }
 
   return null;
+}
+
+function pickPrimaryGeo(packet = {}) {
+  const geoRows = Array.isArray(packet?.topGeos) ? packet.topGeos : [];
+  if (!geoRows.length) return null;
+
+  const rankedRows = [...geoRows]
+    .filter((row) => row && ((toFiniteNumber(row?.spend) || 0) > 0 || (Array.isArray(row?.flags) && row.flags.length > 0)))
+    .sort((left, right) => scoreGeo(right) - scoreGeo(left));
+
+  return rankedRows[0] || null;
 }
 
 function buildBaselinePaceSentence(account = {}) {
@@ -214,6 +259,27 @@ function buildEntitySentence(packet = {}) {
     return `The main visible dragger was the ${entity.entityLabel} *${entity.name}*${spendShareText ? ` at ${spendShareText}` : ''}${roas ? ` with ROAS ${roas}` : ''}.`;
   }
 
+  if (spendShareText || roas || (toFiniteNumber(entity?.metaPurchases) || 0) > 0) {
+    return `The largest named ${entity.entityLabel} in the day’s mix was *${entity.name}*${spendShareText ? ` at ${spendShareText}` : ''}${roas ? ` with ROAS ${roas}` : ''}, but it did not separate enough from the rest to explain the whole day on its own.`;
+  }
+
+  return 'No single campaign, ad set, or ad separated clearly enough to explain the day on its own.';
+}
+
+function buildGeoSentence(packet = {}) {
+  const geo = pickPrimaryGeo(packet);
+  if (!geo) return '';
+
+  const flags = Array.isArray(geo?.flags) ? geo.flags : [];
+  const roas = formatMetric(geo?.roas);
+  if (flags.length > 0) {
+    return `The clearest country-level signal came from *${geo.code}*${roas ? ` with ROAS ${roas}` : ''}.`;
+  }
+
+  if ((toFiniteNumber(geo?.spend) || 0) > 0 || (toFiniteNumber(geo?.metaPurchases) || 0) > 0) {
+    return `No single country clearly broke from the rest, although *${geo.code}* carried the largest visible geo signal.`;
+  }
+
   return '';
 }
 
@@ -222,11 +288,20 @@ function buildRecentChangeSentence(packet = {}) {
   if (!latestChange?.date) return '';
 
   const budgetShiftPercent = toFiniteNumber(latestChange?.budgetShiftPercent);
-  if (!Number.isFinite(budgetShiftPercent)) {
-    return `A budget change on ${latestChange.date} is recent enough to watch, but the available campaign data does not prove it caused the move.`;
+  const spendShiftPercent = toFiniteNumber(latestChange?.metadata?.spendShiftPercent);
+  if (Number.isFinite(budgetShiftPercent)) {
+    return `A budget shift on ${latestChange.date} (${budgetShiftPercent < 0 ? '' : '+'}${round(budgetShiftPercent, 1)}%) is recent enough to watch, but the available campaign data does not prove it caused the move.`;
   }
 
-  return `A budget shift on ${latestChange.date} (${budgetShiftPercent < 0 ? '' : '+'}${round(budgetShiftPercent, 1)}%) is recent enough to watch, but the available campaign data does not prove it caused the move.`;
+  if (Number.isFinite(spendShiftPercent)) {
+    return `A spend shift on ${latestChange.date} (${spendShiftPercent < 0 ? '' : '+'}${round(spendShiftPercent, 1)}%) is recent enough to watch, but the available campaign data does not prove it caused the day on its own.`;
+  }
+
+  if (latestChange?.title) {
+    return `${latestChange.title} on ${latestChange.date} is recent enough to watch, but the available campaign data does not prove it caused the move.`;
+  }
+
+  return `A recent structural change on ${latestChange.date} is worth watching, but the available campaign data does not prove it caused the move.`;
 }
 
 function buildExecutiveImplicationSentence(packet = {}) {
@@ -260,6 +335,7 @@ function buildDeterministicExecutiveParagraph(packet = {}) {
   } else {
     parts.push(buildFunnelSentence(packet));
     parts.push(buildEntitySentence(packet));
+    parts.push(buildGeoSentence(packet));
     parts.push(buildRecentChangeSentence(packet));
   }
   parts.push(buildExecutiveImplicationSentence(packet));
