@@ -4173,8 +4173,7 @@ function DashboardTab({
 
   const buildBucketedTrendsWithStatus = useCallback((series = []) => {
     if (series.length === 0) return [];
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const today = parseLocalDate(getDateStringInTimezone(new Date(), storeBusinessTimezone));
     return series.map((point, index) => {
       const isLast = index === series.length - 1;
       const bucketEnd = parseLocalDate(point.bucketExpectedEndDate || point.bucketEndDate);
@@ -4184,7 +4183,7 @@ function DashboardTab({
         : point.bucketEndDate;
       return { ...point, isIncomplete, bucketExpectedEndDate };
     });
-  }, [parseLocalDate]);
+  }, [parseLocalDate, storeBusinessTimezone]);
 
   const bucketedTrendsWithStatus = useMemo(() => (
     buildBucketedTrendsWithStatus(bucketedTrends)
@@ -4261,7 +4260,13 @@ function DashboardTab({
           ? remainingBusinessDayFraction
           : remainingDays;
 
-        if (elapsedDays >= MINIMUM_BUCKET_PROJECTION_ELAPSED_DAYS && projectionDays > 0) {
+        const isSingleDayBucketClose = totalDays === 1 && bucketExpectedEnd === todayBusinessString;
+        const canProjectCurrentBucket = (
+          elapsedDays >= MINIMUM_BUCKET_PROJECTION_ELAPSED_DAYS
+          || isSingleDayBucketClose
+        ) && projectionDays > 0;
+
+        if (canProjectCurrentBucket) {
           let pace = getWeightedPace();
           const safeElapsed = Math.max(elapsedDays, 1);
           if (!pace.orders) {
@@ -4309,7 +4314,7 @@ function DashboardTab({
       keys.forEach((key) => {
         const value = toNumber(point[key]);
         next[`${key}Complete`] = !lastBucketIncomplete || !isLast ? value : null;
-        const showIncomplete = lastBucketIncomplete && (isLast || (showIncompleteLine && isPrev));
+        const showIncomplete = lastBucketIncomplete && !hasProjection && (isLast || (showIncompleteLine && isPrev));
         next[`${key}Incomplete`] = showIncomplete ? value : null;
       });
       return next;
