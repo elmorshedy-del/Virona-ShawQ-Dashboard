@@ -1,8 +1,7 @@
 import { getDb } from '../../db/database.js';
 import { askOpenAIChat } from '../openaiService.js';
 import { askFireworksChat, isFireworksConfigured } from '../fireworksService.js';
-import { getCampaignIntelligenceSnapshot } from '../campaignIntelligence/service.js';
-import { parseIsoDate, round } from '../campaignIntelligence/utils.js';
+import { getShopifyCredentialsForStore } from '../shopifyService.js';
 import {
   DASHBOARD_DAILY_BRIEF_DEFAULTS,
   DASHBOARD_DAILY_BRIEF_SCOPE_KEY,
@@ -11,19 +10,102 @@ import {
 } from './constants.js';
 import { resolveDashboardDailyBriefParagraph } from './deterministic.js';
 import {
-  buildDashboardDailyBriefPacket,
-  buildDashboardDailyBriefPacketContext
+  buildDashboardDailyBriefPacket
 } from './packet.js';
+import { loadDashboardDailyBriefSource } from './source.js';
 import {
   buildDashboardDailyBriefSystemPrompt,
   buildDashboardDailyBriefUserPrompt
 } from './prompt.js';
 import {
   parseJsonObject,
+  round,
+  parseIsoDate,
   toSafeErrorMessage
 } from './utils.js';
+import { normalizeDashboardDailyBriefIncludeConfig } from './options.js';
 
 const IN_FLIGHT_BRIEF_RUNS = new Map();
+const SHOPIFY_ORDERS_TABLE = 'shopify_orders';
+const SHOPIFY_SYNC_SOURCE = 'shopify';
+const MISSING_CREDENTIALS_PATTERN = /missing shopify credentials/i;
+
+function usesShopifyOrderSource(store) {
+  return store === 'shawq';
+}
+
+function getLatestLocalShopifyOrderDate({ db, store }) {
+  const row = db.prepare(`
+    SELECT MAX(date) as latestOrderDate
+    FROM shopify_orders
+    WHERE store = ?
+      AND COALESCE(is_excluded, 0) = 0
+  `).get(store);
+  return parseIsoDate(String(row?.latestOrderDate || '').trim());
+}
+
+function getLatestShopifySyncLog({ db, store }) {
+  return db.prepare(`
+    SELECT status, error_message as errorMessage, created_at as createdAt
+    FROM sync_log
+    WHERE store = ?
+      AND source = ?
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(store, SHOPIFY_SYNC_SOURCE) || null;
+}
+
+function hasShopifyDirectCoverageCredentials(store) {
+  const credentials = getShopifyCredentialsForStore(store);
+  return Boolean(credentials?.shopifyStore && credentials?.accessToken);
+}
+
+function assertTrustedClosedDayCommercialCoverage({ db, store, briefDate }) {
+  if (!usesShopifyOrderSource(store)) {
+    return;
+  }
+
+  const normalizedBriefDate = parseIsoDate(briefDate);
+  if (!normalizedBriefDate) {
+    return;
+  }
+
+  const latestLocalOrderDate = getLatestLocalShopifyOrderDate({ db, store });
+  if (latestLocalOrderDate && latestLocalOrderDate >= normalizedBriefDate) {
+    return;
+  }
+
+  if (hasShopifyDirectCoverageCredentials(store)) {
+    return;
+  }
+
+  const latestSync = getLatestShopifySyncLog({ db, store });
+  const latestSyncError = String(latestSync?.errorMessage || '').trim();
+  const latestSyncStatus = String(latestSync?.status || '').trim().toLowerCase();
+  const latestSyncFailed = latestSyncStatus === 'error';
+  const missingCredentials = MISSING_CREDENTIALS_PATTERN.test(latestSyncError);
+  const latestSyncContext = latestSync?.createdAt
+    ? ` Latest Shopify sync status was ${latestSyncStatus || 'unknown'} at ${latestSync.createdAt}.`
+    : ' No Shopify sync metadata is available in the local dashboard database.';
+
+  const error = new Error(
+    `Shopify order coverage is unavailable for ${briefDate}. Latest local Shopify order date is ${latestLocalOrderDate || 'unknown'}.${latestSyncContext}${latestSyncFailed || missingCredentials ? ` Latest Shopify sync error: ${latestSyncError || 'unknown error'}.` : ''}`
+  );
+  error.status = 409;
+  throw error;
+}
+
+function assertRequestedClosedDayCommercialCoverage({ store, briefDate }) {
+  if (!briefDate) {
+    return;
+  }
+
+  assertTrustedClosedDayCommercialCoverage({
+    db: getDb(),
+    store,
+    briefDate
+  });
+}
 
 function ensureSupportedStore(store) {
   const normalizedStore = String(store || '').trim().toLowerCase();
@@ -75,23 +157,6 @@ function normalizeRequestedBriefDate(briefDate) {
   }
 
   return normalized;
-}
-
-function buildSnapshotQuery(store, briefDate = null) {
-  const query = {
-    store,
-    level: 'campaign',
-    country: 'ALL',
-    analysisWindowDays: DASHBOARD_DAILY_BRIEF_DEFAULTS.analysisWindowDays,
-    anchorWindowDays: DASHBOARD_DAILY_BRIEF_DEFAULTS.anchorWindowDays,
-    selectorLimit: DASHBOARD_DAILY_BRIEF_DEFAULTS.selectorLimit
-  };
-
-  if (briefDate) {
-    query.endDate = briefDate;
-  }
-
-  return query;
 }
 
 function mapBriefRow(row) {
@@ -307,24 +372,31 @@ async function generateFreshDashboardDailyBrief({
   store,
   targetBriefDate = null,
   source = DASHBOARD_DAILY_BRIEF_SOURCE.daily,
-  snapshot = null
+  dashboardSource = null,
+  include: includeOverrides = null
 }) {
   const normalizedStore = ensureSupportedStore(store);
   const normalizedBriefDate = normalizeRequestedBriefDate(targetBriefDate);
-  const resolvedSnapshot = snapshot || await getCampaignIntelligenceSnapshot(buildSnapshotQuery(normalizedStore, normalizedBriefDate));
-  const briefDate = String(resolvedSnapshot?.scope?.analysisEndDate || '').trim();
+  const include = normalizeDashboardDailyBriefIncludeConfig(includeOverrides);
+  const resolvedSource = dashboardSource || await loadDashboardDailyBriefSource({
+    store: normalizedStore,
+    briefDate: normalizedBriefDate,
+    include
+  });
+  const briefDate = String(resolvedSource?.briefDate || '').trim();
   if (!briefDate) {
     const error = new Error('Unable to resolve dashboard daily brief date');
     error.status = 500;
     throw error;
   }
 
-  const packetContext = buildDashboardDailyBriefPacketContext({ snapshot: resolvedSnapshot });
-  const packet = buildDashboardDailyBriefPacket({
-    snapshot: resolvedSnapshot,
-    entityOptionGroups: packetContext.entityOptionGroups,
-    geoRows: packetContext.geoRows
+  assertTrustedClosedDayCommercialCoverage({
+    db: getDb(),
+    store: normalizedStore,
+    briefDate
   });
+
+  const packet = buildDashboardDailyBriefPacket({ source: resolvedSource });
 
   const systemPrompt = buildDashboardDailyBriefSystemPrompt();
   const userPrompt = buildDashboardDailyBriefUserPrompt(packet);
@@ -359,21 +431,31 @@ async function generateFreshDashboardDailyBrief({
     estimatedOutputTokens,
     estimatedCostUsd,
     metadata: {
-      analysisStartDate: resolvedSnapshot?.scope?.analysisStartDate || null,
-      analysisEndDate: resolvedSnapshot?.scope?.analysisEndDate || null,
-      anchorStartDate: resolvedSnapshot?.scope?.anchorStartDate || null,
-      anchorEndDate: resolvedSnapshot?.scope?.anchorEndDate || null,
+      analysisStartDate: resolvedSource?.analysisStartDate || null,
+      analysisEndDate: resolvedSource?.analysisEndDate || null,
+      anchorStartDate: resolvedSource?.anchorStartDate || null,
+      anchorEndDate: resolvedSource?.anchorEndDate || null,
+      include,
       fallbackUsed: Boolean(llmResponse.fallbackUsed),
       fallbackReason: llmResponse.fallbackReason || null
     }
   });
 }
 
-export async function getOrCreateDashboardDailyBrief({ store, briefDate: requestedBriefDate = null }) {
+export async function getOrCreateDashboardDailyBrief({ store, briefDate: requestedBriefDate = null, include: includeOverrides = null }) {
   const normalizedStore = ensureSupportedStore(store);
   const normalizedBriefDate = normalizeRequestedBriefDate(requestedBriefDate);
-  const snapshot = await getCampaignIntelligenceSnapshot(buildSnapshotQuery(normalizedStore, normalizedBriefDate));
-  const resolvedBriefDate = String(snapshot?.scope?.analysisEndDate || '').trim();
+  const include = normalizeDashboardDailyBriefIncludeConfig(includeOverrides);
+  assertRequestedClosedDayCommercialCoverage({
+    store: normalizedStore,
+    briefDate: normalizedBriefDate
+  });
+  const sourceData = await loadDashboardDailyBriefSource({
+    store: normalizedStore,
+    briefDate: normalizedBriefDate,
+    include
+  });
+  const resolvedBriefDate = String(sourceData?.briefDate || '').trim();
   if (!resolvedBriefDate) {
     const error = new Error('Unable to resolve dashboard daily brief date');
     error.status = 500;
@@ -395,17 +477,27 @@ export async function getOrCreateDashboardDailyBrief({ store, briefDate: request
         store: normalizedStore,
         targetBriefDate: resolvedBriefDate,
         source: DASHBOARD_DAILY_BRIEF_SOURCE.daily,
-        snapshot
+        dashboardSource: sourceData,
+        include
       });
     }
   );
 }
 
-export async function generateDashboardDailyBrief({ store, briefDate: requestedBriefDate = null, force = false, source = DASHBOARD_DAILY_BRIEF_SOURCE.manual }) {
+export async function generateDashboardDailyBrief({ store, briefDate: requestedBriefDate = null, force = false, source = DASHBOARD_DAILY_BRIEF_SOURCE.manual, include: includeOverrides = null }) {
   const normalizedStore = ensureSupportedStore(store);
   const normalizedBriefDate = normalizeRequestedBriefDate(requestedBriefDate);
-  const snapshot = await getCampaignIntelligenceSnapshot(buildSnapshotQuery(normalizedStore, normalizedBriefDate));
-  const resolvedBriefDate = String(snapshot?.scope?.analysisEndDate || '').trim();
+  const include = normalizeDashboardDailyBriefIncludeConfig(includeOverrides);
+  assertRequestedClosedDayCommercialCoverage({
+    store: normalizedStore,
+    briefDate: normalizedBriefDate
+  });
+  const sourceData = await loadDashboardDailyBriefSource({
+    store: normalizedStore,
+    briefDate: normalizedBriefDate,
+    include
+  });
+  const resolvedBriefDate = String(sourceData?.briefDate || '').trim();
   if (!resolvedBriefDate) {
     const error = new Error('Unable to resolve dashboard daily brief date');
     error.status = 500;
@@ -431,7 +523,8 @@ export async function generateDashboardDailyBrief({ store, briefDate: requestedB
         store: normalizedStore,
         targetBriefDate: resolvedBriefDate,
         source,
-        snapshot
+        dashboardSource: sourceData,
+        include
       });
     }
   );
