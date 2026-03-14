@@ -4,8 +4,108 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const LOCAL_DASHBOARD_DB_FILENAME = 'dashboard.db';
+const DEVELOPMENT_SHARED_DB_DISCOVERY = Object.freeze({
+  siblingWorktreePrefix: 'creative-os-',
+  metricTables: Object.freeze([
+    'meta_daily_metrics',
+    'meta_adset_metrics',
+    'meta_ad_metrics'
+  ])
+});
 
 let db = null;
+
+function inspectDashboardDb(candidatePath) {
+  const summary = {
+    path: candidatePath,
+    sizeBytes: 0,
+    metricRowCount: 0
+  };
+
+  if (!candidatePath || !fs.existsSync(candidatePath)) {
+    return summary;
+  }
+
+  try {
+    summary.sizeBytes = fs.statSync(candidatePath).size;
+  } catch (_error) {
+    return summary;
+  }
+
+  let probeDb = null;
+  try {
+    probeDb = new Database(candidatePath, { readonly: true, fileMustExist: true });
+    for (const tableName of DEVELOPMENT_SHARED_DB_DISCOVERY.metricTables) {
+      const tableExists = probeDb
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .get(tableName);
+      if (!tableExists) continue;
+      const row = probeDb.prepare(`SELECT COUNT(*) as count FROM ${tableName}`).get();
+      summary.metricRowCount += Number(row?.count || 0);
+    }
+  } catch (_error) {
+    return summary;
+  } finally {
+    try {
+      probeDb?.close();
+    } catch (_error) {
+      // Read-only probe cleanup; ignore.
+    }
+  }
+
+  return summary;
+}
+
+function resolveDevelopmentSharedDatabasePath(localDbPath) {
+  if (process.env.NODE_ENV === 'production') {
+    return null;
+  }
+
+  const worktreeRoot = path.resolve(__dirname, '../..');
+  const worktreeName = path.basename(worktreeRoot);
+  if (!worktreeName.startsWith(DEVELOPMENT_SHARED_DB_DISCOVERY.siblingWorktreePrefix)) {
+    return null;
+  }
+
+  const localSummary = inspectDashboardDb(localDbPath);
+  if (localSummary.metricRowCount > 0) {
+    return null;
+  }
+
+  const siblingRoot = path.dirname(worktreeRoot);
+  let bestCandidate = null;
+
+  for (const entry of fs.readdirSync(siblingRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name === worktreeName) continue;
+    if (!entry.name.startsWith(DEVELOPMENT_SHARED_DB_DISCOVERY.siblingWorktreePrefix)) continue;
+
+    const candidatePath = path.join(siblingRoot, entry.name, 'data', LOCAL_DASHBOARD_DB_FILENAME);
+    const candidateSummary = inspectDashboardDb(candidatePath);
+    if (candidateSummary.metricRowCount <= 0) continue;
+
+    const isBetterCandidate = !bestCandidate
+      || candidateSummary.metricRowCount > bestCandidate.metricRowCount
+      || (
+        candidateSummary.metricRowCount === bestCandidate.metricRowCount
+        && candidateSummary.sizeBytes > bestCandidate.sizeBytes
+      );
+
+    if (isBetterCandidate) {
+      bestCandidate = candidateSummary;
+    }
+  }
+
+  if (!bestCandidate) {
+    return null;
+  }
+
+  console.warn(
+    `[DB] Local dashboard DB at ${localDbPath} has no populated Meta metrics; using sibling DB at ${bestCandidate.path} for development`
+  );
+  return bestCandidate.path;
+}
 
 function resolveDatabasePath() {
   const explicit = process.env.DATABASE_PATH;
@@ -39,7 +139,9 @@ function resolveDatabasePath() {
     }
   }
 
-  return path.join(__dirname, '../../data/dashboard.db');
+  const localDbPath = path.join(__dirname, `../../data/${LOCAL_DASHBOARD_DB_FILENAME}`);
+  const sharedDevelopmentDbPath = resolveDevelopmentSharedDatabasePath(localDbPath);
+  return sharedDevelopmentDbPath || localDbPath;
 }
 
 export function initDb() {

@@ -22,9 +22,9 @@ export const DASHBOARD_DAILY_BRIEF_DEFAULTS = Object.freeze({
   anchorWindowDays: 21,
   baselineComparisonDays: 7,
   selectorLimit: 36,
-  maxOutputTokens: 420,
+  maxOutputTokens: 560,
   estimatedCharsPerToken: 4,
-  maxParagraphChars: 1400,
+  maxParagraphChars: 1800,
   inputUsdPerMillionTokens: 1.75,
   outputUsdPerMillionTokens: 14
 });
