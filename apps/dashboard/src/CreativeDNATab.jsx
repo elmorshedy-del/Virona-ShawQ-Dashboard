@@ -33,7 +33,7 @@ function fileToBase64(file) {
 }
 
 function svgToDataUrl(svg) {
-  const encoded = typeof window !== "undefined" ? window.btoa(unescape(encodeURIComponent(svg))) : "";
+  const encoded = typeof window !== "undefined" ? window.btoa(svg) : "";
   return `data:image/svg+xml;base64,${encoded}`;
 }
 
