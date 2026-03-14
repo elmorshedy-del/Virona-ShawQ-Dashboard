@@ -2,7 +2,7 @@ import { getDb } from '../../db/database.js';
 import { askOpenAIChat } from '../openaiService.js';
 import { askFireworksChat, isFireworksConfigured } from '../fireworksService.js';
 import { getCampaignIntelligenceSnapshot } from '../campaignIntelligence/service.js';
-import { round } from '../campaignIntelligence/utils.js';
+import { parseIsoDate, round } from '../campaignIntelligence/utils.js';
 import {
   DASHBOARD_DAILY_BRIEF_DEFAULTS,
   DASHBOARD_DAILY_BRIEF_SCOPE_KEY,
@@ -62,8 +62,23 @@ function estimateProviderRunCostUsd({ provider, inputTokens, outputTokens }) {
   return estimateRunCostUsd({ inputTokens, outputTokens });
 }
 
-function buildSnapshotQuery(store) {
-  return {
+function normalizeRequestedBriefDate(briefDate) {
+  if (briefDate == null || briefDate === '') {
+    return null;
+  }
+
+  const normalized = parseIsoDate(String(briefDate).trim());
+  if (!normalized) {
+    const error = new Error('briefDate must be a valid ISO date (YYYY-MM-DD)');
+    error.status = 400;
+    throw error;
+  }
+
+  return normalized;
+}
+
+function buildSnapshotQuery(store, briefDate = null) {
+  const query = {
     store,
     level: 'campaign',
     country: 'ALL',
@@ -71,6 +86,12 @@ function buildSnapshotQuery(store) {
     anchorWindowDays: DASHBOARD_DAILY_BRIEF_DEFAULTS.anchorWindowDays,
     selectorLimit: DASHBOARD_DAILY_BRIEF_DEFAULTS.selectorLimit
   };
+
+  if (briefDate) {
+    query.endDate = briefDate;
+  }
+
+  return query;
 }
 
 function mapBriefRow(row) {
@@ -284,11 +305,13 @@ function persistDashboardDailyBrief({
 
 async function generateFreshDashboardDailyBrief({
   store,
+  targetBriefDate = null,
   source = DASHBOARD_DAILY_BRIEF_SOURCE.daily,
   snapshot = null
 }) {
   const normalizedStore = ensureSupportedStore(store);
-  const resolvedSnapshot = snapshot || await getCampaignIntelligenceSnapshot(buildSnapshotQuery(normalizedStore));
+  const normalizedBriefDate = normalizeRequestedBriefDate(targetBriefDate);
+  const resolvedSnapshot = snapshot || await getCampaignIntelligenceSnapshot(buildSnapshotQuery(normalizedStore, normalizedBriefDate));
   const briefDate = String(resolvedSnapshot?.scope?.analysisEndDate || '').trim();
   if (!briefDate) {
     const error = new Error('Unable to resolve dashboard daily brief date');
@@ -346,29 +369,31 @@ async function generateFreshDashboardDailyBrief({
   });
 }
 
-export async function getOrCreateDashboardDailyBrief({ store }) {
+export async function getOrCreateDashboardDailyBrief({ store, briefDate: requestedBriefDate = null }) {
   const normalizedStore = ensureSupportedStore(store);
-  const snapshot = await getCampaignIntelligenceSnapshot(buildSnapshotQuery(normalizedStore));
-  const briefDate = String(snapshot?.scope?.analysisEndDate || '').trim();
-  if (!briefDate) {
+  const normalizedBriefDate = normalizeRequestedBriefDate(requestedBriefDate);
+  const snapshot = await getCampaignIntelligenceSnapshot(buildSnapshotQuery(normalizedStore, normalizedBriefDate));
+  const resolvedBriefDate = String(snapshot?.scope?.analysisEndDate || '').trim();
+  if (!resolvedBriefDate) {
     const error = new Error('Unable to resolve dashboard daily brief date');
     error.status = 500;
     throw error;
   }
 
-  const existing = getStoredDashboardDailyBrief({ store: normalizedStore, briefDate });
+  const existing = getStoredDashboardDailyBrief({ store: normalizedStore, briefDate: resolvedBriefDate });
   if (existing) {
     return existing;
   }
 
   return runWithInFlightBrief(
-    buildInFlightKey({ store: normalizedStore, briefDate }),
+    buildInFlightKey({ store: normalizedStore, briefDate: resolvedBriefDate }),
     async () => {
-      const latestExisting = getStoredDashboardDailyBrief({ store: normalizedStore, briefDate });
+      const latestExisting = getStoredDashboardDailyBrief({ store: normalizedStore, briefDate: resolvedBriefDate });
       if (latestExisting) return latestExisting;
 
       return generateFreshDashboardDailyBrief({
         store: normalizedStore,
+        targetBriefDate: resolvedBriefDate,
         source: DASHBOARD_DAILY_BRIEF_SOURCE.daily,
         snapshot
       });
@@ -376,33 +401,35 @@ export async function getOrCreateDashboardDailyBrief({ store }) {
   );
 }
 
-export async function generateDashboardDailyBrief({ store, force = false, source = DASHBOARD_DAILY_BRIEF_SOURCE.manual }) {
+export async function generateDashboardDailyBrief({ store, briefDate: requestedBriefDate = null, force = false, source = DASHBOARD_DAILY_BRIEF_SOURCE.manual }) {
   const normalizedStore = ensureSupportedStore(store);
-  const snapshot = await getCampaignIntelligenceSnapshot(buildSnapshotQuery(normalizedStore));
-  const briefDate = String(snapshot?.scope?.analysisEndDate || '').trim();
-  if (!briefDate) {
+  const normalizedBriefDate = normalizeRequestedBriefDate(requestedBriefDate);
+  const snapshot = await getCampaignIntelligenceSnapshot(buildSnapshotQuery(normalizedStore, normalizedBriefDate));
+  const resolvedBriefDate = String(snapshot?.scope?.analysisEndDate || '').trim();
+  if (!resolvedBriefDate) {
     const error = new Error('Unable to resolve dashboard daily brief date');
     error.status = 500;
     throw error;
   }
 
   if (!force) {
-    const existing = getStoredDashboardDailyBrief({ store: normalizedStore, briefDate });
+    const existing = getStoredDashboardDailyBrief({ store: normalizedStore, briefDate: resolvedBriefDate });
     if (existing) {
       return existing;
     }
   }
 
   return runWithInFlightBrief(
-    buildInFlightKey({ store: normalizedStore, briefDate }),
+    buildInFlightKey({ store: normalizedStore, briefDate: resolvedBriefDate }),
     async () => {
       if (!force) {
-        const latestExisting = getStoredDashboardDailyBrief({ store: normalizedStore, briefDate });
+        const latestExisting = getStoredDashboardDailyBrief({ store: normalizedStore, briefDate: resolvedBriefDate });
         if (latestExisting) return latestExisting;
       }
 
       return generateFreshDashboardDailyBrief({
         store: normalizedStore,
+        targetBriefDate: resolvedBriefDate,
         source,
         snapshot
       });

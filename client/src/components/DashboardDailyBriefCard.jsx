@@ -4,7 +4,8 @@ import remarkGfm from 'remark-gfm';
 import { ChevronDown, Loader2, RefreshCw } from 'lucide-react';
 
 const COLLAPSED_PREVIEW_CHARS = 180;
-const REGENERATE_BUTTON_LABEL = 'Regenerate';
+const REGENERATE_BUTTON_LABEL = 'Regenerate Yesterday';
+const MONTH_INDEX_OFFSET = 1;
 
 function formatModelLabel(value) {
   const normalized = String(value || '').trim();
@@ -40,6 +41,15 @@ function buildPreview(markdown) {
   return `${normalized.slice(0, COLLAPSED_PREVIEW_CHARS - 1).trim()}...`;
 }
 
+function getFallbackYesterdayBriefDate() {
+  const localYesterday = new Date();
+  localYesterday.setDate(localYesterday.getDate() - 1);
+  const year = localYesterday.getFullYear();
+  const month = String(localYesterday.getMonth() + MONTH_INDEX_OFFSET).padStart(2, '0');
+  const day = String(localYesterday.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export default function DashboardDailyBriefCard({ apiBase = '/api', storeId, className = '' }) {
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -47,7 +57,7 @@ export default function DashboardDailyBriefCard({ apiBase = '/api', storeId, cla
   const [error, setError] = useState('');
   const [brief, setBrief] = useState(null);
 
-  const loadBrief = useCallback(async ({ signal, force = false } = {}) => {
+  const loadBrief = useCallback(async ({ signal, force = false, briefDate = null } = {}) => {
     if (!storeId) return;
 
     const isForceRun = Boolean(force);
@@ -63,10 +73,10 @@ export default function DashboardDailyBriefCard({ apiBase = '/api', storeId, cla
         ? await fetch(`${apiBase}/dashboard-daily-brief/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ store: storeId, force: true }),
+          body: JSON.stringify({ store: storeId, force: true, briefDate }),
           signal
         })
-        : await fetch(`${apiBase}/dashboard-daily-brief?store=${encodeURIComponent(storeId)}`, {
+        : await fetch(`${apiBase}/dashboard-daily-brief?store=${encodeURIComponent(storeId)}${briefDate ? `&briefDate=${encodeURIComponent(briefDate)}` : ''}`, {
           signal
         });
       const json = await response.json();
@@ -100,6 +110,7 @@ export default function DashboardDailyBriefCard({ apiBase = '/api', storeId, cla
   }, [loadBrief, storeId]);
 
   const previewText = useMemo(() => buildPreview(brief?.paragraph), [brief?.paragraph]);
+  const targetBriefDate = getFallbackYesterdayBriefDate();
   const isBusy = loading || regenerating;
 
   return (
@@ -139,11 +150,11 @@ export default function DashboardDailyBriefCard({ apiBase = '/api', storeId, cla
         <div className="flex items-center gap-2 pt-1">
           <button
             type="button"
-            onClick={() => loadBrief({ force: true })}
+            onClick={() => loadBrief({ force: true, briefDate: targetBriefDate })}
             disabled={!storeId || isBusy}
             className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:border-gray-300 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
             aria-label={REGENERATE_BUTTON_LABEL}
-            title={REGENERATE_BUTTON_LABEL}
+            title={`${REGENERATE_BUTTON_LABEL} (${formatBriefDate(targetBriefDate)})`}
           >
             <RefreshCw className={`h-3.5 w-3.5 ${regenerating ? 'animate-spin' : ''}`} />
             <span className="hidden sm:inline">{REGENERATE_BUTTON_LABEL}</span>
