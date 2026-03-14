@@ -421,7 +421,7 @@ def get_creative_dna_profile(
     settings = load_settings()
     profile = load_creative_dna_profile(
         settings.db_path,
-        tenant_key=str(tenant_key or "default").strip() or "default",
+        tenant_key=tenant_key.strip() or "default",
         store_key=_normalize_store_key(store_key),
     )
     if profile is None:
