@@ -55,7 +55,7 @@ const parsedGoogleAdsRefreshMs = Number(import.meta.env.VITE_GOOGLE_ADS_AUTO_REF
 const GOOGLE_ADS_AUTO_REFRESH_MS = Number.isFinite(parsedGoogleAdsRefreshMs) && parsedGoogleAdsRefreshMs >= 15000
   ? parsedGoogleAdsRefreshMs
   : DEFAULT_GOOGLE_ADS_AUTO_REFRESH_MS;
-const BUSINESS_DAY_TIMEZONE = 'Europe/Istanbul';
+const DEFAULT_BUSINESS_DAY_TIMEZONE = 'Europe/Istanbul';
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const MINIMUM_BUCKET_PROJECTION_ELAPSED_DAYS = 2;
 
@@ -87,19 +87,48 @@ const getLocalDateString = (date = new Date()) => {
   return localDate.toISOString().split('T')[0];
 };
 
+const getDateStringInTimezone = (date = new Date(), timezone = DEFAULT_BUSINESS_DAY_TIMEZONE) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(date);
+
 const getIstanbulDateString = (date = new Date()) =>
-  new Intl.DateTimeFormat('en-CA', { timeZone: BUSINESS_DAY_TIMEZONE }).format(date);
+  getDateStringInTimezone(date, DEFAULT_BUSINESS_DAY_TIMEZONE);
 
-const getRemainingDayFractionInTimezone = (date = new Date(), timezone = BUSINESS_DAY_TIMEZONE) => {
-  const localizedDate = new Date(date.toLocaleString('en-US', { timeZone: timezone }));
-  if (Number.isNaN(localizedDate.getTime())) return 0;
+const getStartOfDayTimestampInTimezone = (date = new Date(), timezone = DEFAULT_BUSINESS_DAY_TIMEZONE) => {
+  try {
+    const dateString = getDateStringInTimezone(date, timezone);
+    const parsedDate = new Date(`${dateString}T00:00:00`);
+    return Number.isNaN(parsedDate.getTime()) ? null : parsedDate.getTime();
+  } catch (error) {
+    console.error(`Error in getStartOfDayTimestampInTimezone for timezone "${timezone}":`, error);
+    return null;
+  }
+};
 
-  const elapsedMilliseconds = (
-    (((localizedDate.getHours() * 60) + localizedDate.getMinutes()) * 60 + localizedDate.getSeconds()) * 1000
-    + localizedDate.getMilliseconds()
-  );
+const getRemainingDayFractionInTimezone = (date = new Date(), timezone = DEFAULT_BUSINESS_DAY_TIMEZONE) => {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+      hour12: false
+    });
+    const parts = formatter.formatToParts(date);
+    const getPart = (type) => Number.parseInt(parts.find((part) => part.type === type)?.value || '0', 10);
 
-  return Math.max(0, Math.min(1, 1 - (elapsedMilliseconds / MILLISECONDS_PER_DAY)));
+    let hours = getPart('hour');
+    if (hours === 24) hours = 0;
+
+    const minutes = getPart('minute');
+    const seconds = getPart('second');
+    const milliseconds = date.getMilliseconds();
+    const elapsedMilliseconds = (((hours * 60) + minutes) * 60 + seconds) * 1000 + milliseconds;
+
+    return Math.max(0, Math.min(1, 1 - (elapsedMilliseconds / MILLISECONDS_PER_DAY)));
+  } catch (error) {
+    console.error(`Error in getRemainingDayFractionInTimezone for timezone "${timezone}":`, error);
+    return 0;
+  }
 };
 
 const getMonthKey = (date = new Date()) => {
@@ -613,6 +642,7 @@ const STORES = {
     currency: 'SAR',
     currencySymbol: 'SAR',
     ecommerce: 'Salla',
+    businessTimeZone: 'Asia/Riyadh',
     defaultAOV: 280
   },
   shawq: {
@@ -622,6 +652,7 @@ const STORES = {
     currency: 'USD',
     currencySymbol: '$',
     ecommerce: 'Shopify',
+    businessTimeZone: 'Europe/Istanbul',
     defaultAOV: 75
   }
 };
@@ -4014,6 +4045,8 @@ function DashboardTab({
     return Number.isNaN(parsed.getTime()) ? null : parsed;
   }, []);
 
+  const storeBusinessTimezone = store?.businessTimeZone || DEFAULT_BUSINESS_DAY_TIMEZONE;
+
   const getPointDate = useCallback((point) => {
     if (!point) return '';
     return point.date || point.day || point.label || '';
@@ -4165,8 +4198,8 @@ function DashboardTab({
 
     const now = new Date();
     const todayLocalString = getLocalDateString(now);
-    const todayBusinessString = getIstanbulDateString(now);
-    const remainingBusinessDayFraction = getRemainingDayFractionInTimezone(now);
+    const todayBusinessString = getDateStringInTimezone(now, storeBusinessTimezone);
+    const remainingBusinessDayFraction = getRemainingDayFractionInTimezone(now, storeBusinessTimezone);
     const today = parseLocalDate(todayLocalString);
     if (!today) {
       return { data: [], lastBucketIncomplete: false, hasProjection: false };
@@ -4294,7 +4327,7 @@ function DashboardTab({
     }
 
     return { data, lastBucketIncomplete, hasProjection };
-  }, [getLocalDateString, parseLocalDate]);
+  }, [getLocalDateString, parseLocalDate, storeBusinessTimezone]);
   const {
     data: bucketedTrendsForChart,
     lastBucketIncomplete,
@@ -4734,13 +4767,6 @@ function DashboardTab({
     }
 
     if (isInProgress && point?.bucketStartDate) {
-      const getTurkeyToday = () => {
-        const now = new Date().toLocaleString('en-US', { timeZone: 'Europe/Istanbul' });
-        const turkeyDate = new Date(now);
-        turkeyDate.setHours(0, 0, 0, 0);
-        return turkeyDate.getTime();
-      };
-
       const rangeEnd = point.bucketExpectedEndDate || point.bucketEndDate;
       const startDate = parseLocalDate(point.bucketStartDate);
       const endDate = rangeEnd ? parseLocalDate(rangeEnd) : null;
@@ -4754,10 +4780,10 @@ function DashboardTab({
         rangeLabel = `${formatDate(startDate)} - ${formatDate(endDate)} (in progress)`;
       }
 
-      const today = getTurkeyToday();
-      if (endDate) {
+      const today = getStartOfDayTimestampInTimezone(new Date(), storeBusinessTimezone);
+      if (endDate && today != null) {
         const endTime = endDate.setHours(0, 0, 0, 0);
-        const daysLeft = Math.ceil((endTime - today) / (1000 * 60 * 60 * 24));
+        const daysLeft = Math.ceil((endTime - today) / MILLISECONDS_PER_DAY);
 
         if (daysLeft >= 0) {
           metricLabel += ` (${daysLeft} day${daysLeft !== 1 ? 's' : ''} left)`;
@@ -4775,7 +4801,7 @@ function DashboardTab({
         </p>
       </div>
     );
-  }, [formatTooltipMetricValue, getTooltipMetricKey, getTooltipMetricLabel, getTrendRangeLabel, parseLocalDate]);
+  }, [formatTooltipMetricValue, getTooltipMetricKey, getTooltipMetricLabel, getTrendRangeLabel, parseLocalDate, storeBusinessTimezone]);
 
   const renderMaTooltip = useCallback((metricKeyOverride, color) => ({ active, payload, label }) => {
     if (!active || !payload?.length) return null;
@@ -4848,13 +4874,6 @@ function DashboardTab({
     }
 
     if (isInProgress && point?.bucketStartDate) {
-      const getTurkeyToday = () => {
-        const now = new Date().toLocaleString('en-US', { timeZone: 'Europe/Istanbul' });
-        const turkeyDate = new Date(now);
-        turkeyDate.setHours(0, 0, 0, 0);
-        return turkeyDate.getTime();
-      };
-
       const rangeEnd = point.bucketExpectedEndDate || point.bucketEndDate;
       const startDate = parseLocalDate(point.bucketStartDate);
       const endDate = rangeEnd ? parseLocalDate(rangeEnd) : null;
@@ -4868,10 +4887,10 @@ function DashboardTab({
         rangeLabel = `${formatDate(startDate)} - ${formatDate(endDate)} (in progress)`;
       }
 
-      const today = getTurkeyToday();
-      if (endDate) {
+      const today = getStartOfDayTimestampInTimezone(new Date(), storeBusinessTimezone);
+      if (endDate && today != null) {
         const endTime = endDate.setHours(0, 0, 0, 0);
-        const daysLeft = Math.ceil((endTime - today) / (1000 * 60 * 60 * 24));
+        const daysLeft = Math.ceil((endTime - today) / MILLISECONDS_PER_DAY);
         if (daysLeft >= 0) {
           metricLabel += ` (${daysLeft} day${daysLeft !== 1 ? 's' : ''} left)`;
         }
@@ -4917,7 +4936,7 @@ function DashboardTab({
         </div>
       </div>
     );
-  }, [formatTooltipMetricValue, getTooltipMetricLabel, getTrendRangeLabel, parseLocalDate]);
+  }, [formatTooltipMetricValue, getTooltipMetricLabel, getTrendRangeLabel, parseLocalDate, storeBusinessTimezone]);
 
   const renderRegionMaTooltip = useCallback((metricKeyOverride) => ({ active, payload, label }) => {
     if (!active || !payload?.length) return null;
