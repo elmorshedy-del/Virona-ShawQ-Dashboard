@@ -6,6 +6,17 @@ import {
 
 const router = express.Router();
 
+function sendDashboardDailyBriefError(res, error, contextLabel) {
+  const statusCode = Number.isInteger(error?.status) ? error.status : 500;
+  if (statusCode >= 500) {
+    console.error(`[Dashboard Daily Brief] ${contextLabel} error:`, error);
+  }
+  res.status(statusCode).json({
+    success: false,
+    error: error?.message || `Failed to ${contextLabel.toLowerCase()} dashboard daily brief`
+  });
+}
+
 router.get('/', async (req, res) => {
   try {
     const brief = await getOrCreateDashboardDailyBrief({
@@ -17,14 +28,7 @@ router.get('/', async (req, res) => {
       brief
     });
   } catch (error) {
-    const statusCode = Number.isInteger(error?.status) ? error.status : 500;
-    if (statusCode >= 500) {
-      console.error('[Dashboard Daily Brief] Load error:', error);
-    }
-    res.status(statusCode).json({
-      success: false,
-      error: error?.message || 'Failed to load dashboard daily brief'
-    });
+    sendDashboardDailyBriefError(res, error, 'Load');
   }
 });
 
@@ -40,14 +44,7 @@ router.post('/generate', async (req, res) => {
       brief
     });
   } catch (error) {
-    const statusCode = Number.isInteger(error?.status) ? error.status : 500;
-    if (statusCode >= 500) {
-      console.error('[Dashboard Daily Brief] Generate error:', error);
-    }
-    res.status(statusCode).json({
-      success: false,
-      error: error?.message || 'Failed to generate dashboard daily brief'
-    });
+    sendDashboardDailyBriefError(res, error, 'Generate');
   }
 });
 

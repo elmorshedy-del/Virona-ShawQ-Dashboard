@@ -171,14 +171,7 @@ export default function DashboardDailyBriefCard({ apiBase = '/api', storeId, cla
             <div className="text-sm text-gray-500">Loading daily brief...</div>
           ) : brief?.paragraph ? (
             <div className="prose prose-sm max-w-none text-gray-700 prose-p:my-0 prose-strong:text-gray-900 prose-em:text-gray-700">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  p: ({ children }) => <p className="m-0 text-sm leading-7 text-gray-700">{children}</p>,
-                  strong: ({ children }) => <strong className="font-semibold text-gray-900">{children}</strong>,
-                  em: ({ children }) => <em className="italic text-gray-700">{children}</em>
-                }}
-              >
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
                 {brief.paragraph}
               </ReactMarkdown>
             </div>
