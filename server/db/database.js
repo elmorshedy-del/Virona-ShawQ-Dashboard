@@ -36,16 +36,18 @@ function inspectDashboardDb(candidatePath) {
   let probeDb = null;
   try {
     probeDb = new Database(candidatePath, { readonly: true, fileMustExist: true });
+    let totalRowCount = 0;
     for (const tableName of DEVELOPMENT_SHARED_DB_DISCOVERY.metricTables) {
       const tableExists = probeDb
         .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
         .get(tableName);
       if (!tableExists) continue;
       const row = probeDb.prepare(`SELECT COUNT(*) as count FROM ${tableName}`).get();
-      summary.metricRowCount += Number(row?.count || 0);
+      totalRowCount += Number(row?.count || 0);
     }
+    summary.metricRowCount = totalRowCount;
   } catch (_error) {
-    return summary;
+    summary.metricRowCount = 0;
   } finally {
     try {
       probeDb?.close();
