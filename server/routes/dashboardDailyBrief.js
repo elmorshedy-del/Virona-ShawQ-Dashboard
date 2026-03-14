@@ -1,7 +1,7 @@
 import express from 'express';
 import {
   generateDashboardDailyBrief,
-  getOrCreateDashboardDailyBrief
+  loadDashboardDailyBrief
 } from '../services/dashboardDailyBrief/service.js';
 
 const router = express.Router();
@@ -37,10 +37,9 @@ function sendDashboardDailyBriefError(res, error, contextLabel) {
 
 router.get('/', async (req, res) => {
   try {
-    const brief = await getOrCreateDashboardDailyBrief({
+    const brief = await loadDashboardDailyBrief({
       store: req.query.store,
-      briefDate: req.query.briefDate,
-      include: parseIncludeConfig(req.query.include)
+      briefDate: req.query.briefDate
     });
 
     res.json({

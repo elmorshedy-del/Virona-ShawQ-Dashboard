@@ -12,7 +12,10 @@ import { resolveDashboardDailyBriefParagraph } from './deterministic.js';
 import {
   buildDashboardDailyBriefPacket
 } from './packet.js';
-import { loadDashboardDailyBriefSource } from './source.js';
+import {
+  loadDashboardDailyBriefSource,
+  resolveDashboardDailyBriefDate
+} from './source.js';
 import {
   buildDashboardDailyBriefSystemPrompt,
   buildDashboardDailyBriefUserPrompt
@@ -297,6 +300,16 @@ export function getStoredDashboardDailyBrief({ store, briefDate, scopeKey = DASH
   `).get(normalizedStore, scopeKey, briefDate);
 
   return mapBriefRow(row);
+}
+
+export function loadDashboardDailyBrief({ store, briefDate: requestedBriefDate = null }) {
+  const normalizedStore = ensureSupportedStore(store);
+  const normalizedBriefDate = normalizeRequestedBriefDate(requestedBriefDate);
+  const resolvedBriefDate = normalizedBriefDate || resolveDashboardDailyBriefDate();
+  return getStoredDashboardDailyBrief({
+    store: normalizedStore,
+    briefDate: resolvedBriefDate
+  });
 }
 
 function persistDashboardDailyBrief({

@@ -2095,6 +2095,7 @@ export default function App() {
               kpiTrends={headlineDashboard?.trends}
               formatCurrency={formatCurrency}
               formatNumber={formatNumber}
+              store={store}
               campaignScopeLabel={campaignScopeLabel}
             />
           ) : (
@@ -8644,6 +8645,7 @@ function MobileDashboardTab({
   kpiTrends = null,
   formatCurrency = () => '$0',
   formatNumber = () => '0',
+  store = null,
   campaignScopeLabel = 'All Campaigns'
 }) {
   const { overview = {}, trends = [], campaigns = [], countries = [], dateRange = {} } = dashboard || {};
