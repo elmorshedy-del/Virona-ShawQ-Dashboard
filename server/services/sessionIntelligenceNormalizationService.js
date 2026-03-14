@@ -2,16 +2,31 @@ import {
   SESSION_INTELLIGENCE_FUNNEL_STAGES,
   SESSION_INTELLIGENCE_NORMALIZATION_CONFIG,
   SESSION_INTELLIGENCE_SEGMENT_DIMENSIONS,
+  buildMoneyLeakEstimate,
   buildNormalizedFunnelMetrics,
   buildNormalizedProductMetrics,
   buildNormalizedSegmentMetrics,
-  getFunnelStageLabel
+  getDownstreamPurchaseRateFromStages,
+  getFunnelStageLabel,
+  rankMoneyLeakCandidates
 } from './sessionIntelligenceNormalizationMath.js';
 import { getSessionIntelligenceJourneyRowsForAnalysis } from './sessionIntelligenceJourneyService.js';
+import { getDb } from '../db/database.js';
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const NORMALIZED_ANALYSIS_DEFAULT_LIMIT = 5000;
 const NORMALIZED_ANALYSIS_MAX_LIMIT = 20000;
+const NORMALIZED_MONEY_LEAK_CONFIG = Object.freeze({
+  defaultTopLimit: 12,
+  maxTopLimit: 40,
+  defaultSegmentTopLimit: 5,
+  minimumProductOrdersForDedicatedAov: 3
+});
+const ORDER_SOURCE_CACHE_TTL_MS = 15 * 60 * 1000;
+const SHOPIFY_ORDERS_TABLE = 'shopify_orders';
+const SALLA_ORDERS_TABLE = 'salla_orders';
+const SHOPIFY_ORDER_ITEMS_TABLE = 'shopify_order_items';
+const storeOrderTableCache = new Map();
 
 function safeString(value) {
   if (value == null) return '';
@@ -132,6 +147,255 @@ function buildSharedReportEnvelope({ store, currentRange, baselineRange, effecti
       journeyLimit: effectiveJourneyLimit
     }
   };
+}
+
+function normalizeTopLeakLimit(limit, fallback = NORMALIZED_MONEY_LEAK_CONFIG.defaultTopLimit) {
+  const numericValue = Number.parseInt(limit, 10);
+  if (!Number.isFinite(numericValue)) return fallback;
+  return Math.min(NORMALIZED_MONEY_LEAK_CONFIG.maxTopLimit, Math.max(1, numericValue));
+}
+
+function tableExists(db, tableName) {
+  return Boolean(
+    db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1").get(tableName)?.name
+  );
+}
+
+function getCachedStoreOrderTable(store) {
+  const cacheKey = safeString(store).trim().toLowerCase();
+  if (!cacheKey) return null;
+  const cached = storeOrderTableCache.get(cacheKey);
+  if (!cached) return null;
+  if ((Date.now() - cached.cachedAtMs) > ORDER_SOURCE_CACHE_TTL_MS) {
+    storeOrderTableCache.delete(cacheKey);
+    return null;
+  }
+  return cached.tableName || null;
+}
+
+function cacheStoreOrderTable(store, tableName) {
+  const cacheKey = safeString(store).trim().toLowerCase();
+  if (!cacheKey || !safeString(tableName).trim()) return;
+  storeOrderTableCache.set(cacheKey, {
+    tableName,
+    cachedAtMs: Date.now()
+  });
+}
+
+function hasOrdersForStore(db, tableName, store) {
+  if (!tableExists(db, tableName)) return 0;
+  const row = db.prepare(`
+    SELECT 1 AS has_orders
+    FROM ${tableName}
+    WHERE store = ?
+      AND COALESCE(is_excluded, 0) = 0
+    LIMIT 1
+  `).get(store);
+  return Boolean(row?.has_orders);
+}
+
+function resolveOrdersTableForStore(db, store) {
+  const cachedTableName = getCachedStoreOrderTable(store);
+  if (cachedTableName) return cachedTableName;
+
+  const candidateTables = [SHOPIFY_ORDERS_TABLE, SALLA_ORDERS_TABLE];
+  for (const tableName of candidateTables) {
+    if (!hasOrdersForStore(db, tableName, store)) continue;
+    cacheStoreOrderTable(store, tableName);
+    return tableName;
+  }
+
+  return null;
+}
+
+function getStoreAverageOrderValue(db, ordersTable, store, startDate, endDate) {
+  if (!ordersTable) {
+    return {
+      averageOrderValue: 0,
+      orderCount: 0
+    };
+  }
+
+  const row = db.prepare(`
+    SELECT
+      COUNT(*) AS orders,
+      AVG(order_total) AS average_order_value
+    FROM ${ordersTable}
+    WHERE store = ?
+      AND date BETWEEN ? AND ?
+      AND COALESCE(is_excluded, 0) = 0
+      AND COALESCE(order_total, 0) > 0
+  `).get(store, startDate, endDate);
+
+  return {
+    averageOrderValue: Math.max(0, safeFiniteNumber(row?.average_order_value, 0)),
+    orderCount: safeFiniteNumber(row?.orders, 0)
+  };
+}
+
+function getProductAverageOrderValues(db, store, startDate, endDate, productIds) {
+  const normalizedProductIds = Array.from(new Set(
+    (Array.isArray(productIds) ? productIds : [])
+      .map((productId) => safeString(productId).trim())
+      .filter(Boolean)
+  ));
+
+  if (
+    !normalizedProductIds.length
+    || !tableExists(db, SHOPIFY_ORDERS_TABLE)
+    || !tableExists(db, SHOPIFY_ORDER_ITEMS_TABLE)
+  ) {
+    return {
+      byProductId: new Map(),
+      resolvedProducts: 0
+    };
+  }
+
+  const placeholders = normalizedProductIds.map(() => '?').join(', ');
+  const netRevenueExpression = `
+    CASE
+      WHEN COALESCE(oi.net_price, 0) > 0 THEN oi.net_price
+      ELSE (COALESCE(oi.quantity, 1) * COALESCE(oi.price, 0) - COALESCE(oi.discount, 0))
+    END
+  `;
+  const rows = db.prepare(`
+    SELECT
+      oi.product_id AS product_id,
+      COUNT(DISTINCT oi.order_id) AS orders,
+      AVG(${netRevenueExpression}) AS average_order_value
+    FROM ${SHOPIFY_ORDER_ITEMS_TABLE} oi
+    INNER JOIN ${SHOPIFY_ORDERS_TABLE} so
+      ON so.store = oi.store
+      AND so.order_id = oi.order_id
+    WHERE oi.store = ?
+      AND so.date BETWEEN ? AND ?
+      AND COALESCE(so.is_excluded, 0) = 0
+      AND COALESCE(oi.is_excluded, 0) = 0
+      AND oi.product_id IN (${placeholders})
+      AND ${netRevenueExpression} > 0
+    GROUP BY oi.product_id
+  `).all(store, startDate, endDate, ...normalizedProductIds);
+
+  const byProductId = new Map();
+  for (const row of rows) {
+    const productId = safeString(row?.product_id).trim();
+    if (!productId) continue;
+    byProductId.set(productId, {
+      averageOrderValue: Math.max(0, safeFiniteNumber(row?.average_order_value, 0)),
+      orderCount: safeFiniteNumber(row?.orders, 0)
+    });
+  }
+
+  return {
+    byProductId,
+    resolvedProducts: byProductId.size
+  };
+}
+
+function buildRevenueReferenceContext(db, store, {
+  baselineRange,
+  currentRange,
+  productIds
+}) {
+  const referenceStartDate = baselineRange.startDate;
+  const referenceEndDate = currentRange.endDate;
+  const ordersTable = resolveOrdersTableForStore(db, store);
+  const storeAov = getStoreAverageOrderValue(db, ordersTable, store, referenceStartDate, referenceEndDate);
+  const productAovs = getProductAverageOrderValues(db, store, referenceStartDate, referenceEndDate, productIds);
+
+  return {
+    ordersTable,
+    referenceStartDate,
+    referenceEndDate,
+    storeAverageOrderValue: storeAov.averageOrderValue,
+    storeOrderCount: storeAov.orderCount,
+    productAverageOrderValues: productAovs.byProductId,
+    productAverageOrderCoverage: {
+      requestedProducts: Array.isArray(productIds) ? productIds.filter(Boolean).length : 0,
+      resolvedProducts: productAovs.resolvedProducts,
+      minimumProductOrdersForDedicatedAov: NORMALIZED_MONEY_LEAK_CONFIG.minimumProductOrdersForDedicatedAov
+    }
+  };
+}
+
+function buildNormalizedTransitionSummary(transition) {
+  return {
+    fromStage: transition.fromStage,
+    toStage: transition.toStage,
+    label: transition.label,
+    current: transition.current,
+    baseline: transition.baseline,
+    comparison: {
+      ...transition.comparison,
+      summary: formatComparisonSummary(transition.comparison.status)
+    }
+  };
+}
+
+function buildMoneyLeakCandidate({
+  scope,
+  label,
+  transition,
+  stages,
+  referenceAov,
+  fallbackDownstreamPurchaseRate = null,
+  metadata = {}
+}) {
+  if (transition?.comparison?.status !== 'weaker_than_usual') return null;
+
+  const moneyLeak = buildMoneyLeakEstimate({
+    transition,
+    stages,
+    referenceAov,
+    fallbackDownstreamPurchaseRate
+  });
+  if (!moneyLeak || moneyLeak.estimatedLostRevenue <= 0) return null;
+
+  return {
+    scope,
+    label,
+    ...metadata,
+    transition: buildNormalizedTransitionSummary(transition),
+    moneyLeak
+  };
+}
+
+function buildSegmentMoneyLeakGroups({
+  segmentMetricsByDimension,
+  storeAverageOrderValue,
+  funnelStages,
+  segmentTopLimit
+}) {
+  const groups = {};
+  const candidates = [];
+
+  for (const [dimension, metrics] of Object.entries(segmentMetricsByDimension)) {
+    const groupCandidates = (metrics?.segments || [])
+      .map((segment) => buildMoneyLeakCandidate({
+        scope: 'segment',
+        label: segment.segmentLabel,
+        transition: segment.comparison.primaryTransition,
+        stages: segment.stages,
+        referenceAov: storeAverageOrderValue,
+        fallbackDownstreamPurchaseRate: getDownstreamPurchaseRateFromStages(funnelStages, segment.comparison.primaryTransition?.toStage, 'baselineReachedJourneys'),
+        metadata: {
+          dimension,
+          segmentKey: segment.segmentKey,
+          current: segment.current,
+          baseline: segment.baseline,
+          comparison: {
+            ...segment.comparison,
+            summary: formatComparisonSummary(segment.comparison.primaryTransition?.comparison?.status || 'limited_data')
+          }
+        }
+      }))
+      .filter(Boolean);
+
+    groups[dimension] = rankMoneyLeakCandidates(groupCandidates, segmentTopLimit);
+    candidates.push(...groups[dimension]);
+  }
+
+  return { groups, candidates };
 }
 
 export function getSessionIntelligenceNormalizedFunnel(store, {
@@ -288,6 +552,156 @@ export function getSessionIntelligenceNormalizedSegments(store, {
           }
         }))
       }))
+    }
+  };
+}
+
+export function getSessionIntelligenceNormalizedMoneyLeaks(store, {
+  date = null,
+  startDate = null,
+  endDate = null,
+  baselineDays = SESSION_INTELLIGENCE_NORMALIZATION_CONFIG.baselineDays,
+  rebuild = false,
+  journeyLimit = NORMALIZED_ANALYSIS_DEFAULT_LIMIT,
+  topLimit = NORMALIZED_MONEY_LEAK_CONFIG.defaultTopLimit
+} = {}) {
+  const currentRange = resolveCurrentRange({ date, startDate, endDate });
+  if (!currentRange) {
+    return { success: false, error: 'Missing valid date or startDate/endDate (YYYY-MM-DD).' };
+  }
+
+  const baselineRange = buildBaselineRange(currentRange, baselineDays);
+  const {
+    effectiveJourneyLimit,
+    currentJourneys,
+    baselineJourneys
+  } = getAnalysisJourneys(store, { currentRange, baselineRange, rebuild, journeyLimit });
+
+  const funnelMetrics = buildNormalizedFunnelMetrics({
+    currentJourneys: currentJourneys.rows,
+    baselineJourneys: baselineJourneys.rows,
+    config: SESSION_INTELLIGENCE_NORMALIZATION_CONFIG
+  });
+  const productMetrics = buildNormalizedProductMetrics({
+    currentJourneys: currentJourneys.rows,
+    baselineJourneys: baselineJourneys.rows,
+    config: SESSION_INTELLIGENCE_NORMALIZATION_CONFIG
+  });
+  const segmentMetricsByDimension = Object.fromEntries(
+    SESSION_INTELLIGENCE_SEGMENT_DIMENSIONS.map((dimension) => [
+      dimension,
+      buildNormalizedSegmentMetrics({
+        currentJourneys: currentJourneys.rows,
+        baselineJourneys: baselineJourneys.rows,
+        dimension,
+        config: SESSION_INTELLIGENCE_NORMALIZATION_CONFIG
+      })
+    ])
+  );
+
+  const db = getDb();
+  const productIds = productMetrics.products
+    .map((product) => safeString(product.productId).trim())
+    .filter(Boolean);
+  const revenueReferenceContext = buildRevenueReferenceContext(db, safeString(store).trim() || 'shawq', {
+    baselineRange,
+    currentRange,
+    productIds
+  });
+  const effectiveTopLimit = normalizeTopLeakLimit(topLimit);
+  const segmentTopLimit = Math.min(
+    normalizeTopLeakLimit(Math.ceil(effectiveTopLimit / 2), NORMALIZED_MONEY_LEAK_CONFIG.defaultSegmentTopLimit),
+    effectiveTopLimit
+  );
+  const fallbackDownstreamByStage = Object.fromEntries(
+    SESSION_INTELLIGENCE_FUNNEL_STAGES.map((stageKey) => [
+      stageKey,
+      getDownstreamPurchaseRateFromStages(funnelMetrics.stages, stageKey, 'baselineReachedJourneys')
+    ])
+  );
+
+  const funnelLeaks = rankMoneyLeakCandidates(
+    funnelMetrics.transitions.map((transition) => buildMoneyLeakCandidate({
+      scope: 'funnel',
+      label: transition.label,
+      transition,
+      stages: funnelMetrics.stages,
+      referenceAov: revenueReferenceContext.storeAverageOrderValue,
+      metadata: {
+        currentJourneys: funnelMetrics.totals.currentJourneys,
+        baselineJourneys: funnelMetrics.totals.baselineJourneys
+      }
+    })).filter(Boolean),
+    effectiveTopLimit
+  );
+
+  const productLeaks = rankMoneyLeakCandidates(
+    productMetrics.products.map((product) => {
+      const productReference = revenueReferenceContext.productAverageOrderValues.get(product.productId);
+      const hasDedicatedProductAov = safeFiniteNumber(productReference?.orderCount, 0)
+        >= NORMALIZED_MONEY_LEAK_CONFIG.minimumProductOrdersForDedicatedAov;
+
+      return buildMoneyLeakCandidate({
+        scope: 'product',
+        label: product.productLabel,
+        transition: product.comparison.primaryTransition,
+        stages: product.stages,
+        referenceAov: hasDedicatedProductAov
+          ? productReference?.averageOrderValue
+          : revenueReferenceContext.storeAverageOrderValue,
+        fallbackDownstreamPurchaseRate: fallbackDownstreamByStage[product.comparison.primaryTransition?.toStage],
+        metadata: {
+          productKey: product.productKey,
+          productId: product.productId,
+          attributionSource: product.attributionSource,
+          current: product.current,
+          baseline: product.baseline,
+          comparison: {
+            ...product.comparison,
+            summary: formatComparisonSummary(product.comparison.primaryTransition?.comparison?.status || 'limited_data')
+          },
+          revenueReference: hasDedicatedProductAov
+            ? {
+                scope: 'product',
+                orderCount: safeFiniteNumber(productReference?.orderCount, 0)
+              }
+            : {
+                scope: 'store',
+                orderCount: revenueReferenceContext.storeOrderCount
+              }
+        }
+      });
+    }).filter(Boolean),
+    effectiveTopLimit
+  );
+
+  const segmentLeaks = buildSegmentMoneyLeakGroups({
+    segmentMetricsByDimension,
+    storeAverageOrderValue: revenueReferenceContext.storeAverageOrderValue,
+    funnelStages: funnelMetrics.stages,
+    segmentTopLimit
+  });
+
+  return {
+    success: true,
+    data: {
+      ...buildSharedReportEnvelope({ store, currentRange, baselineRange, effectiveJourneyLimit, currentJourneys, baselineJourneys }),
+      rankingMode: 'overlapping_views_do_not_sum',
+      referenceRevenue: {
+        ordersTable: revenueReferenceContext.ordersTable,
+        referenceStartDate: revenueReferenceContext.referenceStartDate,
+        referenceEndDate: revenueReferenceContext.referenceEndDate,
+        storeAverageOrderValue: revenueReferenceContext.storeAverageOrderValue,
+        storeOrderCount: revenueReferenceContext.storeOrderCount,
+        productAverageOrderCoverage: revenueReferenceContext.productAverageOrderCoverage
+      },
+      funnelLeaks,
+      productLeaks,
+      segmentLeaks: segmentLeaks.groups,
+      topLeaks: rankMoneyLeakCandidates(
+        [...funnelLeaks, ...productLeaks, ...segmentLeaks.candidates],
+        effectiveTopLimit
+      )
     }
   };
 }

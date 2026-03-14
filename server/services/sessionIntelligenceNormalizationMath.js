@@ -54,6 +54,7 @@ const PURCHASE_EVENT_NAMES = new Set(['checkout_completed', 'purchase_reconciled
 const PRODUCT_KEY_ID_PREFIX = 'id:';
 const PRODUCT_KEY_LABEL_PREFIX = 'label:';
 const COHORT_COMPARISON_SORT_PRECISION = 1000;
+const MONEY_LEAK_SORT_PRECISION = 1000;
 const SOURCE_SEGMENT_LABELS = Object.freeze({
   direct: 'Direct',
   instagram: 'Instagram',
@@ -181,6 +182,13 @@ export function buildFunnelStageCounts(journeyRows, stageSequence = SESSION_INTE
 
 function buildStageCountMap(stageCounts) {
   return new Map((Array.isArray(stageCounts) ? stageCounts : []).map((stage) => [stage.stageKey, safeFiniteNumber(stage.reachedJourneys, 0)]));
+}
+
+function getStageReachedJourneys(stages, stageKey, countKey = 'reachedJourneys') {
+  return safeFiniteNumber(
+    (Array.isArray(stages) ? stages : []).find((stage) => stage?.stageKey === stageKey)?.[countKey],
+    0
+  );
 }
 
 export function shrinkBinomialRate({ successes, trials, priorRate, priorStrength }) {
@@ -325,6 +333,77 @@ export function buildNormalizedFunnelMetrics({
     })),
     transitions
   };
+}
+
+export function getDownstreamPurchaseRateFromStages(stages, fromStageKey, countKey = 'reachedJourneys') {
+  const normalizedFromStageKey = safeString(fromStageKey).trim().toLowerCase();
+  if (!normalizedFromStageKey) return null;
+
+  const fromStageReachedJourneys = getStageReachedJourneys(stages, normalizedFromStageKey, countKey);
+  if (fromStageReachedJourneys <= 0) return null;
+
+  const purchaseReachedJourneys = getStageReachedJourneys(stages, 'purchase', countKey);
+  return Math.min(1, Math.max(0, purchaseReachedJourneys / fromStageReachedJourneys));
+}
+
+export function buildMoneyLeakEstimate({
+  transition,
+  stages,
+  referenceAov,
+  fallbackDownstreamPurchaseRate = null
+}) {
+  const normalizedTransition = transition && typeof transition === 'object' ? transition : null;
+  if (!normalizedTransition) return null;
+
+  const missedAdvancedJourneys = Math.max(0, safeFiniteNumber(normalizedTransition?.comparison?.missedAdvancedJourneys, 0));
+  if (missedAdvancedJourneys <= 0) return null;
+
+  const baselineDownstreamPurchaseRate = getDownstreamPurchaseRateFromStages(stages, normalizedTransition.toStage, 'baselineReachedJourneys');
+  const currentDownstreamPurchaseRate = getDownstreamPurchaseRateFromStages(stages, normalizedTransition.toStage, 'reachedJourneys');
+  const resolvedFallbackDownstreamPurchaseRate = Math.max(0, safeFiniteNumber(fallbackDownstreamPurchaseRate, 0));
+  const downstreamPurchaseRate = baselineDownstreamPurchaseRate
+    ?? currentDownstreamPurchaseRate
+    ?? (resolvedFallbackDownstreamPurchaseRate > 0 ? resolvedFallbackDownstreamPurchaseRate : null);
+
+  if (downstreamPurchaseRate == null) return null;
+
+  const normalizedReferenceAov = Math.max(0, safeFiniteNumber(referenceAov, 0));
+  const estimatedLostPurchases = missedAdvancedJourneys * downstreamPurchaseRate;
+  const estimatedLostRevenue = estimatedLostPurchases * normalizedReferenceAov;
+
+  return {
+    missedAdvancedJourneys,
+    baselineDownstreamPurchaseRate,
+    currentDownstreamPurchaseRate,
+    downstreamPurchaseRate,
+    referenceAov: normalizedReferenceAov,
+    estimatedLostPurchases,
+    estimatedLostRevenue,
+    rankingScore: Math.round(estimatedLostRevenue * MONEY_LEAK_SORT_PRECISION) / MONEY_LEAK_SORT_PRECISION
+  };
+}
+
+export function rankMoneyLeakCandidates(candidates, limit = null) {
+  const ranked = (Array.isArray(candidates) ? candidates : [])
+    .filter((candidate) => candidate && typeof candidate === 'object')
+    .slice()
+    .sort((left, right) => {
+      const rankingGap = safeFiniteNumber(right?.moneyLeak?.rankingScore, 0) - safeFiniteNumber(left?.moneyLeak?.rankingScore, 0);
+      if (rankingGap !== 0) return rankingGap;
+
+      const lostPurchaseGap = safeFiniteNumber(right?.moneyLeak?.estimatedLostPurchases, 0) - safeFiniteNumber(left?.moneyLeak?.estimatedLostPurchases, 0);
+      if (lostPurchaseGap !== 0) return lostPurchaseGap;
+
+      const missedJourneyGap = safeFiniteNumber(right?.moneyLeak?.missedAdvancedJourneys, 0) - safeFiniteNumber(left?.moneyLeak?.missedAdvancedJourneys, 0);
+      if (missedJourneyGap !== 0) return missedJourneyGap;
+
+      return safeString(left?.label).localeCompare(safeString(right?.label));
+    });
+
+  const normalizedLimit = limit == null
+    ? null
+    : (Number.isFinite(Number(limit)) ? Math.max(1, Math.trunc(Number(limit))) : null);
+  return normalizedLimit ? ranked.slice(0, normalizedLimit) : ranked;
 }
 
 export function getAnchoredJourneyProduct(journeyRow) {

@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildMoneyLeakEstimate,
   buildNormalizedFunnelMetrics,
   buildNormalizedProductMetrics,
   buildNormalizedSegmentMetrics,
+  getDownstreamPurchaseRateFromStages,
   getAnchoredJourneyProduct,
   getJourneySegment,
   hasJourneyReachedStage,
+  rankMoneyLeakCandidates,
   shrinkBinomialRate
 } from '../services/sessionIntelligenceNormalizationMath.js';
 
@@ -314,4 +317,68 @@ test('buildNormalizedSegmentMetrics flags campaign cohorts that convert less oft
   assert.equal(springProspecting.comparison.primaryTransition.toStage, 'purchase');
   assert.equal(springProspecting.comparison.primaryTransition.comparison.status, 'weaker_than_usual');
   assert.ok(springProspecting.comparison.primaryTransition.comparison.missedAdvancedJourneys > 2);
+});
+
+test('getDownstreamPurchaseRateFromStages reads purchase reach from stage counts', () => {
+  const stages = [
+    { stageKey: 'product', reachedJourneys: 40, baselineReachedJourneys: 60 },
+    { stageKey: 'cart', reachedJourneys: 20, baselineReachedJourneys: 30 },
+    { stageKey: 'checkout', reachedJourneys: 10, baselineReachedJourneys: 18 },
+    { stageKey: 'purchase', reachedJourneys: 4, baselineReachedJourneys: 9 }
+  ];
+
+  assert.equal(getDownstreamPurchaseRateFromStages(stages, 'checkout'), 0.4);
+  assert.equal(getDownstreamPurchaseRateFromStages(stages, 'checkout', 'baselineReachedJourneys'), 0.5);
+});
+
+test('buildMoneyLeakEstimate turns missed progression into lost purchases and revenue', () => {
+  const transition = {
+    fromStage: 'cart',
+    toStage: 'checkout',
+    comparison: {
+      missedAdvancedJourneys: 8
+    }
+  };
+  const stages = [
+    { stageKey: 'cart', reachedJourneys: 20, baselineReachedJourneys: 30 },
+    { stageKey: 'checkout', reachedJourneys: 10, baselineReachedJourneys: 18 },
+    { stageKey: 'purchase', reachedJourneys: 4, baselineReachedJourneys: 9 }
+  ];
+
+  const estimate = buildMoneyLeakEstimate({
+    transition,
+    stages,
+    referenceAov: 100
+  });
+
+  assert.ok(estimate);
+  assert.equal(estimate.downstreamPurchaseRate, 0.5);
+  assert.equal(estimate.estimatedLostPurchases, 4);
+  assert.equal(estimate.estimatedLostRevenue, 400);
+});
+
+test('rankMoneyLeakCandidates prefers higher revenue risk over raw missed journeys', () => {
+  const ranked = rankMoneyLeakCandidates([
+    {
+      label: 'Product to cart',
+      moneyLeak: {
+        missedAdvancedJourneys: 12,
+        estimatedLostPurchases: 1.2,
+        estimatedLostRevenue: 72,
+        rankingScore: 72
+      }
+    },
+    {
+      label: 'Checkout to purchase',
+      moneyLeak: {
+        missedAdvancedJourneys: 4,
+        estimatedLostPurchases: 2,
+        estimatedLostRevenue: 240,
+        rankingScore: 240
+      }
+    }
+  ]);
+
+  assert.equal(ranked[0].label, 'Checkout to purchase');
+  assert.equal(ranked[1].label, 'Product to cart');
 });
