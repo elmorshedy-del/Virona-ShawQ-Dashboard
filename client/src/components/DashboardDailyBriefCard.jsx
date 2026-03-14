@@ -6,6 +6,12 @@ import { ChevronDown, Loader2, RefreshCw } from 'lucide-react';
 const COLLAPSED_PREVIEW_CHARS = 180;
 const REGENERATE_BUTTON_LABEL = 'Regenerate Yesterday';
 const MONTH_INDEX_OFFSET = 1;
+const REPORTING_TIMEZONE_OFFSET_HOURS = 3;
+const MINUTES_PER_HOUR = 60;
+const SECONDS_PER_MINUTE = 60;
+const MILLISECONDS_PER_SECOND = 1000;
+const REPORTING_TIMEZONE_OFFSET_MS =
+  REPORTING_TIMEZONE_OFFSET_HOURS * MINUTES_PER_HOUR * SECONDS_PER_MINUTE * MILLISECONDS_PER_SECOND;
 
 function formatModelLabel(value) {
   const normalized = String(value || '').trim();
@@ -42,11 +48,11 @@ function buildPreview(markdown) {
 }
 
 function getFallbackYesterdayBriefDate() {
-  const localYesterday = new Date();
-  localYesterday.setDate(localYesterday.getDate() - 1);
-  const year = localYesterday.getFullYear();
-  const month = String(localYesterday.getMonth() + MONTH_INDEX_OFFSET).padStart(2, '0');
-  const day = String(localYesterday.getDate()).padStart(2, '0');
+  const reportingNow = new Date(Date.now() + REPORTING_TIMEZONE_OFFSET_MS);
+  reportingNow.setUTCDate(reportingNow.getUTCDate() - 1);
+  const year = reportingNow.getUTCFullYear();
+  const month = String(reportingNow.getUTCMonth() + MONTH_INDEX_OFFSET).padStart(2, '0');
+  const day = String(reportingNow.getUTCDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
 
