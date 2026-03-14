@@ -1,14 +1,8 @@
 import {
-  fetchCountryOptions,
-  fetchEntityOptions,
-  normalizeCampaignIntelligenceRequest
-} from '../campaignIntelligence/data.js';
-import { addDaysIso, round, safeDivide, toNumber } from '../campaignIntelligence/utils.js';
-import {
-  DASHBOARD_DAILY_BRIEF_DEFAULTS,
   DASHBOARD_DAILY_BRIEF_PACKET_LIMITS,
   DASHBOARD_DAILY_BRIEF_THRESHOLDS
 } from './constants.js';
+import { normalizeDashboardDailyBriefIncludeConfig } from './options.js';
 
 const RATE_DECIMALS = 4;
 const AMOUNT_DECIMALS = 2;
@@ -19,20 +13,31 @@ function toFiniteOrNull(value) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
-function roundOrNull(value, digits = RATE_DECIMALS) {
-  return Number.isFinite(value) ? round(value, digits) : null;
+function roundValue(value, digits = RATE_DECIMALS) {
+  if (!Number.isFinite(value)) return null;
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
 }
 
 function normalizeRate(value) {
-  return roundOrNull(toFiniteOrNull(value), RATE_DECIMALS);
+  return roundValue(toFiniteOrNull(value), RATE_DECIMALS);
 }
 
 function normalizeAmount(value) {
-  return roundOrNull(toFiniteOrNull(value), AMOUNT_DECIMALS);
+  return roundValue(toFiniteOrNull(value), AMOUNT_DECIMALS);
 }
 
 function normalizeCount(value) {
   return Number.isFinite(Number(value)) ? Math.round(Number(value)) : 0;
+}
+
+function safeDivide(numerator, denominator, fallback = 0) {
+  const top = Number(numerator);
+  const bottom = Number(denominator);
+  if (!Number.isFinite(top) || !Number.isFinite(bottom) || bottom === 0) {
+    return fallback;
+  }
+  return top / bottom;
 }
 
 function calcDeltaRatio(currentValue, baselineValue) {
@@ -44,15 +49,15 @@ function calcDeltaRatio(currentValue, baselineValue) {
 
 function buildWindowSummary(rows = []) {
   const totals = rows.reduce((accumulator, row) => {
-    accumulator.spend += toNumber(row?.spend);
-    accumulator.metaPurchases += toNumber(row?.conversions);
-    accumulator.shopifyOrders += toNumber(row?.orders);
-    accumulator.revenue += toNumber(row?.revenue);
-    accumulator.impressions += toNumber(row?.impressions);
-    accumulator.clicks += toNumber(row?.clicks);
-    accumulator.landingPageViews += toNumber(row?.landingPageViews);
-    accumulator.addToCart += toNumber(row?.addToCart);
-    accumulator.checkoutsInitiated += toNumber(row?.checkoutsInitiated);
+    accumulator.spend += Number(row?.spend) || 0;
+    accumulator.metaPurchases += Number(row?.conversions) || 0;
+    accumulator.shopifyOrders += Number(row?.orders) || 0;
+    accumulator.revenue += Number(row?.revenue) || 0;
+    accumulator.impressions += Number(row?.impressions) || 0;
+    accumulator.clicks += Number(row?.clicks) || 0;
+    accumulator.landingPageViews += Number(row?.landingPageViews) || 0;
+    accumulator.addToCart += Number(row?.addToCart) || 0;
+    accumulator.checkoutsInitiated += Number(row?.checkoutsInitiated) || 0;
     return accumulator;
   }, {
     spend: 0,
@@ -68,7 +73,7 @@ function buildWindowSummary(rows = []) {
 
   return {
     spend: normalizeAmount(totals.spend),
-    metaPurchases: roundOrNull(totals.metaPurchases, RATE_DECIMALS),
+    metaPurchases: normalizeCount(totals.metaPurchases),
     shopifyOrders: normalizeCount(totals.shopifyOrders),
     revenue: normalizeAmount(totals.revenue),
     ctr: normalizeRate(safeDivide(totals.clicks, totals.impressions, null)),
@@ -82,15 +87,26 @@ function buildWindowSummary(rows = []) {
 
 function buildDeltaBlock(current, baseline) {
   return {
-    spend: roundOrNull(calcDeltaRatio(current?.spend, baseline?.spend), RATE_DECIMALS),
-    shopifyOrders: roundOrNull(calcDeltaRatio(current?.shopifyOrders, baseline?.shopifyOrders), RATE_DECIMALS),
-    revenue: roundOrNull(calcDeltaRatio(current?.revenue, baseline?.revenue), RATE_DECIMALS),
-    ctr: roundOrNull(calcDeltaRatio(current?.ctr, baseline?.ctr), RATE_DECIMALS),
-    lpvClick: roundOrNull(calcDeltaRatio(current?.lpvClick, baseline?.lpvClick), RATE_DECIMALS),
-    atcLpv: roundOrNull(calcDeltaRatio(current?.atcLpv, baseline?.atcLpv), RATE_DECIMALS),
-    icAtc: roundOrNull(calcDeltaRatio(current?.icAtc, baseline?.icAtc), RATE_DECIMALS),
-    purchaseIc: roundOrNull(calcDeltaRatio(current?.purchaseIc, baseline?.purchaseIc), RATE_DECIMALS),
-    roas: roundOrNull(calcDeltaRatio(current?.roas, baseline?.roas), RATE_DECIMALS)
+    spend: roundValue(calcDeltaRatio(current?.spend, baseline?.spend), RATE_DECIMALS),
+    shopifyOrders: roundValue(calcDeltaRatio(current?.shopifyOrders, baseline?.shopifyOrders), RATE_DECIMALS),
+    revenue: roundValue(calcDeltaRatio(current?.revenue, baseline?.revenue), RATE_DECIMALS),
+    ctr: roundValue(calcDeltaRatio(current?.ctr, baseline?.ctr), RATE_DECIMALS),
+    lpvClick: roundValue(calcDeltaRatio(current?.lpvClick, baseline?.lpvClick), RATE_DECIMALS),
+    atcLpv: roundValue(calcDeltaRatio(current?.atcLpv, baseline?.atcLpv), RATE_DECIMALS),
+    icAtc: roundValue(calcDeltaRatio(current?.icAtc, baseline?.icAtc), RATE_DECIMALS),
+    purchaseIc: roundValue(calcDeltaRatio(current?.purchaseIc, baseline?.purchaseIc), RATE_DECIMALS),
+    roas: roundValue(calcDeltaRatio(current?.roas, baseline?.roas), RATE_DECIMALS)
+  };
+}
+
+function buildFunnelDeltaBlock(current, baseline) {
+  return {
+    ctr: roundValue(calcDeltaRatio(current?.ctr, baseline?.ctr), RATE_DECIMALS),
+    lpvClick: roundValue(calcDeltaRatio(current?.lpvClick, baseline?.lpvClick), RATE_DECIMALS),
+    atcLpv: roundValue(calcDeltaRatio(current?.atcLpv, baseline?.atcLpv), RATE_DECIMALS),
+    icAtc: roundValue(calcDeltaRatio(current?.icAtc, baseline?.icAtc), RATE_DECIMALS),
+    purchaseIc: roundValue(calcDeltaRatio(current?.purchaseIc, baseline?.purchaseIc), RATE_DECIMALS),
+    roas: roundValue(calcDeltaRatio(current?.roas, baseline?.roas), RATE_DECIMALS)
   };
 }
 
@@ -118,57 +134,24 @@ function buildAccountContext(dailyRows = []) {
   };
 }
 
-function buildTimelineRows(dailyRows = [], budgetEvents = []) {
-  const eventDateSet = new Set((budgetEvents || []).map((event) => String(event?.pivotDate || '').trim()).filter(Boolean));
+function buildTimelineRows(dailyRows = [], recentChanges = []) {
+  const eventDateSet = new Set((recentChanges || []).map((event) => String(event?.date || '').trim()).filter(Boolean));
   return dailyRows
     .slice(-DASHBOARD_DAILY_BRIEF_PACKET_LIMITS.recentTimelineRows)
     .map((row) => ({
       date: row?.date || null,
       spend: normalizeAmount(row?.spend),
-      metaPurchases: roundOrNull(toFiniteOrNull(row?.conversions), RATE_DECIMALS),
+      metaPurchases: normalizeCount(row?.conversions),
       shopifyOrders: normalizeCount(row?.orders),
       revenue: normalizeAmount(row?.revenue),
-      ctrPct: roundOrNull(toFiniteOrNull(row?.ctr) * PERCENT_MULTIPLIER, 2),
-      lpvClickPct: roundOrNull(safeDivide(toNumber(row?.landingPageViews), toNumber(row?.clicks), null) * PERCENT_MULTIPLIER, 2),
-      atcLpvPct: roundOrNull(safeDivide(toNumber(row?.addToCart), toNumber(row?.landingPageViews), null) * PERCENT_MULTIPLIER, 2),
-      icAtcPct: roundOrNull(safeDivide(toNumber(row?.checkoutsInitiated), toNumber(row?.addToCart), null) * PERCENT_MULTIPLIER, 2),
-      purchaseIcPct: roundOrNull(safeDivide(toNumber(row?.conversions), toNumber(row?.checkoutsInitiated), null) * PERCENT_MULTIPLIER, 2),
-      roas: normalizeRate(safeDivide(toNumber(row?.revenue), toNumber(row?.spend), null)),
+      ctrPct: roundValue(toFiniteOrNull(row?.ctr) * PERCENT_MULTIPLIER, 2),
+      lpvClickPct: roundValue(safeDivide(row?.landingPageViews, row?.clicks, null) * PERCENT_MULTIPLIER, 2),
+      atcLpvPct: roundValue(safeDivide(row?.addToCart, row?.landingPageViews, null) * PERCENT_MULTIPLIER, 2),
+      icAtcPct: roundValue(safeDivide(row?.checkoutsInitiated, row?.addToCart, null) * PERCENT_MULTIPLIER, 2),
+      purchaseIcPct: roundValue(safeDivide(row?.conversions, row?.checkoutsInitiated, null) * PERCENT_MULTIPLIER, 2),
+      roas: normalizeRate(safeDivide(row?.revenue, row?.spend, null)),
       budgetEvent: eventDateSet.has(String(row?.date || '').trim())
     }));
-}
-
-function buildRecentEntityStateRows(entityRows = [], briefDate) {
-  if (!briefDate) {
-    return { recentLaunches: [], recentlyQuiet: [] };
-  }
-
-  const recentLaunchCutoff = addDaysIso(briefDate, -(DASHBOARD_DAILY_BRIEF_THRESHOLDS.recentLaunchDays - 1));
-  const quietCutoff = addDaysIso(briefDate, -DASHBOARD_DAILY_BRIEF_THRESHOLDS.quietEntityDays);
-
-  const recentLaunches = entityRows
-    .filter((row) => row?.firstSeen && row.firstSeen >= recentLaunchCutoff)
-    .slice(0, DASHBOARD_DAILY_BRIEF_PACKET_LIMITS.recentEntityRows)
-    .map((row) => ({
-      id: row.id,
-      name: row.name,
-      firstSeen: row.firstSeen,
-      spend: normalizeAmount(row.spend),
-      metaPurchases: normalizeCount(row.conversions)
-    }));
-
-  const recentlyQuiet = entityRows
-    .filter((row) => row?.lastSeen && row.lastSeen <= quietCutoff)
-    .slice(0, DASHBOARD_DAILY_BRIEF_PACKET_LIMITS.recentEntityRows)
-    .map((row) => ({
-      id: row.id,
-      name: row.name,
-      lastSeen: row.lastSeen,
-      spend: normalizeAmount(row.spend),
-      metaPurchases: normalizeCount(row.conversions)
-    }));
-
-  return { recentLaunches, recentlyQuiet };
 }
 
 function buildEntityFlags({ row, accountRoas, accountSpend }) {
@@ -214,22 +197,23 @@ function mapHierarchyRow(row, accountRoas, accountSpend) {
     campaignName: row.campaignName || null,
     adsetName: row.adsetName || null,
     spend: normalizeAmount(now.spend),
-    spendShare: roundOrNull(safeDivide(toNumber(now.spend), accountSpend, 0), RATE_DECIMALS),
+    spendShare: roundValue(safeDivide(now.spend, accountSpend, 0), RATE_DECIMALS),
     metaPurchases: normalizeCount(now.purchases),
     roas: normalizeRate(now.roas),
-    ctrPct: roundOrNull(toFiniteOrNull(now.ctr) * PERCENT_MULTIPLIER, 2),
-    lpvClickPct: roundOrNull(toFiniteOrNull(now.lpvClick) * PERCENT_MULTIPLIER, 2),
-    atcLpvPct: roundOrNull(toFiniteOrNull(now.atcLpv) * PERCENT_MULTIPLIER, 2),
-    icAtcPct: roundOrNull(toFiniteOrNull(now.icAtc) * PERCENT_MULTIPLIER, 2),
-    purchaseIcPct: roundOrNull(toFiniteOrNull(now.purchaseIc) * PERCENT_MULTIPLIER, 2),
+    ctrPct: roundValue(toFiniteOrNull(now.ctr) * PERCENT_MULTIPLIER, 2),
+    lpvClickPct: roundValue(toFiniteOrNull(now.lpvClick) * PERCENT_MULTIPLIER, 2),
+    atcLpvPct: roundValue(toFiniteOrNull(now.atcLpv) * PERCENT_MULTIPLIER, 2),
+    icAtcPct: roundValue(toFiniteOrNull(now.icAtc) * PERCENT_MULTIPLIER, 2),
+    purchaseIcPct: roundValue(toFiniteOrNull(now.purchaseIc) * PERCENT_MULTIPLIER, 2),
     baseline: {
       roas: normalizeRate(baseline.roas),
-      ctrPct: roundOrNull(toFiniteOrNull(baseline.ctr) * PERCENT_MULTIPLIER, 2),
-      lpvClickPct: roundOrNull(toFiniteOrNull(baseline.lpvClick) * PERCENT_MULTIPLIER, 2),
-      atcLpvPct: roundOrNull(toFiniteOrNull(baseline.atcLpv) * PERCENT_MULTIPLIER, 2),
-      icAtcPct: roundOrNull(toFiniteOrNull(baseline.icAtc) * PERCENT_MULTIPLIER, 2),
-      purchaseIcPct: roundOrNull(toFiniteOrNull(baseline.purchaseIc) * PERCENT_MULTIPLIER, 2)
+      ctrPct: roundValue(toFiniteOrNull(baseline.ctr) * PERCENT_MULTIPLIER, 2),
+      lpvClickPct: roundValue(toFiniteOrNull(baseline.lpvClick) * PERCENT_MULTIPLIER, 2),
+      atcLpvPct: roundValue(toFiniteOrNull(baseline.atcLpv) * PERCENT_MULTIPLIER, 2),
+      icAtcPct: roundValue(toFiniteOrNull(baseline.icAtc) * PERCENT_MULTIPLIER, 2),
+      purchaseIcPct: roundValue(toFiniteOrNull(baseline.purchaseIc) * PERCENT_MULTIPLIER, 2)
     },
+    delta: buildFunnelDeltaBlock(now, baseline),
     flags: buildEntityFlags({ row, accountRoas, accountSpend })
   };
 }
@@ -269,31 +253,24 @@ function mapGeoRow(row, accountRoas) {
   return {
     code: row?.code || '??',
     spend: normalizeAmount(row?.spend),
-    metaPurchases: normalizeCount(row?.conversions),
+    metaPurchases: normalizeCount(row?.metaPurchases),
     roas: normalizeRate(row?.roas),
-    ctrPct: roundOrNull(toFiniteOrNull(row?.ctr) * PERCENT_MULTIPLIER, 2),
-    purchaseIcPct: roundOrNull(toFiniteOrNull(row?.purchaseIc) * PERCENT_MULTIPLIER, 2),
+    ctrPct: roundValue(toFiniteOrNull(row?.ctr) * PERCENT_MULTIPLIER, 2),
+    lpvClickPct: roundValue(toFiniteOrNull(row?.lpvClick) * PERCENT_MULTIPLIER, 2),
+    atcLpvPct: roundValue(toFiniteOrNull(row?.atcLpv) * PERCENT_MULTIPLIER, 2),
+    icAtcPct: roundValue(toFiniteOrNull(row?.icAtc) * PERCENT_MULTIPLIER, 2),
+    purchaseIcPct: roundValue(toFiniteOrNull(row?.purchaseIc) * PERCENT_MULTIPLIER, 2),
     baseline: {
       roas: normalizeRate(row?.baseline?.roas),
-      ctrPct: roundOrNull(toFiniteOrNull(row?.baseline?.ctr) * PERCENT_MULTIPLIER, 2),
-      purchaseIcPct: roundOrNull(toFiniteOrNull(row?.baseline?.purchaseIc) * PERCENT_MULTIPLIER, 2)
+      ctrPct: roundValue(toFiniteOrNull(row?.baseline?.ctr) * PERCENT_MULTIPLIER, 2),
+      lpvClickPct: roundValue(toFiniteOrNull(row?.baseline?.lpvClick) * PERCENT_MULTIPLIER, 2),
+      atcLpvPct: roundValue(toFiniteOrNull(row?.baseline?.atcLpv) * PERCENT_MULTIPLIER, 2),
+      icAtcPct: roundValue(toFiniteOrNull(row?.baseline?.icAtc) * PERCENT_MULTIPLIER, 2),
+      purchaseIcPct: roundValue(toFiniteOrNull(row?.baseline?.purchaseIc) * PERCENT_MULTIPLIER, 2)
     },
+    delta: buildFunnelDeltaBlock(row, row?.baseline || {}),
     flags: buildGeoFlags(row, accountRoas)
   };
-}
-
-function buildRecentChangeRows(budgetMonitor = {}) {
-  return (Array.isArray(budgetMonitor?.events) ? budgetMonitor.events : [])
-    .slice(0, DASHBOARD_DAILY_BRIEF_PACKET_LIMITS.recentChangeRows)
-    .map((event) => ({
-      date: event?.pivotDate || null,
-      fromBudget: normalizeAmount(event?.fromBudget),
-      toBudget: normalizeAmount(event?.toBudget),
-      budgetShiftPercent: roundOrNull(toFiniteOrNull(event?.budgetShiftPercent), 2),
-      preSpendAvg: normalizeAmount(event?.preSpendAvg),
-      postSpendAvg: normalizeAmount(event?.postSpendAvg),
-      spendShiftPercent: roundOrNull(toFiniteOrNull(event?.shiftPercent), 2)
-    }));
 }
 
 function buildGlobalFlags(accountContext) {
@@ -316,123 +293,63 @@ function buildGlobalFlags(accountContext) {
   return flags;
 }
 
-function buildEntityScope({ store, level, analysisStartDate, analysisEndDate, anchorStartDate, anchorEndDate, selectorLimit }) {
-  return normalizeCampaignIntelligenceRequest({
-    store,
-    level,
-    country: 'ALL',
-    startDate: analysisStartDate,
-    endDate: analysisEndDate,
-    anchorStartDate,
-    anchorEndDate,
-    selectorLimit
-  });
-}
-
-export function buildDashboardDailyBriefPacket({ snapshot, entityOptionGroups = {}, geoRows = [] }) {
-  const dailyRows = Array.isArray(snapshot?.timeline?.daily) ? snapshot.timeline.daily : [];
+export function buildDashboardDailyBriefPacket({ source }) {
+  const include = normalizeDashboardDailyBriefIncludeConfig(source?.include);
+  const dailyRows = Array.isArray(source?.dailyRows) ? source.dailyRows : [];
   const accountContext = buildAccountContext(dailyRows);
-  const analysisSummary = snapshot?.summary?.analysis || {};
-  const accountRoas = toFiniteOrNull(analysisSummary?.rates?.roas)
+  const accountRoas = toFiniteOrNull(accountContext?.closedDay?.roas)
     ?? toFiniteOrNull(accountContext?.sevenDayBaseline?.roas)
-    ?? toFiniteOrNull(accountContext?.closedDay?.roas)
     ?? 0;
-  const accountSpend = toFiniteOrNull(analysisSummary?.totals?.spend)
+  const accountSpend = toFiniteOrNull(accountContext?.closedDay?.spend)
     ?? toFiniteOrNull(accountContext?.sevenDayBaseline?.spend)
-    ?? toFiniteOrNull(accountContext?.closedDay?.spend)
     ?? 0;
-  const hierarchyRows = Array.isArray(snapshot?.hierarchy?.rows) ? snapshot.hierarchy.rows : [];
 
-  const campaignRows = hierarchyRows
+  const hierarchyRows = Array.isArray(source?.hierarchyRows) ? source.hierarchyRows : [];
+  const campaignRows = !include.campaigns ? [] : hierarchyRows
     .filter((row) => row.level === 'campaign')
     .map((row) => mapHierarchyRow(row, accountRoas, accountSpend))
     .slice(0, DASHBOARD_DAILY_BRIEF_PACKET_LIMITS.topCampaignRows);
-
-  const adsetRows = hierarchyRows
+  const adsetRows = !include.adSets ? [] : hierarchyRows
     .filter((row) => row.level === 'adset')
     .map((row) => mapHierarchyRow(row, accountRoas, accountSpend));
-
-  const adRows = hierarchyRows
+  const adRows = !include.ads ? [] : hierarchyRows
     .filter((row) => row.level === 'ad')
     .map((row) => mapHierarchyRow(row, accountRoas, accountSpend));
-
-  const recentChanges = buildRecentChangeRows(snapshot?.budgetMonitor);
-  const briefDate = String(snapshot?.scope?.analysisEndDate || accountContext?.closedDayDate || '').trim() || null;
-  const recentCampaignState = buildRecentEntityStateRows(entityOptionGroups.campaign || [], briefDate);
-  const recentAdsetState = buildRecentEntityStateRows(entityOptionGroups.adset || [], briefDate);
-  const recentAdState = buildRecentEntityStateRows(entityOptionGroups.ad || [], briefDate);
+  const timelineRows = include.timeline ? buildTimelineRows(dailyRows, source?.recentChanges || []) : [];
+  const geoRows = include.geos
+    ? (Array.isArray(source?.geoRows) ? source.geoRows : [])
+      .map((row) => mapGeoRow(row, accountRoas))
+      .slice(0, DASHBOARD_DAILY_BRIEF_PACKET_LIMITS.topGeoRows)
+    : [];
+  const recentChanges = include.recentChanges && Array.isArray(source?.recentChanges) ? source.recentChanges : [];
+  const recentEntityState = include.recentEntityState
+    ? source?.recentEntityState || {
+      campaigns: [],
+      adSets: [],
+      ads: []
+    }
+    : null;
 
   return {
     meta: {
-      store: snapshot?.scope?.store || null,
+      store: source?.store || null,
       scope: 'all_campaigns',
-      briefDate,
-      analysisStartDate: snapshot?.scope?.analysisStartDate || null,
-      analysisEndDate: snapshot?.scope?.analysisEndDate || null,
-      anchorStartDate: snapshot?.scope?.anchorStartDate || null,
-      anchorEndDate: snapshot?.scope?.anchorEndDate || null
+      briefDate: source?.briefDate || accountContext?.closedDayDate || null,
+      analysisStartDate: source?.analysisStartDate || null,
+      analysisEndDate: source?.analysisEndDate || null,
+      anchorStartDate: source?.anchorStartDate || null,
+      anchorEndDate: source?.anchorEndDate || null,
+      include
     },
-    account: accountContext,
-    lifecycle: snapshot?.selectors?.lifecycle || null,
-    recentTimeline: buildTimelineRows(dailyRows, snapshot?.budgetMonitor?.events || []),
+    account: include.account ? accountContext : null,
+    lifecycle: null,
+    recentTimeline: timelineRows,
     topCampaigns: campaignRows,
     flaggedAdSets: filterFlaggedRows(adsetRows, DASHBOARD_DAILY_BRIEF_PACKET_LIMITS.flaggedAdsetRows),
     flaggedAds: filterFlaggedRows(adRows, DASHBOARD_DAILY_BRIEF_PACKET_LIMITS.flaggedAdRows),
-    topGeos: (geoRows || [])
-      .map((row) => mapGeoRow(row, accountRoas))
-      .slice(0, DASHBOARD_DAILY_BRIEF_PACKET_LIMITS.topGeoRows),
+    topGeos: geoRows,
     recentChanges,
-    recentEntityState: {
-      campaigns: recentCampaignState,
-      adSets: recentAdsetState,
-      ads: recentAdState
-    },
+    recentEntityState,
     globalFlags: buildGlobalFlags(accountContext)
-  };
-}
-
-export function buildDashboardDailyBriefPacketContext({ snapshot }) {
-  const analysisStartDate = snapshot?.scope?.analysisStartDate;
-  const analysisEndDate = snapshot?.scope?.analysisEndDate;
-  const anchorStartDate = snapshot?.scope?.anchorStartDate;
-  const anchorEndDate = snapshot?.scope?.anchorEndDate;
-  const store = snapshot?.scope?.store;
-  const selectorLimit = DASHBOARD_DAILY_BRIEF_DEFAULTS.selectorLimit;
-
-  const campaignScope = buildEntityScope({
-    store,
-    level: 'campaign',
-    analysisStartDate,
-    analysisEndDate,
-    anchorStartDate,
-    anchorEndDate,
-    selectorLimit
-  });
-  const adsetScope = buildEntityScope({
-    store,
-    level: 'adset',
-    analysisStartDate,
-    analysisEndDate,
-    anchorStartDate,
-    anchorEndDate,
-    selectorLimit
-  });
-  const adScope = buildEntityScope({
-    store,
-    level: 'ad',
-    analysisStartDate,
-    analysisEndDate,
-    anchorStartDate,
-    anchorEndDate,
-    selectorLimit
-  });
-
-  return {
-    entityOptionGroups: {
-      campaign: fetchEntityOptions(campaignScope),
-      adset: fetchEntityOptions(adsetScope),
-      ad: fetchEntityOptions(adScope)
-    },
-    geoRows: fetchCountryOptions(campaignScope)
   };
 }

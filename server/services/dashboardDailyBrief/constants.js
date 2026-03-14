@@ -12,19 +12,21 @@ export const DASHBOARD_DAILY_BRIEF_DEFAULTS = Object.freeze({
   model: 'gpt-5.2',
   reasoningEffort: 'xhigh',
   verbosity: 'low',
+  inputUsdPerMillionTokens: 1.75,
+  outputUsdPerMillionTokens: 14,
   fallbackProvider: 'fireworks',
   fallbackModel: 'accounts/fireworks/models/glm-5',
   fallbackReasoningEffort: 'high',
   fallbackTemperature: 0.15,
+  fallbackInputUsdPerMillionTokens: 1.0,
+  fallbackOutputUsdPerMillionTokens: 3.2,
   analysisWindowDays: 35,
   anchorWindowDays: 21,
   baselineComparisonDays: 7,
   selectorLimit: 36,
   maxOutputTokens: 560,
   estimatedCharsPerToken: 4,
-  maxParagraphChars: 1800,
-  inputUsdPerMillionTokens: 1.75,
-  outputUsdPerMillionTokens: 14
+  maxParagraphChars: 1800
 });
 
 export const DASHBOARD_DAILY_BRIEF_PACKET_LIMITS = Object.freeze({
