@@ -302,7 +302,7 @@ export function getStoredDashboardDailyBrief({ store, briefDate, scopeKey = DASH
   return mapBriefRow(row);
 }
 
-export function loadDashboardDailyBrief({ store, briefDate: requestedBriefDate = null }) {
+export async function loadDashboardDailyBrief({ store, briefDate: requestedBriefDate = null }) {
   const normalizedStore = ensureSupportedStore(store);
   const normalizedBriefDate = normalizeRequestedBriefDate(requestedBriefDate);
   const resolvedBriefDate = normalizedBriefDate || resolveDashboardDailyBriefDate();
