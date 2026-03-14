@@ -17,12 +17,15 @@ const GLM_REWRITE_MARKERS = Object.freeze([
   'let me analyze',
   'i need to write',
   'wait,',
+  'key facts from the available data',
   'key facts from the packet',
   'important observations',
   'comparisons:',
   'closed day (',
   'return strict json',
-  'the packet:'
+  'the packet:',
+  'payload',
+  'json'
 ]);
 
 const FUNNEL_STEP_PRIORITY = Object.freeze([
@@ -185,7 +188,7 @@ function buildCommercialLead(packet = {}) {
 
 function buildNoMetaSignalSentence(packet = {}) {
   const hasRecentChanges = Array.isArray(packet?.recentChanges) && packet.recentChanges.length > 0;
-  return `This packet contains no usable Meta delivery rows, campaign rows, or funnel movement for the day, so there is insufficient paid-media evidence to attribute the result to campaign behavior${hasRecentChanges ? '; recent budget edits are present but not interpretable without delivery data.' : '.'}`;
+  return `The available campaign data does not contain usable Meta delivery rows, campaign rows, or funnel movement for the day, so there is insufficient paid-media evidence to attribute the result to campaign behavior${hasRecentChanges ? '; recent budget edits are present but are not interpretable without delivery data.' : '.'}`;
 }
 
 function buildFunnelSentence(packet = {}) {
@@ -220,10 +223,33 @@ function buildRecentChangeSentence(packet = {}) {
 
   const budgetShiftPercent = toFiniteNumber(latestChange?.budgetShiftPercent);
   if (!Number.isFinite(budgetShiftPercent)) {
-    return `A budget change on ${latestChange.date} is recent enough to watch, but this packet does not prove it caused the move.`;
+    return `A budget change on ${latestChange.date} is recent enough to watch, but the available campaign data does not prove it caused the move.`;
   }
 
-  return `A budget shift on ${latestChange.date} (${budgetShiftPercent < 0 ? '' : '+'}${round(budgetShiftPercent, 1)}%) is recent enough to watch, but this packet does not prove it caused the move.`;
+  return `A budget shift on ${latestChange.date} (${budgetShiftPercent < 0 ? '' : '+'}${round(budgetShiftPercent, 1)}%) is recent enough to watch, but the available campaign data does not prove it caused the move.`;
+}
+
+function buildExecutiveImplicationSentence(packet = {}) {
+  const account = packet?.account || {};
+  const revenueDelta = toFiniteNumber(account?.vsPriorDay?.revenue);
+  const orderDelta = toFiniteNumber(account?.vsPriorDay?.shopifyOrders);
+  const strongestDelta = Number.isFinite(revenueDelta) ? revenueDelta : orderDelta;
+  const funnelShift = pickPrimaryFunnelShift(packet);
+
+  if (!hasUsableMetaSignal(packet)) {
+    return 'The next step is to restore campaign data visibility before taking optimization action from this brief.';
+  }
+
+  if (
+    Number.isFinite(strongestDelta)
+    && strongestDelta <= -DASHBOARD_DAILY_BRIEF_THRESHOLDS.inLineDeltaRatio
+    && funnelShift
+    && funnelShift.ratio > DASHBOARD_DAILY_BRIEF_THRESHOLDS.meaningfulFunnelDeltaRatio
+  ) {
+    return 'The practical read is a softer commercial day with only partial funnel strength, so this should be treated as signal to confirm rather than a recovery to trust yet.';
+  }
+
+  return 'The practical implication is to treat this as directional evidence and wait for the next closed day before making a broader structural change.';
 }
 
 function buildDeterministicExecutiveParagraph(packet = {}) {
@@ -236,6 +262,7 @@ function buildDeterministicExecutiveParagraph(packet = {}) {
     parts.push(buildEntitySentence(packet));
     parts.push(buildRecentChangeSentence(packet));
   }
+  parts.push(buildExecutiveImplicationSentence(packet));
 
   return normalizeParagraph(parts.filter(Boolean).join(' '));
 }
