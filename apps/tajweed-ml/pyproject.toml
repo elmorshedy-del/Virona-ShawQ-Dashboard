@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tajweed-ml-standalone"
+version = "0.1.0"
+description = "Al-Tarteel full stack integration with the pre-trained Muaalem model"
+requires-python = ">=3.11"
+dependencies = [
+  "datasets>=2.19.0",
+  "diff-match-patch>=20241021",
+  "fastapi>=0.115.0",
+  "fuzzysearch>=0.8.1",
+  "levenshtein>=0.27.1",
+  "librosa>=0.10.2",
+  "numpy>=1.26.4",
+  "pydantic>=2.8.0",
+  "python-multipart>=0.0.9",
+  "quran-muaalem>=0.1.0",
+  "quran-transcript>=0.5.2",
+  "rich>=14.1.0",
+  "scipy>=1.13.0",
+  "soundfile>=0.12.1",
+  "torch>=2.7.0",
+  "torchaudio>=2.7.0",
+  "transformers>=4.55.0,<6",
+  "typer>=0.12.3",
+  "uvicorn>=0.30.6",
+  "websockets>=12.0",
+  "xmltodict",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.27.2",
+  "pytest>=8.3.0",
+]
+cloud = [
+  "boto3>=1.37.0",
+]
+ml = []
+
+[project.scripts]
+tajweed-ml = "tajweed_ml.cli:app"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
