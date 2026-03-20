@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { getDb } from '../db/database.js';
+import { normalizeStorefrontCaptureEventData } from './sessionIntelligenceStorefrontCapture.js';
 import { askOpenAIChat } from './openaiService.js';
 import { askDeepSeekChat, normalizeTemperature } from './deepseekService.js';
 import { persistInvestigationIssueSnapshots } from './sessionIntelligenceInvestigationService.js';
@@ -1014,6 +1015,10 @@ function extractSizeLabelFromDataJson(dataJson) {
     parsed?.size ||
     parsed?.selectedSize ||
     parsed?.selected_size ||
+    parsed?.option_map?.size ||
+    parsed?.optionMap?.size ||
+    parsed?.product_state?.selected_size ||
+    parsed?.productState?.selected_size ||
     parsed?.variantTitle ||
     parsed?.variant_title ||
     parsed?.option1 ||
@@ -2659,7 +2664,8 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
 
   const eventName = normalizeEventName(payload);
   const eventTs = normalizeEventTimestamp(payload);
-  const eventDataRaw = getEventData(payload);
+  const rawEventData = getEventData(payload);
+  const eventDataRaw = normalizeStorefrontCaptureEventData(eventName, rawEventData);
   const eventData = scrubSensitive(eventDataRaw);
 
   const location = extractLocation(payload);
@@ -3640,6 +3646,7 @@ export function getSessionIntelligenceOverview(store) {
         'out_of_stock_size_clicked',
         'oos_size_clicked',
         'size_out_of_stock_clicked',
+        'unavailable_size_clicked',
         'variant_out_of_stock_clicked',
         'variant_unavailable_clicked',
         'out_of_stock_click',
