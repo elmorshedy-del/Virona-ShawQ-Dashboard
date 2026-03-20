@@ -135,8 +135,10 @@ def verify_setup():
         print(f"  Muaalem model: FAILED - {exc}")
 
     try:
-        AutoProcessor.from_pretrained(str(config.segmenter_model_dir), trust_remote_code=True)
-        AutoModelForCTC.from_pretrained(str(config.segmenter_model_dir), trust_remote_code=True)
+        from transformers import AutoFeatureExtractor, AutoModelForAudioFrameClassification
+
+        AutoFeatureExtractor.from_pretrained(str(config.segmenter_model_dir))
+        AutoModelForAudioFrameClassification.from_pretrained(str(config.segmenter_model_dir))
         print("  Segmenter model: OK")
     except Exception as exc:
         print(f"  Segmenter model: FAILED - {exc}")

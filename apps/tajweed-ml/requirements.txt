@@ -11,6 +11,8 @@ librosa==0.10.2
 soundfile==0.12.1
 python-multipart==0.0.9
 pydantic>=2.8.0
+protobuf>=4.25.3
+recitations-segmenter
 xmltodict
 python-Levenshtein>=0.27.1
 fuzzysearch>=0.8.1

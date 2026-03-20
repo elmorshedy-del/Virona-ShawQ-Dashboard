@@ -34,16 +34,8 @@ def test_segment_audio_parses_word_timestamp_chunks(monkeypatch, tmp_path) -> No
     )
     monkeypatch.setattr(
         segmenter,
-        "_build_pipeline",
-        lambda: (
-            lambda _path, **_kwargs: {
-                "text": "بسم الله",
-                "chunks": [
-                    {"text": "بسم", "timestamp": (0.0, 0.42)},
-                    {"text": "الله", "timestamp": (0.42, 1.0)},
-                ],
-            }
-        ),
+        "_extract_segments",
+        lambda _path: ([(0.0, 0.42), (0.42, 1.0)], True),
     )
 
     payload = segmenter.segment_audio(audio_path, transcript_words=["بِسْمِ", "ٱللَّهِ"])
@@ -53,6 +45,7 @@ def test_segment_audio_parses_word_timestamp_chunks(monkeypatch, tmp_path) -> No
     assert payload["segments"][0]["text"] == "بسم"
     assert payload["segments"][1]["start_sec"] == 0.42
     assert payload["expected_word_count"] == 2
+    assert payload["exact_word_alignment"] is True
 
 
 class _FakeWaveform:

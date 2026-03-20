@@ -33,15 +33,15 @@ def download_segmenter_model(cache_dir: str | Path | None = None) -> dict[str, o
     resolved_cache_dir.mkdir(parents=True, exist_ok=True)
 
     huggingface_hub = require_dependency("huggingface_hub")
-    from transformers import AutoModelForCTC, AutoProcessor
+    from transformers import AutoFeatureExtractor, AutoModelForAudioFrameClassification
 
     huggingface_hub.snapshot_download(
         repo_id=config.segmenter_model_name,
         local_dir=str(resolved_cache_dir),
         resume_download=True,
     )
-    AutoProcessor.from_pretrained(str(resolved_cache_dir), trust_remote_code=True)
-    AutoModelForCTC.from_pretrained(str(resolved_cache_dir), trust_remote_code=True)
+    AutoFeatureExtractor.from_pretrained(str(resolved_cache_dir))
+    AutoModelForAudioFrameClassification.from_pretrained(str(resolved_cache_dir))
     return {
         "model_name": config.segmenter_model_name,
         "cache_dir": str(resolved_cache_dir.resolve()),
@@ -56,7 +56,7 @@ class RecitationSegmenter:
         self.config = load_config()
         self.model_name = model_name or self.config.segmenter_model_name
         self.device = "cuda" if device == "cuda" and torch.cuda.is_available() else "cpu"
-        self._pipeline = None
+        self._runtime = None
         self._load_error: str | None = None
 
     def _model_source(self) -> str:
@@ -70,42 +70,68 @@ class RecitationSegmenter:
             "device": self.device,
             "cached": self.config.segmenter_model_dir.exists(),
             "cache_dir": str(self.config.segmenter_model_dir),
-            "loaded": self._pipeline is not None,
+            "loaded": self._runtime is not None,
             "load_error": self._load_error,
         }
 
-    def _build_pipeline(self):
+    def _build_runtime(self):
         torch = require_dependency("torch")
-        from transformers import AutoModelForCTC, AutoProcessor, pipeline
+        require_dependency("protobuf", "protobuf")
+        from recitations_segmenter import clean_speech_intervals, read_audio, segment_recitations
+        from transformers import AutoFeatureExtractor, AutoModelForAudioFrameClassification
 
         source = self._model_source()
-        processor = AutoProcessor.from_pretrained(source, trust_remote_code=True)
-        model = AutoModelForCTC.from_pretrained(source, trust_remote_code=True)
-
-        kwargs: dict[str, object] = {
-            "task": "automatic-speech-recognition",
+        processor = AutoFeatureExtractor.from_pretrained(source)
+        model = AutoModelForAudioFrameClassification.from_pretrained(source)
+        dtype = torch.bfloat16 if self.device == "cuda" and torch.cuda.is_available() else torch.float32
+        device = torch.device(self.device)
+        model.to(device, dtype=dtype)
+        return {
+            "device": device,
+            "dtype": dtype,
+            "processor": processor,
             "model": model,
-            "device": 0 if self.device == "cuda" and torch.cuda.is_available() else -1,
+            "read_audio": read_audio,
+            "segment_recitations": segment_recitations,
+            "clean_speech_intervals": clean_speech_intervals,
         }
-        tokenizer = getattr(processor, "tokenizer", None)
-        feature_extractor = getattr(processor, "feature_extractor", None)
-        if tokenizer is not None:
-            kwargs["tokenizer"] = tokenizer
-        if feature_extractor is not None:
-            kwargs["feature_extractor"] = feature_extractor
-        elif tokenizer is None:
-            kwargs["tokenizer"] = processor
-        return pipeline(**kwargs)
 
-    def _ensure_pipeline(self):
-        if self._pipeline is not None:
-            return self._pipeline
+    def _ensure_runtime(self):
+        if self._runtime is not None:
+            return self._runtime
         try:
-            self._pipeline = self._build_pipeline()
+            self._runtime = self._build_runtime()
         except Exception as exc:
             self._load_error = str(exc)
             raise SegmenterUnavailableError(f"Unable to load segmenter: {exc}") from exc
-        return self._pipeline
+        return self._runtime
+
+    def _extract_segments(self, audio_path: Path) -> tuple[list[tuple[float, float]], bool]:
+        runtime = self._ensure_runtime()
+        outputs = runtime["segment_recitations"](
+            [runtime["read_audio"](str(audio_path))],
+            runtime["model"],
+            runtime["processor"],
+            device=runtime["device"],
+            dtype=runtime["dtype"],
+            batch_size=1,
+        )
+        if not outputs:
+            return [], False
+        output = outputs[0]
+        cleaned = runtime["clean_speech_intervals"](
+            output.speech_intervals,
+            output.is_complete,
+            min_silence_duration_ms=30,
+            min_speech_duration_ms=30,
+            pad_duration_ms=30,
+            return_seconds=True,
+        )
+        intervals = [
+            (float(start), float(end))
+            for start, end in getattr(cleaned, "clean_speech_intervals", []) or []
+        ]
+        return intervals, bool(getattr(cleaned, "is_complete", False))
 
     def segment_audio(
         self,
@@ -121,52 +147,48 @@ class RecitationSegmenter:
 
         waveform, sample_rate = load_audio(resolved_audio_path)
         duration_sec = waveform.shape[-1] / max(1, sample_rate)
-
-        asr_pipeline = self._ensure_pipeline()
-        try:
-            raw = asr_pipeline(
-                str(resolved_audio_path),
-                return_timestamps="word",
-                chunk_length_s=chunk_length_s,
-                stride_length_s=stride_length_s,
-            )
-        except TypeError:
-            raw = asr_pipeline(str(resolved_audio_path))
-
-        if not isinstance(raw, dict):
-            raw = {"text": str(raw)}
-
-        chunks = raw.get("chunks", [])
         segments: list[dict[str, object]] = []
-        if isinstance(chunks, list):
-            for index, chunk in enumerate(chunks):
-                if not isinstance(chunk, dict):
-                    continue
-                start_sec, end_sec = _chunk_timestamp(chunk)
-                segments.append(
-                    {
-                        "index": index,
-                        "text": _normalize_text(chunk.get("text")),
-                        "start_sec": start_sec,
-                        "end_sec": end_sec,
-                    }
-                )
+        intervals, is_complete = self._extract_segments(resolved_audio_path)
+        exact_word_alignment = transcript_words is not None and len(transcript_words) == len(intervals)
+        merged_text = " ".join(transcript_words or [])
+        for index, (start_sec, end_sec) in enumerate(intervals):
+            text = ""
+            if transcript_words:
+                if exact_word_alignment:
+                    text = transcript_words[index]
+                elif len(intervals) == 1:
+                    text = merged_text
+            segments.append(
+                {
+                    "index": index,
+                    "text": _normalize_text(text),
+                    "start_sec": start_sec,
+                    "end_sec": end_sec,
+                }
+            )
 
         payload: dict[str, object] = {
             "audio_path": str(resolved_audio_path),
             "audio_duration_sec": round(duration_sec, 3),
             "model_name": self.model_name,
             "model_source": self._model_source(),
-            "text": _normalize_text(raw.get("text")),
+            "text": _normalize_text(merged_text),
             "segments": segments,
             "segment_count": len(segments),
             "segments_available": bool(segments),
+            "is_complete": is_complete,
+            "mode": "pause-segmentation",
+            "chunk_length_s": chunk_length_s,
+            "stride_length_s": stride_length_s,
         }
         if transcript_words is not None:
             payload["expected_words"] = transcript_words
             payload["expected_word_count"] = len(transcript_words)
+            payload["exact_word_alignment"] = exact_word_alignment
         if not segments:
-            payload["detail"] = "Segmenter returned transcript output without word timestamps"
+            payload["detail"] = "Segmenter returned no pause intervals"
+        elif transcript_words is not None and not exact_word_alignment:
+            payload["detail"] = "Pause intervals detected, but they do not map one-to-one to expected words"
         return payload
 
 
