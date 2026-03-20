@@ -1,0 +1,234 @@
+[
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_0_combined_857.wav",
+    "label": 0,
+    "letter": "ص",
+    "word": "بالخنس",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_1_original_720.wav",
+    "label": 1,
+    "letter": "س",
+    "word": "سفره",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_1_combined_773.wav",
+    "label": 1,
+    "letter": "س",
+    "word": "وصاحبته",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_1_noise_15_669.wav",
+    "label": 1,
+    "letter": "س",
+    "word": "يسالونك",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_1_original_354.wav",
+    "label": 1,
+    "letter": "س",
+    "word": "الناس",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_1_noise_15_81.wav",
+    "label": 1,
+    "letter": "س",
+    "word": "بسم",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_0_original_1158.wav",
+    "label": 0,
+    "letter": "ص",
+    "word": "صدرك",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_0_speed_1.1_1142.wav",
+    "label": 0,
+    "letter": "ص",
+    "word": "موصده",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_0_speed_0.9_1033.wav",
+    "label": 0,
+    "letter": "ص",
+    "word": "فصلي",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_0_formant_22.wav",
+    "label": 0,
+    "letter": "ص",
+    "word": "المستقيم",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_0_noise_15_1029.wav",
+    "label": 0,
+    "letter": "ص",
+    "word": "يصلي",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_1_formant_976.wav",
+    "label": 1,
+    "letter": "س",
+    "word": "ويصلي",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_1_original_708.wav",
+    "label": 1,
+    "letter": "س",
+    "word": "يسعي",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_0_speed_1.1_248.wav",
+    "label": 0,
+    "letter": "ص",
+    "word": "فصل",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_1_original_534.wav",
+    "label": 1,
+    "letter": "س",
+    "word": "السماوات",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_1_noise_15_597.wav",
+    "label": 1,
+    "letter": "س",
+    "word": "بالساهره",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_0_speed_1.1_26.wav",
+    "label": 0,
+    "letter": "ص",
+    "word": "صراط",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_0_formant_958.wav",
+    "label": 0,
+    "letter": "ص",
+    "word": "بسم",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_0_noise_15_1143.wav",
+    "label": 0,
+    "letter": "ص",
+    "word": "موصده",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_1_speed_1.1_812.wav",
+    "label": 1,
+    "letter": "س",
+    "word": "النفوس",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_0_combined_413.wav",
+    "label": 0,
+    "letter": "ص",
+    "word": "بسم",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_1_speed_1.1_386.wav",
+    "label": 1,
+    "letter": "س",
+    "word": "يوسوس",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_0_combined_659.wav",
+    "label": 0,
+    "letter": "ص",
+    "word": "سعي",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_1_noise_15_927.wav",
+    "label": 1,
+    "letter": "س",
+    "word": "فسواك",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_0_speed_1.1_392.wav",
+    "label": 0,
+    "letter": "ص",
+    "word": "صدور",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_1_speed_0.9_775.wav",
+    "label": 1,
+    "letter": "س",
+    "word": "مسفره",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_1_noise_15_159.wav",
+    "label": 1,
+    "letter": "س",
+    "word": "يحسب",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_0_speed_0.9_583.wav",
+    "label": 0,
+    "letter": "ص",
+    "word": "ابصارها",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/saad_vs_seen/label_0_formant_724.wav",
+    "label": 0,
+    "letter": "ص",
+    "word": "سفره",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  }
+]

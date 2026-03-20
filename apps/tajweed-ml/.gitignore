@@ -1,0 +1,16 @@
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+artifacts/
+dist/
+build/
+*.pt
+*.safetensors
+ml/models/
+ml/vendor/
+audio/words/
+frontend/node_modules/
+frontend/dist/
+tmp/

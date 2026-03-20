@@ -1,0 +1,386 @@
+[
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_pitch_shift_1.5_1053.wav",
+    "label": 0,
+    "letter": "فتخشي",
+    "word": "فتخشي",
+    "source": "husary_augmented",
+    "augmentation": "pitch_shift_1.5"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_noise_15_1296.wav",
+    "label": 1,
+    "letter": "الارض",
+    "word": "الارض",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_formant_shift_300_1276.wav",
+    "label": 0,
+    "letter": "صببنا",
+    "word": "صببنا",
+    "source": "husary_augmented",
+    "augmentation": "formant_shift_300"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_formant_shift_300_416.wav",
+    "label": 0,
+    "letter": "الموقده",
+    "word": "الموقده",
+    "source": "husary_augmented",
+    "augmentation": "formant_shift_300"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_speed_1.1_1106.wav",
+    "label": 1,
+    "letter": "واخرج",
+    "word": "واخرج",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_formant_shift_300_1346.wav",
+    "label": 0,
+    "letter": "اخيه",
+    "word": "اخيه",
+    "source": "husary_augmented",
+    "augmentation": "formant_shift_300"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_noise_15_84.wav",
+    "label": 1,
+    "letter": "قدحا",
+    "word": "قدحا",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_speed_0.9_776.wav",
+    "label": 1,
+    "letter": "يذوقون",
+    "word": "يذوقون",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_noise_15_186.wav",
+    "label": 1,
+    "letter": "القارعه",
+    "word": "القارعه",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_speed_1.1_1162.wav",
+    "label": 1,
+    "letter": "يخشاها",
+    "word": "يخشاها",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_noise_15_23.wav",
+    "label": 1,
+    "letter": "الصراط",
+    "word": "الصراط",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_speed_0.9_713.wav",
+    "label": 1,
+    "letter": "المعصرات",
+    "word": "المعصرات",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_formant_noise_1110.wav",
+    "label": 0,
+    "letter": "واخرج",
+    "word": "واخرج",
+    "source": "husary_augmented",
+    "augmentation": "formant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_formant_shift_300_870.wav",
+    "label": 0,
+    "letter": "صفا",
+    "word": "صفا",
+    "source": "husary_augmented",
+    "augmentation": "formant_shift_300"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_original_294.wav",
+    "label": 1,
+    "letter": "اليقين",
+    "word": "اليقين",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_formant_shift_300_164.wav",
+    "label": 0,
+    "letter": "الصدور",
+    "word": "الصدور",
+    "source": "husary_augmented",
+    "augmentation": "formant_shift_300"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_formant_shift_300_926.wav",
+    "label": 0,
+    "letter": "ويقول",
+    "word": "ويقول",
+    "source": "husary_augmented",
+    "augmentation": "formant_shift_300"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_speed_0.9_35.wav",
+    "label": 1,
+    "letter": "صراط",
+    "word": "صراط",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_orig_302.wav",
+    "label": 0,
+    "letter": "لتسالن",
+    "word": "لتسالن",
+    "source": "husary_light",
+    "augmentation": "noise_30"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_formant_shift_300_471.wav",
+    "label": 0,
+    "letter": "طيرا",
+    "word": "طيرا",
+    "source": "husary_augmented",
+    "augmentation": "formant_shift_300"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_pitch_shift_1.5_675.wav",
+    "label": 0,
+    "letter": "صدور",
+    "word": "صدور",
+    "source": "husary_augmented",
+    "augmentation": "pitch_shift_1.5"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_original_1307.wav",
+    "label": 1,
+    "letter": "وقضبا",
+    "word": "وقضبا",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_pitch_shift_1.5_710.wav",
+    "label": 0,
+    "letter": "فوقكم",
+    "word": "فوقكم",
+    "source": "husary_augmented",
+    "augmentation": "pitch_shift_1.5"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_formant_noise_1103.wav",
+    "label": 0,
+    "letter": "واغطش",
+    "word": "واغطش",
+    "source": "husary_augmented",
+    "augmentation": "formant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_original_516.wav",
+    "label": 1,
+    "letter": "طعام",
+    "word": "طعام",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_formant_noise_40.wav",
+    "label": 0,
+    "letter": "صراط",
+    "word": "صراط",
+    "source": "husary_augmented",
+    "augmentation": "formant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_pitch_shift_1.5_165.wav",
+    "label": 0,
+    "letter": "الصدور",
+    "word": "الصدور",
+    "source": "husary_augmented",
+    "augmentation": "pitch_shift_1.5"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_noise_15_98.wav",
+    "label": 1,
+    "letter": "صبحا",
+    "word": "صبحا",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_formant_shift_300_92.wav",
+    "label": 0,
+    "letter": "فالمغيرات",
+    "word": "فالمغيرات",
+    "source": "husary_augmented",
+    "augmentation": "formant_shift_300"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_noise_15_981.wav",
+    "label": 1,
+    "letter": "خاشعه",
+    "word": "خاشعه",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_speed_1.1_29.wav",
+    "label": 1,
+    "letter": "المستقيم",
+    "word": "المستقيم",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_pitch_shift_1.5_1340.wav",
+    "label": 0,
+    "letter": "الصاخه",
+    "word": "الصاخه",
+    "source": "husary_augmented",
+    "augmentation": "pitch_shift_1.5"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_original_1384.wav",
+    "label": 1,
+    "letter": "قتره",
+    "word": "قتره",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_speed_0.9_1000.wav",
+    "label": 1,
+    "letter": "نخره",
+    "word": "نخره",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_noise_15_1212.wav",
+    "label": 1,
+    "letter": "قتل",
+    "word": "قتل",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_noise_15_1261.wav",
+    "label": 1,
+    "letter": "فلينظر",
+    "word": "فلينظر",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_formant_noise_1131.wav",
+    "label": 0,
+    "letter": "اخرج",
+    "word": "اخرج",
+    "source": "husary_augmented",
+    "augmentation": "formant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_noise_15_107.wav",
+    "label": 1,
+    "letter": "نقعا",
+    "word": "نقعا",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_formant_shift_300_1192.wav",
+    "label": 0,
+    "letter": "يخشي",
+    "word": "يخشي",
+    "source": "husary_augmented",
+    "augmentation": "formant_shift_300"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_noise_15_1359.wav",
+    "label": 1,
+    "letter": "يغنيه",
+    "word": "يغنيه",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_formant_noise_711.wav",
+    "label": 0,
+    "letter": "فوقكم",
+    "word": "فوقكم",
+    "source": "husary_augmented",
+    "augmentation": "formant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_speed_0.9_1007.wav",
+    "label": 1,
+    "letter": "قالوا",
+    "word": "قالوا",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_pitch_shift_1.5_436.wav",
+    "label": 0,
+    "letter": "موصده",
+    "word": "موصده",
+    "source": "husary_augmented",
+    "augmentation": "pitch_shift_1.5"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_formant_shift_300_1010.wav",
+    "label": 0,
+    "letter": "قالوا",
+    "word": "قالوا",
+    "source": "husary_augmented",
+    "augmentation": "formant_shift_300"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_formant_noise_1348.wav",
+    "label": 0,
+    "letter": "اخيه",
+    "word": "اخيه",
+    "source": "husary_augmented",
+    "augmentation": "formant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_original_219.wav",
+    "label": 1,
+    "letter": "ثقلت",
+    "word": "ثقلت",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/light_orig_10.wav",
+    "label": 0,
+    "letter": "ن",
+    "word": "ن",
+    "source": "husary_light",
+    "augmentation": "noise_30"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/tafkheem_augmented/heavy_speed_0.9_755.wav",
+    "label": 1,
+    "letter": "مرصادا",
+    "word": "مرصادا",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  }
+]

@@ -1,0 +1,234 @@
+[
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_0_speed_1.1_752.wav",
+    "label": 0,
+    "letter": "ح",
+    "word": "الحطب",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_1_formant_70.wav",
+    "label": 1,
+    "letter": "ه",
+    "word": "الرحم",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_1_speed_0.9_793.wav",
+    "label": 1,
+    "letter": "ه",
+    "word": "الله",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_1_speed_0.9_403.wav",
+    "label": 1,
+    "letter": "ه",
+    "word": "الافيده",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_1_speed_1.1_326.wav",
+    "label": 1,
+    "letter": "ه",
+    "word": "الله",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_1_noise_15_873.wav",
+    "label": 1,
+    "letter": "ه",
+    "word": "ه",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_0_speed_1.1_1094.wav",
+    "label": 0,
+    "letter": "ح",
+    "word": "الرحيم",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_0_formant_118.wav",
+    "label": 0,
+    "letter": "ح",
+    "word": "وانه",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_0_combined_881.wav",
+    "label": 0,
+    "letter": "ح",
+    "word": "الجنه",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_0_original_132.wav",
+    "label": 0,
+    "letter": "ح",
+    "word": "لحب",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_0_noise_15_75.wav",
+    "label": 0,
+    "letter": "ح",
+    "word": "الرحيم",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_1_speed_0.9_205.wav",
+    "label": 1,
+    "letter": "ه",
+    "word": "فهو",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_1_original_390.wav",
+    "label": 1,
+    "letter": "ه",
+    "word": "الله",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_0_noise_15_765.wav",
+    "label": 0,
+    "letter": "ح",
+    "word": "حبل",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_1_combined_551.wav",
+    "label": 1,
+    "letter": "ه",
+    "word": "الرحيم",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_1_speed_0.9_355.wav",
+    "label": 1,
+    "letter": "ه",
+    "word": "وعدده",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_0_formant_46.wav",
+    "label": 0,
+    "letter": "ح",
+    "word": "اهدنا",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_0_formant_1012.wav",
+    "label": 0,
+    "letter": "ح",
+    "word": "فيها",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_0_noise_15_1347.wav",
+    "label": 0,
+    "letter": "ح",
+    "word": "الجحيم",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_1_speed_1.1_872.wav",
+    "label": 1,
+    "letter": "ه",
+    "word": "ه",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_0_combined_701.wav",
+    "label": 0,
+    "letter": "ح",
+    "word": "الله",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_1_combined_1307.wav",
+    "label": 1,
+    "letter": "ه",
+    "word": "ضاحكه",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_0_speed_1.1_476.wav",
+    "label": 0,
+    "letter": "ح",
+    "word": "بحجاره",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_1_noise_15_189.wav",
+    "label": 1,
+    "letter": "ه",
+    "word": "القارعه",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_0_formant_436.wav",
+    "label": 0,
+    "letter": "ح",
+    "word": "الله",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_1_speed_0.9_559.wav",
+    "label": 1,
+    "letter": "ه",
+    "word": "هم",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_1_original_948.wav",
+    "label": 1,
+    "letter": "ه",
+    "word": "جهنم",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_0_noise_15_1239.wav",
+    "label": 0,
+    "letter": "ح",
+    "word": "دحاها",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/haa_vs_ha/label_0_original_1308.wav",
+    "label": 0,
+    "letter": "ح",
+    "word": "الرحم",
+    "source": "husary",
+    "augmentation": "original"
+  }
+]

@@ -1,0 +1,1306 @@
+[
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_700.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "لك",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_original_240.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "المسكين",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_original_252.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "الكوثر",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_322.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "يكن",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_original_654.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "كنا",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_925.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "فقدره",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_319.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "يكن",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_193.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "كيف",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_noise_15_861.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "يزكي",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_850.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "الذكري",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_205.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "كيدهم",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_original_186.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "الموقده",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_original_804.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "يسالونك",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_combined_611.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "ويقول",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_original_1086.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "صاحبكم",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_original_744.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "نكال",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_combined_1079.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "قوه",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_1.1_1112.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "ذكر",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_79.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "يكون",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_noise_15_405.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "فوقكم",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_499.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "نزيدكم",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_331.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "قل",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_noise_15_1341.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "الوقود",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_combined_971.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "وحدايق",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_combined_1265.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "وحقت",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_889.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "مكرمه",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_1.1_842.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "يذكر",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_combined_1163.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "خلقك",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_1.1_500.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "نزيدكم",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_1.1_932.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "فاقبره",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_combined_1289.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "بالشفق",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_424.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "فكانت",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_199.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "ربك",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_formant_454.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "وغساقا",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_noise_15_1425.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "خلق",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_noise_15_27.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "قدحا",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_1423.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "خلق",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_1.1_242.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "المسكين",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_formant_346.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "خلق",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_original_1092.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "ولقد",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_combined_29.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "قدحا",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_1.1_1040.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "قتلت",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_combined_917.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "خلقه",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_223.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "قريش",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_original_1272.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "وينقلب",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_637.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "سبقا",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_original_1026.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "كورت",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_noise_15_1401.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "دافق",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_988.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "ولانعامكم",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_noise_15_1257.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "والقت",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_1081.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "مكين",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_940.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "كلا",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_original_1380.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "الثاقب",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_1.1_524.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "وكاسا",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_original_1302.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "اتسق",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_505.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "للمتقين",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_388.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "كلا",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_421.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "فكانت",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_noise_15_1209.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "يسقون",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_1.1_1226.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "انقلبوا",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_31.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "نقعا",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_noise_15_1329.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "القران",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_original_1374.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "الطارق",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_noise_15_1287.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "بالشفق",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_562.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "والملايكه",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_1132.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "الكواكب",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_original_918.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "خلقه",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_noise_15_693.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "فقل",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_1231.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "انقلبوا",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_formant_640.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "سبقا",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_856.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "عليك",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_noise_15_237.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "فذلك",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_979.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "لكم",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_1.1_962.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "وقضبا",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_original_924.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "فقدره",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_original_222.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "قريش",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_noise_15_255.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "الكوثر",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_1087.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "صاحبكم",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_combined_413.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "كان",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_combined_1025.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "الكفره",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_1.1_434.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "كانت",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_286.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "لكم",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_formant_1288.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "بالشفق",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_661.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "قالوا",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_259.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "لربك",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_combined_263.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "لربك",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_1.1_56.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "القارعه",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_formant_1258.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "والقت",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_1.1_488.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "كتابا",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_391.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "وخلقناكم",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_noise_15_1011.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "قتره",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_1189.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "يقال",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_751.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "ذلك",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_1195.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "مرقوم",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_combined_1403.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "دافق",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_original_702.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "تزكي",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_886.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "ذكره",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_combined_959.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "شقا",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_10.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "اياك",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_noise_15_39.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "لكنود",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_noise_15_453.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "وغساقا",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_original_210.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "كعصف",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_1.1_158.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "اليقين",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_1.1_458.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "وفاقا",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_1.1_416.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "ميقاتا",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_original_1020.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "الكفره",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_1030.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "كورت",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_571.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "وقال",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_1147.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "غرك",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_1.1_716.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "ربك",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_910.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "اكفره",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_formant_1264.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "وحقت",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_1.1_146.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "كلا",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_original_1236.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "قالوا",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_original_24.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "قدحا",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_formant_1354.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "نقموا",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_1.1_20.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "المستقيم",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_85.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "كالفراش",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_1.1_1346.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "قعود",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_combined_17.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "واياك",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_1291.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "وسق",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_formant_496.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "فذوقوا",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_400.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "نومكم",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_noise_15_897.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "كرام",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_1.1_32.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "نقعا",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_1.1_632.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "فالسابقات",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_1057.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "الكنس",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_1.1_230.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "يكذب",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_combined_467.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "كانوا",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_1.1_1046.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "كشطت",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_original_1176.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "قال",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_formant_190.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "الموقده",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_noise_15_1047.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "كشطت",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_1.1_1268.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "فملاقيه",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_formant_1378.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "الطارق",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_1123.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "يستقيم",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_781.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "ولانعامكم",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_noise_15_561.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "والملايكه",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_565.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "يتكلمون",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_original_612.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "الكافر",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_769.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "ذلك",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_original_1218.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "المقربون",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_901.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "قتل",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_1.1_164.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "بالحق",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_formant_646.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "قلوب",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_original_66.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "ادراك",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_1351.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "نقموا",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_1.1_362.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "العقد",
+    "source": "husary",
+    "augmentation": "speed_1.1"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_133.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "كلا",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_combined_1397.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "خلق",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_combined_1415.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "قوه",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_613.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "الكافر",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_noise_15_267.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "شانيك",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_speed_0.9_1009.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "قتره",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_noise_15_45.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "ذلك",
+    "source": "husary",
+    "augmentation": "noise_15"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_combined_539.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "كذابا",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_combined_77.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "القارعه",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_0_formant_202.wav",
+    "label": 0,
+    "letter": "ق",
+    "word": "ربك",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_combined_449.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "يذوقون",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_combined_1205.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "المقربون",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant_noise"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_formant_586.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "الحق",
+    "source": "husary_augmented",
+    "augmentation": "confusion_variant"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_original_990.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "لكل",
+    "source": "husary",
+    "augmentation": "original"
+  },
+  {
+    "audio_path": "/Users/ahmedelmorshedy/Downloads/dashboard-full/virona-shawq-dashboard/apps/tajweed-ml/data/confusion_pairs/qaaf_vs_kaaf/label_1_speed_0.9_763.wav",
+    "label": 1,
+    "letter": "ك",
+    "word": "سمكها",
+    "source": "husary",
+    "augmentation": "speed_0.9"
+  }
+]

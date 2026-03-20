@@ -2,8 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 ENV PYTHONPATH=/app/src:/app
-ENV TAJWEED_ML_PRELOAD_MUAALEM=1
-ENV TAJWEED_ML_PRELOAD_SEGMENTER=0
+ENV TAJWEED_ML_PRELOAD_MUAALEM=0
+ENV TAJWEED_ML_PRELOAD_SEGMENTER=1
 
 RUN apt-get update && apt-get install -y \
     libsndfile1 ffmpeg \
@@ -23,10 +23,10 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# The main backend image preloads only Muaalem.
+# The dedicated segmenter image preloads only the segmenter model.
 RUN python -c "from ml.setup import setup_runtime_models; setup_runtime_models()"
 
 EXPOSE 8000
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "server.segmenter_main:app", "--host", "0.0.0.0", "--port", "8000"]

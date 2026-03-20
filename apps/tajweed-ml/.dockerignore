@@ -1,0 +1,20 @@
+.venv
+.pytest_cache
+__pycache__
+.git
+.github
+.gcloudignore
+artifacts
+dist
+build
+*.pt
+*.pyc
+tests
+Legacy Training
+tmp
+frontend/node_modules
+frontend/dist
+audio/husary/raw
+data/buraaq/words
+ml/models
+ml/vendor

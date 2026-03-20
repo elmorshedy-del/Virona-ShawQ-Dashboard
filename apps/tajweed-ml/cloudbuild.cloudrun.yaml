@@ -1,0 +1,60 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    dir: ${_CONTEXT_DIR}
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}
+      - -f
+      - ${_DOCKERFILE}
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    dir: ${_CONTEXT_DIR}
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}
+      - --region
+      - ${_REGION}
+      - --gpu
+      - "1"
+      - --gpu-type
+      - ${_GPU_TYPE}
+      - --cpu
+      - ${_CPU}
+      - --memory
+      - ${_MEMORY}
+      - --concurrency
+      - "1"
+      - --timeout
+      - "3600"
+      - --min-instances
+      - ${_MIN_INSTANCES}
+      - --max-instances
+      - ${_MAX_INSTANCES}
+      - --allow-unauthenticated
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}
+
+substitutions:
+  _REGION: us-east4
+  _SERVICE: quran-ai-backend
+  _REPOSITORY: quran-ai
+  _IMAGE: quran-ai-backend
+  _DOCKERFILE: Dockerfile
+  _CONTEXT_DIR: .
+  _GPU_TYPE: nvidia-l4
+  _CPU: "8"
+  _MEMORY: 32Gi
+  _MIN_INSTANCES: "0"
+  _MAX_INSTANCES: "1"
