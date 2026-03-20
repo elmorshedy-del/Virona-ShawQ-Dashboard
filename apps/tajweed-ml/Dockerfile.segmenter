@@ -29,4 +29,4 @@ RUN python -c "from ml.setup import setup_runtime_models; setup_runtime_models()
 EXPOSE 8000
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["uvicorn", "server.segmenter_main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn server.segmenter_main:app --host 0.0.0.0 --port ${PORT:-8000}"]
