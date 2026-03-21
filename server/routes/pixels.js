@@ -18,7 +18,7 @@ const MAX_WINDOW_SECONDS = 1800;
 const LIVE_STATE_GC_MULTIPLIER = 6; // keep some buffer beyond the visible window
 
 const PIXEL_SCRIPT_CACHE_SECONDS = 300; // keep short so we can ship fixes quickly
-const PIXEL_SCRIPT_VERSION = 'virona-pixel-v2';
+const PIXEL_SCRIPT_VERSION = 'virona-pixel-v3';
 
 const LIVE_DB_BOOTSTRAP_TTL_MS = 60 * 1000;
 const liveDbBootstrapByKey = new Map();
@@ -63,8 +63,21 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
   var RAGE_CLICK_MIN_CLICKS = 3;
   var RAGE_CLICK_RADIUS_PX = 30;
   var MEANINGFUL_ACTION_MAX_AGE_MS = 10 * 60 * 1000;
+  var INITIAL_PRODUCT_STATE_EXPOSE_DELAY_MS = 400;
+  var PRODUCT_STATE_EXPOSE_DEBOUNCE_MS = 400;
   var SCROLL_BUCKETS = [25, 50, 75, 90];
   var MAX_STRING = 240;
+  var PRODUCT_HANDLE_SEGMENT_INDEX = 1;
+  var MAX_OPTION_ENTRIES = 8;
+  var PRODUCT_FORM_SELECTOR = 'form[action*=\"/cart/add\"]';
+  var PRODUCT_VARIANT_INPUT_SELECTOR = 'input[name=\"id\"], select[name=\"id\"]';
+  var ADD_TO_CART_BUTTON_SELECTOR = 'button[name=\"add\"], [name=\"add\"], [data-add-to-cart], [data-product-atc], form[action*=\"/cart/add\"] button, form[action*=\"/cart/add\"] [type=\"submit\"], button[id*=\"AddToCart\"]';
+  var UNAVAILABLE_CLASS_HINTS = ['soldout', 'sold-out', 'out-of-stock', 'unavailable', 'disabled'];
+  var SIZE_OPTION_HINTS = ['size', 'talla', 'taille', 'taglia', 'misura', 'maat', 'groesse', 'tamano', 'tamanho'];
+  var COLOR_OPTION_HINTS = ['color', 'colour', 'couleur'];
+  var SOLD_OUT_HINTS = ['sold out', 'out of stock', 'unavailable'];
+  var PREORDER_HINTS = ['preorder', 'pre-order'];
+  var BACKORDER_HINTS = ['backorder', 'back-order'];
 
   function safeString(value, max) {
     try {
@@ -293,6 +306,10 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
   var tabId = getOrCreateTabId();
   var eventSequence = 0;
   var lastMeaningfulAction = null;
+  var pageStartMs = Date.now();
+  var lastObservedProductState = null;
+  var lastExposedProductStateSignature = '';
+  var lastProductStateExposeAtMs = 0;
 
   function sessionContext() {
     // Refresh session id if we went idle.
@@ -370,6 +387,386 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
     } catch (_e) {
       return '';
     }
+  }
+
+  function normalizeHintText(value) {
+    return safeString(value, 240).replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  function includesHint(haystack, hints) {
+    if (!haystack) return false;
+    for (var index = 0; index < hints.length; index += 1) {
+      if (haystack.indexOf(hints[index]) >= 0) return true;
+    }
+    return false;
+  }
+
+  function isProductPagePath(path) {
+    return safeString(path, 500).toLowerCase().indexOf('/products/') >= 0;
+  }
+
+  function extractProductHandle(path) {
+    var normalizedPath = safeString(path, 500);
+    if (!normalizedPath) return null;
+    var segments = normalizedPath.split('/products/');
+    if (segments.length <= PRODUCT_HANDLE_SEGMENT_INDEX) return null;
+    var tail = segments[PRODUCT_HANDLE_SEGMENT_INDEX].split(/[?#]/)[0];
+    return safeString(tail.split('/')[0], 160) || null;
+  }
+
+  function readMetaContent(selector) {
+    try {
+      var node = document.querySelector(selector);
+      if (!node || !node.getAttribute) return '';
+      return safeString(node.getAttribute('content') || '', 160);
+    } catch (_e) {
+      return '';
+    }
+  }
+
+  function findProductForm(target) {
+    var fromTarget = closestMatching(target, PRODUCT_FORM_SELECTOR);
+    if (fromTarget) return fromTarget;
+    try {
+      return document.querySelector(PRODUCT_FORM_SELECTOR);
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function readProductMeta() {
+    try {
+      var candidates = [
+        window.ShopifyAnalytics && window.ShopifyAnalytics.meta && window.ShopifyAnalytics.meta.product,
+        window.meta && window.meta.product,
+        window.Shopify && window.Shopify.product,
+        window.__product
+      ];
+      for (var index = 0; index < candidates.length; index += 1) {
+        var candidate = candidates[index];
+        if (candidate && typeof candidate === 'object') return candidate;
+      }
+    } catch (_e) {}
+    return null;
+  }
+
+  function normalizeOptionKey(rawKey) {
+    var hint = normalizeHintText(rawKey);
+    if (!hint) return null;
+    if (includesHint(hint, SIZE_OPTION_HINTS)) return 'size';
+    if (includesHint(hint, COLOR_OPTION_HINTS)) return 'color';
+    return safeString(hint.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''), 80) || null;
+  }
+
+  function findFieldsetLegendText(el) {
+    try {
+      var fieldset = el && el.closest ? el.closest('fieldset') : null;
+      if (!fieldset) return '';
+      var legend = fieldset.querySelector('legend');
+      return legend ? elementText(legend) : '';
+    } catch (_e) {
+      return '';
+    }
+  }
+
+  function getOptionLabel(el) {
+    if (!el) return '';
+    var explicit = getFieldLabel(el);
+    if (explicit) return explicit;
+    var legend = findFieldsetLegendText(el);
+    if (legend) return legend;
+    try {
+      var dataOptionName = safeString(el.getAttribute && el.getAttribute('data-option-name'), 120);
+      if (dataOptionName) return dataOptionName;
+      var dataName = safeString(el.getAttribute && el.getAttribute('data-name'), 120);
+      if (dataName) return dataName;
+      var ariaLabel = safeString(el.getAttribute && el.getAttribute('aria-label'), 120);
+      if (ariaLabel) return ariaLabel;
+      var name = safeString(el.name, 120);
+      if (name) return name;
+      var id = safeString(el.id, 120);
+      if (id) return id;
+    } catch (_e) {}
+    return '';
+  }
+
+  function isSizeOptionHint(hint) {
+    return includesHint(normalizeHintText(hint), SIZE_OPTION_HINTS);
+  }
+
+  function isColorOptionHint(hint) {
+    return includesHint(normalizeHintText(hint), COLOR_OPTION_HINTS);
+  }
+
+  function readFieldHint(el, labelText) {
+    return [
+      safeString(el && el.name, 120),
+      safeString(el && el.id, 120),
+      safeString(el && el.getAttribute && el.getAttribute('data-option-name'), 120),
+      safeString(el && el.getAttribute && el.getAttribute('data-name'), 120),
+      safeString(el && el.getAttribute && el.getAttribute('aria-label'), 120),
+      labelText,
+      findFieldsetLegendText(el)
+    ].join(' ');
+  }
+
+  function collectSelectedOptionMap(form) {
+    if (!form || !form.querySelectorAll) return null;
+    var optionMap = {};
+    try {
+      var fields = form.querySelectorAll('select, input[type=\"radio\"]:checked');
+      for (var index = 0; index < fields.length && Object.keys(optionMap).length < MAX_OPTION_ENTRIES; index += 1) {
+        var field = fields[index];
+        var labelText = getOptionLabel(field);
+        var key = normalizeOptionKey(labelText || field.name || field.id || ('option_' + index));
+        if (!key) continue;
+        var value = '';
+        if (typeof field.value !== 'undefined') value = safeString(field.value, 120);
+        if (!value) value = elementText(field);
+        if (!value && field.options && field.selectedIndex >= 0) {
+          value = safeString(field.options[field.selectedIndex] && field.options[field.selectedIndex].text, 120);
+        }
+        if (!value) continue;
+        optionMap[key] = value;
+      }
+    } catch (_e) {
+      return null;
+    }
+    return Object.keys(optionMap).length ? optionMap : null;
+  }
+
+  function readCurrentVariantId(form, productMeta, target) {
+    var candidates = [];
+    try {
+      if (target && target.getAttribute) {
+        candidates.push(target.getAttribute('data-variant-id'));
+        candidates.push(target.getAttribute('data-product-variant-id'));
+      }
+    } catch (_e) {}
+    try {
+      if (form && form.querySelector) {
+        var input = form.querySelector(PRODUCT_VARIANT_INPUT_SELECTOR);
+        if (input && typeof input.value !== 'undefined') candidates.push(input.value);
+      }
+    } catch (_e2) {}
+    candidates.push(productMeta && productMeta.selectedVariantId);
+    candidates.push(productMeta && productMeta.selected_or_first_available_variant && productMeta.selected_or_first_available_variant.id);
+    candidates.push(productMeta && productMeta.selectedVariant && productMeta.selectedVariant.id);
+    for (var index = 0; index < candidates.length; index += 1) {
+      var candidate = safeString(candidates[index], 80);
+      if (candidate) return candidate;
+    }
+    return null;
+  }
+
+  function findVariantFromProductMeta(productMeta, variantId) {
+    if (!productMeta || !Array.isArray(productMeta.variants) || !variantId) return null;
+    for (var index = 0; index < productMeta.variants.length; index += 1) {
+      var variant = productMeta.variants[index];
+      if (safeString(variant && variant.id, 80) === variantId) return variant;
+    }
+    return null;
+  }
+
+  function readAddToCartButton(form) {
+    try {
+      if (form && form.querySelector) {
+        return form.querySelector(ADD_TO_CART_BUTTON_SELECTOR);
+      }
+      return document.querySelector(ADD_TO_CART_BUTTON_SELECTOR);
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function detectInventoryHint(text) {
+    var normalizedText = normalizeHintText(text);
+    if (!normalizedText) return null;
+    if (includesHint(normalizedText, SOLD_OUT_HINTS)) return 'sold_out';
+    if (includesHint(normalizedText, PREORDER_HINTS)) return 'preorder';
+    if (includesHint(normalizedText, BACKORDER_HINTS)) return 'backorder';
+    return null;
+  }
+
+  function inferAvailabilityState(form, optionTarget, productMetaVariant) {
+    if (productMetaVariant && typeof productMetaVariant.available === 'boolean') {
+      return {
+        availabilityState: productMetaVariant.available ? 'in_stock' : 'out_of_stock',
+        inventoryHint: productMetaVariant.available ? 'in_stock' : 'sold_out',
+        stateSource: 'shopify_meta'
+      };
+    }
+
+    var disabled = false;
+    var unavailableHint = null;
+
+    try {
+      if (optionTarget) {
+        disabled = !!optionTarget.disabled || safeString(optionTarget.getAttribute && optionTarget.getAttribute('aria-disabled'), 16) === 'true';
+        var optionText = normalizeHintText(elementText(optionTarget) || safeString(optionTarget.value, 120) || safeString(optionTarget.getAttribute && optionTarget.getAttribute('aria-label'), 120));
+        unavailableHint = detectInventoryHint(optionText);
+        if (!disabled && optionTarget.className) {
+          var classHint = normalizeHintText(optionTarget.className);
+          disabled = includesHint(classHint, UNAVAILABLE_CLASS_HINTS);
+        }
+      }
+    } catch (_e) {}
+
+    if (disabled || unavailableHint === 'sold_out') {
+      return {
+        availabilityState: 'out_of_stock',
+        inventoryHint: unavailableHint || 'sold_out',
+        stateSource: 'dom'
+      };
+    }
+
+    var addToCartButton = readAddToCartButton(form);
+    if (addToCartButton) {
+      var addToCartText = normalizeHintText(elementText(addToCartButton) || safeString(addToCartButton.value, 120));
+      var addToCartHint = detectInventoryHint(addToCartText);
+      if (addToCartHint === 'sold_out') {
+        return { availabilityState: 'out_of_stock', inventoryHint: addToCartHint, stateSource: 'atc_button' };
+      }
+      if (addToCartHint === 'preorder') {
+        return { availabilityState: 'preorder', inventoryHint: addToCartHint, stateSource: 'atc_button' };
+      }
+      if (addToCartHint === 'backorder') {
+        return { availabilityState: 'backorder', inventoryHint: addToCartHint, stateSource: 'atc_button' };
+      }
+      if (!addToCartButton.disabled) {
+        return { availabilityState: 'in_stock', inventoryHint: 'in_stock', stateSource: 'atc_button' };
+      }
+    }
+
+    return { availabilityState: 'unknown', inventoryHint: null, stateSource: 'unknown' };
+  }
+
+  function compactObject(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    var compacted = {};
+    var keys = Object.keys(value);
+    for (var index = 0; index < keys.length; index += 1) {
+      var key = keys[index];
+      if (value[key] == null || value[key] === '') continue;
+      compacted[key] = value[key];
+    }
+    return Object.keys(compacted).length ? compacted : null;
+  }
+
+  function readCurrentProductState(target) {
+    var path = currentPagePath();
+    if (!isProductPagePath(path)) return null;
+
+    var form = findProductForm(target);
+    var productMeta = readProductMeta();
+    var optionMap = collectSelectedOptionMap(form);
+    var variantId = readCurrentVariantId(form, productMeta, target);
+    var productMetaVariant = findVariantFromProductMeta(productMeta, variantId);
+    var availability = inferAvailabilityState(form, target, productMetaVariant);
+
+    var productState = compactObject({
+      product_id: safeString(
+        productMeta && productMeta.id ||
+        form && form.getAttribute && form.getAttribute('data-product-id') ||
+        document.documentElement && document.documentElement.getAttribute && document.documentElement.getAttribute('data-product-id'),
+        80
+      ),
+      product_handle: safeString(productMeta && productMeta.handle, 160) || extractProductHandle(path),
+      product_title: safeString(productMeta && productMeta.title, 160) || readMetaContent('meta[property=\"og:title\"]') || safeString(document.title, 160),
+      variant_id: variantId,
+      variant_title: safeString(productMetaVariant && productMetaVariant.title, 160) || (optionMap ? safeString(Object.values(optionMap).join(' / '), 160) : null),
+      selected_size: optionMap && optionMap.size ? safeString(optionMap.size, 80) : null,
+      selected_color: optionMap && optionMap.color ? safeString(optionMap.color, 80) : null,
+      option_map: optionMap,
+      availability_state: availability.availabilityState,
+      inventory_hint: availability.inventoryHint,
+      state_source: availability.stateSource
+    });
+
+    return productState;
+  }
+
+  function buildProductStateSignature(state) {
+    if (!state) return '';
+    return [
+      safeString(state.product_id, 80),
+      safeString(state.variant_id, 80),
+      safeString(state.selected_size, 80),
+      safeString(state.selected_color, 80),
+      safeString(state.availability_state, 40)
+    ].join('|');
+  }
+
+  function updateObservedProductState(state) {
+    if (state) {
+      lastObservedProductState = state;
+    }
+    return lastObservedProductState;
+  }
+
+  function buildSelectionPayload(el, labelText, productState, previousState) {
+    var value = '';
+    try {
+      if (el && typeof el.value !== 'undefined') value = safeString(el.value, 120);
+    } catch (_e) {}
+    if (!value) value = elementText(el);
+
+    return compactObject({
+      target_key: elementSummary(el).key,
+      target: elementSummary(el),
+      label: labelText || null,
+      value: value || null,
+      product_id: productState && productState.product_id,
+      product_handle: productState && productState.product_handle,
+      product_title: productState && productState.product_title,
+      variant_id: productState && productState.variant_id,
+      variant_title: productState && productState.variant_title,
+      selected_size: productState && productState.selected_size,
+      selected_color: productState && productState.selected_color,
+      option_map: productState && productState.option_map,
+      availability_state: productState && productState.availability_state,
+      inventory_hint: productState && productState.inventory_hint,
+      state_source: productState && productState.state_source,
+      previous_product_state: previousState || null
+    });
+  }
+
+  function emitProductStateExposed(reason, target, options) {
+    var opts = options || {};
+    var state = opts.state || readCurrentProductState(target);
+    if (!state) return;
+
+    var signature = buildProductStateSignature(state);
+    var now = Date.now();
+    if (!opts.force && signature && signature === lastExposedProductStateSignature && (now - lastProductStateExposeAtMs) < PRODUCT_STATE_EXPOSE_DEBOUNCE_MS) {
+      updateObservedProductState(state);
+      return;
+    }
+
+    lastExposedProductStateSignature = signature;
+    lastProductStateExposeAtMs = now;
+    updateObservedProductState(state);
+    sendEvent('product_state_exposed', compactObject({
+      reason: safeString(reason, 80) || 'unknown',
+      previous_product_state: opts.previousState || null,
+      product_id: state.product_id,
+      product_handle: state.product_handle,
+      product_title: state.product_title,
+      variant_id: state.variant_id,
+      variant_title: state.variant_title,
+      selected_size: state.selected_size,
+      selected_color: state.selected_color,
+      option_map: state.option_map,
+      availability_state: state.availability_state,
+      inventory_hint: state.inventory_hint,
+      state_source: state.state_source
+    }));
+  }
+
+  function scheduleInitialProductStateExposure() {
+    window.setTimeout(function () {
+      emitProductStateExposed('page_load', null);
+    }, INITIAL_PRODUCT_STATE_EXPOSE_DELAY_MS);
   }
 
   function rememberMeaningfulAction(name, data) {
@@ -559,45 +956,17 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
   }
 
   function classifyOptionSelection(el, labelText) {
-    var hint = [
-      safeString(el && el.name, 120),
-      safeString(el && el.id, 120),
-      safeString(el && el.getAttribute && el.getAttribute('data-option-name'), 120),
-      safeString(el && el.getAttribute && el.getAttribute('data-name'), 120),
-      labelText
-    ].join(' ').toLowerCase();
+    var hint = normalizeHintText(readFieldHint(el, labelText));
     if (!hint) return '';
-    if (hint.indexOf('size') >= 0) return 'size_selected';
-    if (
-      hint.indexOf('variant') >= 0 ||
-      hint.indexOf('option') >= 0 ||
-      hint.indexOf('color') >= 0 ||
-      hint.indexOf('colour') >= 0 ||
-      hint.indexOf('style') >= 0
-    ) {
-      return 'variant_selected';
-    }
+    if (isSizeOptionHint(hint)) return 'size_selected';
+    if (hint.indexOf('variant') >= 0 || hint.indexOf('option') >= 0 || isColorOptionHint(hint) || hint.indexOf('style') >= 0) return 'variant_selected';
     return '';
-  }
-
-  function buildSelectionPayload(el, labelText) {
-    var value = '';
-    try {
-      if (el && typeof el.value !== 'undefined') value = safeString(el.value, 120);
-    } catch (_e) {}
-    if (!value) value = elementText(el);
-    return {
-      target_key: elementSummary(el).key,
-      target: elementSummary(el),
-      label: labelText || null,
-      value: value || null
-    };
   }
 
   function findAddToCartTarget(target) {
     return closestMatching(
       target,
-      'button[name=\"add\"], [name=\"add\"], [data-add-to-cart], [data-product-atc], form[action*=\"/cart/add\"] button, form[action*=\"/cart/add\"] [type=\"submit\"], button[id*=\"AddToCart\"]'
+      ADD_TO_CART_BUTTON_SELECTOR
     );
   }
 
@@ -613,6 +982,33 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
       target,
       'a[href=\"/cart\"], a[href$=\"/cart\"], [data-cart-toggle], [data-cart-drawer-toggle], [aria-controls*=\"cart\"], button[name=\"cart\"]'
     );
+  }
+
+  function findUnavailableOptionTarget(target) {
+    var optionTarget = closestMatching(target, 'button, [role=\"button\"], label, input[type=\"radio\"], option');
+    if (!optionTarget) return null;
+
+    var optionLabel = getOptionLabel(optionTarget);
+    var selectionType = classifyOptionSelection(optionTarget, optionLabel);
+    if (!selectionType) return null;
+
+    var isDisabled = false;
+    var textHint = normalizeHintText(elementText(optionTarget) || safeString(optionTarget.value, 120) || safeString(optionTarget.getAttribute && optionTarget.getAttribute('aria-label'), 120));
+
+    try {
+      isDisabled = !!optionTarget.disabled || safeString(optionTarget.getAttribute && optionTarget.getAttribute('aria-disabled'), 16) === 'true';
+      if (!isDisabled && optionTarget.className) {
+        isDisabled = includesHint(normalizeHintText(optionTarget.className), UNAVAILABLE_CLASS_HINTS);
+      }
+    } catch (_e) {}
+
+    if (!isDisabled && !includesHint(textHint, SOLD_OUT_HINTS)) return null;
+
+    return {
+      element: optionTarget,
+      labelText: optionLabel,
+      eventName: selectionType === 'size_selected' ? 'unavailable_size_clicked' : 'variant_unavailable_clicked'
+    };
   }
 
   function isProbablyClickable(el) {
@@ -632,24 +1028,83 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
     var target = e.target && e.target.closest ? e.target.closest('a,button,[role=\"button\"],input,select,textarea,label,summary') : e.target;
     if (!target) return;
 
+    var unavailableTarget = findUnavailableOptionTarget(target);
+    if (unavailableTarget) {
+      var unavailableState = readCurrentProductState(unavailableTarget.element);
+      var unavailablePayload = buildSelectionPayload(
+        unavailableTarget.element,
+        unavailableTarget.labelText,
+        unavailableState,
+        lastObservedProductState
+      ) || {};
+      unavailablePayload.blocked_reason = 'selected_variant_out_of_stock';
+      rememberMeaningfulAction(unavailableTarget.eventName, unavailablePayload);
+      sendEvent(unavailableTarget.eventName, unavailablePayload);
+      emitProductStateExposed('unavailable_selection_clicked', unavailableTarget.element, {
+        force: true,
+        state: unavailableState,
+        previousState: lastObservedProductState
+      });
+    }
+
     var checkoutTarget = findCheckoutTarget(target);
     if (checkoutTarget) {
-      var checkoutPayload = {
+      var checkoutState = readCurrentProductState(checkoutTarget);
+      var checkoutPayload = compactObject({
         target_key: elementSummary(checkoutTarget).key,
         target: elementSummary(checkoutTarget),
-        label: elementText(checkoutTarget) || null
-      };
+        label: elementText(checkoutTarget) || null,
+        product_id: checkoutState && checkoutState.product_id,
+        product_handle: checkoutState && checkoutState.product_handle,
+        product_title: checkoutState && checkoutState.product_title,
+        variant_id: checkoutState && checkoutState.variant_id,
+        selected_size: checkoutState && checkoutState.selected_size,
+        availability_state: checkoutState && checkoutState.availability_state
+      });
       rememberMeaningfulAction('checkout_cta_clicked', checkoutPayload);
       sendEvent('checkout_cta_clicked', checkoutPayload);
     }
 
     var addToCartTarget = findAddToCartTarget(target);
     if (addToCartTarget) {
-      var addToCartPayload = {
+      var addToCartState = readCurrentProductState(addToCartTarget);
+      var addToCartPayload = compactObject({
         target_key: elementSummary(addToCartTarget).key,
         target: elementSummary(addToCartTarget),
-        label: elementText(addToCartTarget) || null
-      };
+        label: elementText(addToCartTarget) || null,
+        product_id: addToCartState && addToCartState.product_id,
+        product_handle: addToCartState && addToCartState.product_handle,
+        product_title: addToCartState && addToCartState.product_title,
+        variant_id: addToCartState && addToCartState.variant_id,
+        variant_title: addToCartState && addToCartState.variant_title,
+        selected_size: addToCartState && addToCartState.selected_size,
+        selected_color: addToCartState && addToCartState.selected_color,
+        option_map: addToCartState && addToCartState.option_map,
+        availability_state: addToCartState && addToCartState.availability_state,
+        inventory_hint: addToCartState && addToCartState.inventory_hint,
+        state_source: addToCartState && addToCartState.state_source
+      });
+      if (addToCartState && addToCartState.availability_state === 'out_of_stock') {
+        var blockedPayload = compactObject({
+          target_key: addToCartPayload && addToCartPayload.target_key,
+          target: addToCartPayload && addToCartPayload.target,
+          label: addToCartPayload && addToCartPayload.label,
+          blocked_reason: 'selected_variant_out_of_stock',
+          product_id: addToCartState.product_id,
+          product_handle: addToCartState.product_handle,
+          product_title: addToCartState.product_title,
+          variant_id: addToCartState.variant_id,
+          variant_title: addToCartState.variant_title,
+          selected_size: addToCartState.selected_size,
+          selected_color: addToCartState.selected_color,
+          option_map: addToCartState.option_map,
+          availability_state: addToCartState.availability_state,
+          inventory_hint: addToCartState.inventory_hint,
+          state_source: addToCartState.state_source
+        });
+        rememberMeaningfulAction('add_to_cart_blocked_unavailable', blockedPayload);
+        sendEvent('add_to_cart_blocked_unavailable', blockedPayload);
+      }
       rememberMeaningfulAction('add_to_cart_clicked', addToCartPayload);
       sendEvent('add_to_cart_clicked', addToCartPayload);
     }
@@ -853,9 +1308,10 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
       var target = e && e.target ? e.target : null;
       if (!target) return;
       var labelText = getFieldLabel(target);
+      var previousProductState = lastObservedProductState;
 
       if (isQuantityField(target, labelText)) {
-        var quantityPayload = buildSelectionPayload(target, labelText);
+        var quantityPayload = buildSelectionPayload(target, labelText, readCurrentProductState(target), previousProductState);
         quantityPayload.quantity = safeNumber(target.value);
         rememberMeaningfulAction('cart_quantity_changed', quantityPayload);
         sendEvent('cart_quantity_changed', quantityPayload);
@@ -864,9 +1320,18 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
 
       var selectionType = classifyOptionSelection(target, labelText);
       if (!selectionType) return;
-      var selectionPayload = buildSelectionPayload(target, labelText);
+      var selectionState = readCurrentProductState(target);
+      var selectionPayload = buildSelectionPayload(target, labelText, selectionState, previousProductState);
       rememberMeaningfulAction(selectionType, selectionPayload);
       sendEvent(selectionType, selectionPayload);
+      if (selectionState && selectionState.availability_state === 'out_of_stock') {
+        sendEvent('variant_unavailable_viewed', selectionPayload);
+      }
+      emitProductStateExposed('selection_change', target, {
+        force: true,
+        state: selectionState,
+        previousState: previousProductState
+      });
     } catch (_error) {}
   }
 
@@ -920,12 +1385,15 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
     if (lastMeaningfulAction) {
       var actionAgeMs = Date.now() - (Date.parse(lastMeaningfulAction.timestamp) || 0);
       if (actionAgeMs >= 0 && actionAgeMs <= MEANINGFUL_ACTION_MAX_AGE_MS) {
+        var productState = readCurrentProductState(null);
         sendEvent('last_action_checkpoint', {
           action_name: lastMeaningfulAction.name,
           action_ts: lastMeaningfulAction.timestamp,
           action: lastMeaningfulAction.data,
           page_url: lastMeaningfulAction.pageUrl,
-          page_path: lastMeaningfulAction.pagePath
+          page_path: lastMeaningfulAction.pagePath,
+          time_on_page_ms: Math.max(0, Date.now() - pageStartMs),
+          product_state: productState
         }, { beacon: true });
       }
     }
@@ -939,6 +1407,11 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
     window.addEventListener('unhandledrejection', onUnhandledRejection);
     document.addEventListener('submit', onFormSubmitCapture, true);
     window.addEventListener('pagehide', flushOnHide);
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', scheduleInitialProductStateExposure, { once: true });
+    } else {
+      scheduleInitialProductStateExposure();
+    }
   } catch (_e) {}
 })();
 `.trim();
