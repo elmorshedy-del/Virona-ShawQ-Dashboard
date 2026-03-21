@@ -14,6 +14,7 @@
 - Always share the active PR link after each commit/update.
 - After every commit, include the PR link in the status update to the user.
 - After pushing a coding branch, automatically create or open the GitHub PR immediately so GitHub/Gemini review starts in the same cycle. If direct PR creation is unavailable, open the GitHub PR-creation URL in the browser and include that URL in the status update.
+- After the PR is open, automatically review Gemini feedback, patch all valid findings, rerun the relevant tests/checks, and merge once the PR is clean. Do not wait for the user to ask for the Gemini pass or the merge unless a blocker needs a decision.
 - No magic numbers for thresholds/heuristics. Use named constants/config objects (e.g., `INSIGHT_THRESHOLDS`) so they’re readable, reviewable, and easy to tune later.
 - No hardcoded tunables (thresholds, time windows, scoring cutoffs). Use named constants/config and keep them centralized.
 - Build as future SaaS by default: every feature/function must be tenant-aware and work for any client shop/account, not only a single brand/store.

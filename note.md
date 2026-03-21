@@ -5,6 +5,7 @@
 - If any meaningful time has elapsed since the previous coding batch (or prior PR may already be merged), start a fresh `codex/*` branch and open a new PR by default. Do not stack new work on an older PR unless explicitly requested.
 - After each coding batch commit, always provide the current PR link in the update.
 - After pushing a coding branch, immediately create or open the GitHub PR so GitHub/Gemini review can start without waiting on a follow-up reminder. If direct PR creation is blocked, open the GitHub PR-creation URL in the browser and share that link in the update.
+- Once the PR exists, always check Gemini review automatically, patch every valid finding, rerun the relevant tests, and merge the PR when the review/test state is clean. Only stop before merge if a finding is ambiguous, a test fails, or merge requires an unavailable permission/tool.
 - Avoid **magic numbers** (especially thresholds/guardrails used for insights). Extract them into named constants or a config object close to the logic, and name them with units/meaning.
 - Avoid hardcoded thresholds/time windows in business logic. Put tunable values in named constants/config so they can be changed safely later.
 - Treat every implementation as **future SaaS multi-tenant** work. Any code/function must support many clients, each with their own connected shop(s), account(s), rules, and data boundaries.
