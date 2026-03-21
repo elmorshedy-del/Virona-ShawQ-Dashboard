@@ -13,8 +13,7 @@
 - PR freshness is mandatory: if there is a gap since the last implementation cycle and the previous PR may have been merged, create a new `codex/*` branch and open a new PR. Do not continue on an old PR by default.
 - Always share the active PR link after each commit/update.
 - After every commit, include the PR link in the status update to the user.
-- After pushing a coding branch, automatically create the GitHub PR immediately when tooling/auth is available, then inspect Gemini feedback directly through the available GitHub tooling/API path, patch all valid findings, rerun the relevant tests/checks, and merge once the PR is clean. Do not wait for the user to ask for the Gemini pass or the merge unless a blocker needs a decision.
-- Do not treat browser-opening as the default review action. Use direct GitHub tooling/API access first; only share or open a PR-creation URL when PR creation/review access is blocked.
+- After pushing a coding branch, immediately create the GitHub PR when tooling/auth is available. Then inspect Gemini feedback directly through the available GitHub tooling/API path, patch every valid finding, rerun the relevant tests/checks, and merge once the PR is clean. Only fall back to sharing a PR-creation URL when direct PR creation/review access is blocked.
 - No magic numbers for thresholds/heuristics. Use named constants/config objects (e.g., `INSIGHT_THRESHOLDS`) so they’re readable, reviewable, and easy to tune later.
 - No hardcoded tunables (thresholds, time windows, scoring cutoffs). Use named constants/config and keep them centralized.
 - Build as future SaaS by default: every feature/function must be tenant-aware and work for any client shop/account, not only a single brand/store.
