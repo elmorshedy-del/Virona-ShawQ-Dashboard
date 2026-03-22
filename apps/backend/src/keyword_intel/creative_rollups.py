@@ -730,6 +730,7 @@ def get_usa_creative_rollup_detail(
     payload["resolved_store_key"] = resolved_store_key
     payload["usage_members"] = [dict(item) for item in usage_rows]
     payload["outliers"] = [dict(item) for item in outlier_rows]
+    # TODO: replace this placeholder with persisted per-creative scoring job state.
     payload["scoring_status"] = {
         "audio_stack": "ready",
         "siglip": "ready",

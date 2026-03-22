@@ -69,12 +69,7 @@ LOCAL_DEV_CORS_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
 
 def _cors_origins() -> list[str]:
     extra = [origin.strip() for origin in os.getenv("KEYWORD_INTEL_CORS_ORIGINS", "").split(",") if origin.strip()]
-    merged: list[str] = []
-    for origin in [*DEFAULT_CORS_ORIGINS, *extra]:
-        if origin in merged:
-            continue
-        merged.append(origin)
-    return merged
+    return list(dict.fromkeys([*DEFAULT_CORS_ORIGINS, *extra]))
 
 
 app.add_middleware(
