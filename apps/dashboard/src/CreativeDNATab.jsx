@@ -1,14 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
+import CreativeUsaRollupTab from "./CreativeUsaRollupTab";
 import {
   fetchCreativeDNAProfile,
   refreshCreativeDNA,
   vectorizeCreativeDNAMark,
 } from "./api";
 
+const DEFAULT_STORE_URL = "https://shawq.co";
 const DEFAULT_TENANT_KEY = "default";
-const DEFAULT_STORE_URL = "";
-const LOCAL_STORAGE_TENANT_KEY = "creativeDnaTenantKey";
-const LOCAL_STORAGE_STORE_URL = "creativeDnaStoreUrl";
 const VECTOR_PRESET_OPTIONS = [
   { id: "color", label: "Color Logo" },
   { id: "monochrome", label: "Monochrome Mark" },
@@ -33,7 +32,7 @@ function fileToBase64(file) {
 }
 
 function svgToDataUrl(svg) {
-  const encoded = typeof window !== "undefined" ? window.btoa(svg) : "";
+  const encoded = typeof window !== "undefined" ? window.btoa(unescape(encodeURIComponent(svg))) : "";
   return `data:image/svg+xml;base64,${encoded}`;
 }
 
@@ -46,12 +45,9 @@ function fmtDate(value) {
 }
 
 export default function CreativeDNATab() {
-  const [tenantKey, setTenantKey] = useState(
-    () => localStorage.getItem(LOCAL_STORAGE_TENANT_KEY) || DEFAULT_TENANT_KEY,
-  );
-  const [storeUrl, setStoreUrl] = useState(
-    () => localStorage.getItem(LOCAL_STORAGE_STORE_URL) || DEFAULT_STORE_URL,
-  );
+  const [workspaceMode, setWorkspaceMode] = useState("brand-dna");
+  const [tenantKey, setTenantKey] = useState(() => localStorage.getItem("creativeDnaTenantKey") || DEFAULT_TENANT_KEY);
+  const [storeUrl, setStoreUrl] = useState(() => localStorage.getItem("creativeDnaStoreUrl") || DEFAULT_STORE_URL);
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [loadingVector, setLoadingVector] = useState(false);
   const [profileError, setProfileError] = useState("");
@@ -81,7 +77,7 @@ export default function CreativeDNATab() {
       } catch (err) {
         // A 404 error is expected if the profile doesn't exist yet.
         // Other errors should be logged to aid debugging.
-        if (!err.message?.includes("404")) {
+        if (!String(err?.message || "").includes("404")) {
           console.error("Failed to load Creative DNA profile:", err);
         }
       }
@@ -106,8 +102,8 @@ export default function CreativeDNATab() {
         storeKey,
         storeUrl,
       });
-      localStorage.setItem(LOCAL_STORAGE_TENANT_KEY, tenantKey.trim() || DEFAULT_TENANT_KEY);
-      localStorage.setItem(LOCAL_STORAGE_STORE_URL, storeUrl.trim());
+      localStorage.setItem("creativeDnaTenantKey", tenantKey.trim() || DEFAULT_TENANT_KEY);
+      localStorage.setItem("creativeDnaStoreUrl", storeUrl.trim());
       setProfile(payload);
     } catch (err) {
       setProfileError(err.message || "Failed to refresh Creative DNA");
@@ -165,7 +161,7 @@ export default function CreativeDNATab() {
   const activeSvg = latestSvg || profile?.marks?.[0]?.svg || "";
   const activeSvgUrl = activeSvg ? svgToDataUrl(activeSvg) : "";
 
-  return (
+  const brandDnaPane = (
     <>
       <section className="panel hero">
         <div>
@@ -404,6 +400,34 @@ export default function CreativeDNATab() {
           {!profile?.export_presets?.length ? <p>No export presets yet.</p> : null}
         </div>
       </section>
+    </>
+  );
+
+  return (
+    <>
+      <section className="panel tabs-panel">
+        <div className="tabs">
+          <button
+            type="button"
+            onClick={() => setWorkspaceMode("brand-dna")}
+            className={workspaceMode === "brand-dna" ? "tab active" : "tab"}
+          >
+            Brand DNA
+          </button>
+          <button
+            type="button"
+            onClick={() => setWorkspaceMode("usa-rollup")}
+            className={workspaceMode === "usa-rollup" ? "tab active" : "tab"}
+          >
+            USA Rollup
+          </button>
+        </div>
+      </section>
+      {workspaceMode === "usa-rollup" ? (
+        <CreativeUsaRollupTab tenantKey={tenantKey.trim() || DEFAULT_TENANT_KEY} storeKey={storeKey} />
+      ) : (
+        brandDnaPane
+      )}
     </>
   );
 }

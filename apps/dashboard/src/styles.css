@@ -118,6 +118,20 @@ body {
   cursor: pointer;
 }
 
+button {
+  font: inherit;
+}
+
+.blackbox-form select,
+.blackbox-form input[type="number"] {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  padding: 0.68rem 0.82rem;
+  font-size: 0.9rem;
+  min-width: 130px;
+}
+
 .button-link {
   display: inline-flex;
   align-items: center;
@@ -315,6 +329,15 @@ th {
   min-width: 160px;
 }
 
+.hero select {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  padding: 0.68rem 0.82rem;
+  font-size: 0.95rem;
+  min-width: 160px;
+}
+
 .compact {
   gap: 0.4rem;
 }
@@ -382,6 +405,62 @@ th {
   border-radius: 12px;
   padding: 0.45rem;
   background: #fff;
+}
+
+.usa-rollup-layout {
+  align-items: start;
+}
+
+.usa-rollup-preview {
+  width: 100%;
+  max-height: 260px;
+  object-fit: cover;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+.small-line {
+  margin-top: 0.15rem;
+  font-size: 0.78rem;
+}
+
+.compact-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.compact-metrics article {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.7rem;
+  background: #fff;
+}
+
+.compact-metrics h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.compact-metrics p {
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.item button {
+  border: none;
+  background: linear-gradient(130deg, var(--accent), #0b5a44);
+  color: #fff;
+  border-radius: 12px;
+  padding: 0.6rem 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.item button:disabled,
+.form button:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 @media (max-width: 900px) {
