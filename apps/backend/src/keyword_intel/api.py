@@ -24,19 +24,33 @@ from .blackbox import (
     list_case_events,
     list_cases,
 )
+from .beats_audio import analyze_beats_audio
+from .firered_audio import analyze_firered_audio_source
 from .creative_library import (
     get_creative_record,
     ingest_creative_library_rows,
     list_creative_records,
+)
+from .creative_rollups import (
+    get_usa_creative_rollup_detail,
+    list_usa_creative_rollups,
+    materialize_usa_creative_rollups,
 )
 from .meta_creatives import sync_meta_creatives
 from .creative_dna import append_vector_mark, refresh_creative_dna_profile
 from .creative_dna_storage import load_creative_dna_profile
 from .creative_overlays import generate_reel_overlay_plan
 from .google_ads_push import GoogleAdsCampaignPusher
+from .models import (
+    BeatsAudioAnalysisResult,
+    FireRedAudioSourceResult,
+    SigLIPEmbedResult,
+    SignalStackAudioStackResult,
+)
 from .pipeline import run_pipeline
 from .serp import search_serp
 from .settings import load_settings
+from .siglip_embed import embed_siglip_image
 from .vectorize import (
     VectorizationTimeoutError,
     VectorizationUnavailableError,
@@ -116,8 +130,16 @@ class MetaCreativePullRequest(BaseModel):
     until: str | None = None
     time_increment: int = 1
     breakdowns: list[str] = Field(default_factory=lambda: ["country"])
+    countries: list[str] = Field(default_factory=list)
     limit: int = 200
     sync_label: str = ""
+
+
+class CreativeUsaRollupMaterializeRequest(BaseModel):
+    tenant_key: str = "default"
+    store_key: str
+    lookback_days: int = 60
+    metric_keys: list[str] = Field(default_factory=lambda: ["spend", "roas", "orders", "ctr", "hook_rate"])
 
 
 class SerpSearchRequest(BaseModel):
@@ -150,6 +172,15 @@ class CreativeOverlayRequest(BaseModel):
     brand_notes: str = ""
     provider_mode: str = "auto"
     overlay_blind: bool = True
+
+
+class BeatsAudioAnalyzeRequest(BaseModel):
+    audio_url: str | None = None
+    video_url: str | None = None
+
+
+class SigLIPEmbedRequest(BaseModel):
+    image_url: str
 
 
 class BlackboxIngestRequest(BaseModel):
@@ -313,6 +344,13 @@ def _coerce_int_param(value: object, default: int) -> int:
 
 def _coerce_bool_param(value: object, default: bool) -> bool:
     return value if isinstance(value, bool) else default
+
+
+def _split_csv_list(value: str | None) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    return [item.strip() for item in text.split(",") if item.strip()]
 
 
 def _to_event_input(payload: BlackboxIngestRequest, request: Request) -> EventInput:
@@ -564,6 +602,7 @@ def creative_library_meta_pull(payload: MetaCreativePullRequest) -> dict:
             until=str(payload.until or "").strip() or None,
             time_increment=max(1, payload.time_increment),
             breakdowns=list(payload.breakdowns or ["country"]),
+            countries=list(payload.countries or []),
             limit=max(1, min(payload.limit, 500)),
             sync_label=str(payload.sync_label or "").strip(),
         )
@@ -574,6 +613,66 @@ def creative_library_meta_pull(payload: MetaCreativePullRequest) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover
         raise _to_http_error(operation="creative library meta pull", exc=exc) from exc
+
+
+@app.post("/creative-library/usa-rollup/materialize")
+def creative_library_usa_rollup_materialize(payload: CreativeUsaRollupMaterializeRequest) -> dict[str, Any]:
+    try:
+        settings = load_settings()
+        return materialize_usa_creative_rollups(
+            db_path=settings.db_path,
+            tenant_key=str(payload.tenant_key or "default").strip() or "default",
+            store_key=_normalize_store_key(payload.store_key),
+            lookback_days=max(1, min(payload.lookback_days, 365)),
+            metric_keys=list(payload.metric_keys or []),
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise _to_http_error(operation="USA creative rollup materialize", exc=exc) from exc
+
+
+@app.get("/creative-library/usa-rollup")
+def creative_library_usa_rollup_list(
+    tenant_key: str = Query(default="default"),
+    store_key: str = Query(...),
+    lookback_days: int = Query(default=60, ge=1, le=365),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    metric_keys: str | None = Query(default=None),
+) -> dict[str, Any]:
+    settings = load_settings()
+    return list_usa_creative_rollups(
+        db_path=settings.db_path,
+        tenant_key=str(tenant_key or "default").strip() or "default",
+        store_key=_normalize_store_key(store_key),
+        lookback_days=_coerce_int_param(lookback_days, 60),
+        limit=_coerce_int_param(limit, 100),
+        offset=_coerce_int_param(offset, 0),
+        metric_keys=_split_csv_list(metric_keys),
+    )
+
+
+@app.get("/creative-library/usa-rollup/{rollup_id}")
+def creative_library_usa_rollup_detail(
+    rollup_id: str,
+    tenant_key: str = Query(default="default"),
+    store_key: str = Query(...),
+    metric_keys: str | None = Query(default=None),
+) -> dict[str, Any]:
+    settings = load_settings()
+    detail = get_usa_creative_rollup_detail(
+        db_path=settings.db_path,
+        tenant_key=str(tenant_key or "default").strip() or "default",
+        store_key=_normalize_store_key(store_key),
+        rollup_id=str(rollup_id or "").strip(),
+        metric_keys=_split_csv_list(metric_keys),
+    )
+    if detail is None:
+        raise HTTPException(status_code=404, detail="usa creative rollup not found")
+    return detail
 
 
 @app.post("/serp/search")
@@ -656,6 +755,114 @@ def creative_overlays(payload: CreativeOverlayRequest) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover
         raise _to_http_error(operation="creative overlays", exc=exc) from exc
+
+
+@app.post("/signalstack/beats/audio-analyze")
+def signalstack_beats_audio_analyze(payload: BeatsAudioAnalyzeRequest) -> dict[str, Any]:
+    settings = load_settings()
+    if not settings.beats_ready:
+        raise HTTPException(status_code=503, detail="BEATs endpoint is not configured")
+
+    try:
+        result: BeatsAudioAnalysisResult = analyze_beats_audio(
+            endpoint_url=settings.beats_endpoint_url,
+            api_token=settings.beats_api_token,
+            audio_url=payload.audio_url,
+            video_url=payload.video_url,
+            timeout_sec=settings.beats_timeout_sec,
+        )
+        return result.model_dump()
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise _to_http_error(operation="BEATs audio analysis", exc=exc) from exc
+
+
+@app.post("/signalstack/firered/audio-source")
+def signalstack_firered_audio_source(payload: BeatsAudioAnalyzeRequest) -> dict[str, Any]:
+    settings = load_settings()
+    if not settings.firered_ready:
+        raise HTTPException(status_code=503, detail="FireRedVAD endpoint is not configured")
+
+    try:
+        result: FireRedAudioSourceResult = analyze_firered_audio_source(
+            endpoint_url=settings.firered_endpoint_url,
+            api_token=settings.firered_api_token,
+            audio_url=payload.audio_url,
+            video_url=payload.video_url,
+            timeout_sec=settings.firered_timeout_sec,
+        )
+        return result.model_dump()
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise _to_http_error(operation="FireRedVAD audio source analysis", exc=exc) from exc
+
+
+@app.post("/signalstack/audio-stack/analyze")
+def signalstack_audio_stack_analyze(payload: BeatsAudioAnalyzeRequest) -> dict[str, Any]:
+    settings = load_settings()
+    if not settings.beats_ready:
+        raise HTTPException(status_code=503, detail="BEATs endpoint is not configured")
+    if not settings.firered_ready:
+        raise HTTPException(status_code=503, detail="FireRedVAD endpoint is not configured")
+
+    try:
+        beats_result: BeatsAudioAnalysisResult = analyze_beats_audio(
+            endpoint_url=settings.beats_endpoint_url,
+            api_token=settings.beats_api_token,
+            audio_url=payload.audio_url,
+            video_url=payload.video_url,
+            timeout_sec=settings.beats_timeout_sec,
+        )
+        firered_result: FireRedAudioSourceResult = analyze_firered_audio_source(
+            endpoint_url=settings.firered_endpoint_url,
+            api_token=settings.firered_api_token,
+            audio_url=payload.audio_url,
+            video_url=payload.video_url,
+            timeout_sec=settings.firered_timeout_sec,
+        )
+        result = SignalStackAudioStackResult(
+            audio_mood=beats_result.audio_mood,
+            energy_level=beats_result.energy_level,
+            voice_music_ratio=firered_result.voice_music_ratio,
+            beats_model_id=beats_result.model_id,
+            firered_model_id=firered_result.model_id,
+            evidence={
+                "beats": beats_result.evidence,
+                "firered": {
+                    "speech_ratio": firered_result.speech_ratio,
+                    "singing_ratio": firered_result.singing_ratio,
+                    "music_ratio": firered_result.music_ratio,
+                    "evidence": firered_result.evidence,
+                },
+            },
+        )
+        return result.model_dump()
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise _to_http_error(operation="SignalStack audio stack analysis", exc=exc) from exc
+
+
+@app.post("/signalstack/siglip/embed")
+def signalstack_siglip_embed(payload: SigLIPEmbedRequest) -> dict[str, Any]:
+    settings = load_settings()
+    if not settings.siglip_ready:
+        raise HTTPException(status_code=503, detail="SigLIP endpoint is not configured")
+
+    try:
+        result: SigLIPEmbedResult = embed_siglip_image(
+            endpoint_url=settings.siglip_endpoint_url,
+            api_token=settings.siglip_api_token,
+            image_url=payload.image_url,
+            timeout_sec=settings.siglip_timeout_sec,
+        )
+        return result.model_dump()
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise _to_http_error(operation="SigLIP embedding", exc=exc) from exc
 
 
 @app.post("/blackbox/ingest")

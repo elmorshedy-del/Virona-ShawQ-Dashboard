@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import CreativeUsaRollupTab from "./CreativeUsaRollupTab";
 import {
   fetchCreativeDNAProfile,
   refreshCreativeDNA,
@@ -44,6 +45,7 @@ function fmtDate(value) {
 }
 
 export default function CreativeDNATab() {
+  const [workspaceMode, setWorkspaceMode] = useState("brand-dna");
   const [tenantKey, setTenantKey] = useState(() => localStorage.getItem("creativeDnaTenantKey") || DEFAULT_TENANT_KEY);
   const [storeUrl, setStoreUrl] = useState(() => localStorage.getItem("creativeDnaStoreUrl") || DEFAULT_STORE_URL);
   const [loadingProfile, setLoadingProfile] = useState(false);
@@ -155,7 +157,7 @@ export default function CreativeDNATab() {
   const activeSvg = latestSvg || profile?.marks?.[0]?.svg || "";
   const activeSvgUrl = activeSvg ? svgToDataUrl(activeSvg) : "";
 
-  return (
+  const brandDnaPane = (
     <>
       <section className="panel hero">
         <div>
@@ -394,6 +396,34 @@ export default function CreativeDNATab() {
           {!profile?.export_presets?.length ? <p>No export presets yet.</p> : null}
         </div>
       </section>
+    </>
+  );
+
+  return (
+    <>
+      <section className="panel tabs-panel">
+        <div className="tabs">
+          <button
+            type="button"
+            onClick={() => setWorkspaceMode("brand-dna")}
+            className={workspaceMode === "brand-dna" ? "tab active" : "tab"}
+          >
+            Brand DNA
+          </button>
+          <button
+            type="button"
+            onClick={() => setWorkspaceMode("usa-rollup")}
+            className={workspaceMode === "usa-rollup" ? "tab active" : "tab"}
+          >
+            USA Rollup
+          </button>
+        </div>
+      </section>
+      {workspaceMode === "usa-rollup" ? (
+        <CreativeUsaRollupTab tenantKey={tenantKey.trim() || DEFAULT_TENANT_KEY} storeKey={storeKey} />
+      ) : (
+        brandDnaPane
+      )}
     </>
   );
 }

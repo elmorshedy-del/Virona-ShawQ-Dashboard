@@ -92,6 +92,15 @@ class ProviderSettings:
     meta_graph_api_version: str = "v22.0"
     meta_access_token: str = ""
     meta_ad_account_id: str = ""
+    beats_endpoint_url: str = ""
+    beats_api_token: str = ""
+    beats_timeout_sec: float = 120.0
+    firered_endpoint_url: str = ""
+    firered_api_token: str = ""
+    firered_timeout_sec: float = 120.0
+    siglip_endpoint_url: str = ""
+    siglip_api_token: str = ""
+    siglip_timeout_sec: float = 120.0
 
     @property
     def google_ads_ready(self) -> bool:
@@ -107,6 +116,18 @@ class ProviderSettings:
     @property
     def meta_ready(self) -> bool:
         return bool(self.meta_graph_api_version and self.meta_access_token and self.meta_ad_account_id)
+
+    @property
+    def beats_ready(self) -> bool:
+        return bool(self.beats_endpoint_url)
+
+    @property
+    def firered_ready(self) -> bool:
+        return bool(self.firered_endpoint_url)
+
+    @property
+    def siglip_ready(self) -> bool:
+        return bool(self.siglip_endpoint_url)
 
     @property
     def serp_ready(self) -> bool:
@@ -150,6 +171,17 @@ def load_settings() -> ProviderSettings:
         meta_graph_api_version=os.getenv("META_GRAPH_API_VERSION", "v22.0").strip() or "v22.0",
         meta_access_token=os.getenv("META_ACCESS_TOKEN", "").strip(),
         meta_ad_account_id=os.getenv("META_AD_ACCOUNT_ID", "").strip(),
+        beats_endpoint_url=os.getenv("BEATS_ENDPOINT_URL", "").strip(),
+        beats_api_token=os.getenv("BEATS_API_TOKEN", os.getenv("HF_TOKEN", "")).strip(),
+        beats_timeout_sec=max(10.0, _env_float("BEATS_TIMEOUT_SEC", 120.0)),
+        firered_endpoint_url=(
+            os.getenv("FIRERED_ENDPOINT_URL", os.getenv("VOICEMIX_ENDPOINT_URL", "")).strip()
+        ),
+        firered_api_token=os.getenv("FIRERED_API_TOKEN", os.getenv("HF_TOKEN", "")).strip(),
+        firered_timeout_sec=max(10.0, _env_float("FIRERED_TIMEOUT_SEC", 120.0)),
+        siglip_endpoint_url=os.getenv("SIGLIP_ENDPOINT_URL", "").strip(),
+        siglip_api_token=os.getenv("SIGLIP_API_TOKEN", os.getenv("HF_TOKEN", "")).strip(),
+        siglip_timeout_sec=max(10.0, _env_float("SIGLIP_TIMEOUT_SEC", 120.0)),
         google_ads_api_version=os.getenv("GOOGLE_ADS_API_VERSION", "v22"),
         google_ads_customer_id=google_ads_customer_id,
         google_ads_login_customer_id=google_ads_login_customer_id,

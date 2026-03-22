@@ -324,6 +324,38 @@ class CreativeLibraryVariantRecord(BaseModel):
     snapshot_count: int = 0
 
 
+class BeatsAudioAnalysisResult(BaseModel):
+    audio_mood: Literal["upbeat", "emotional", "dramatic", "tense", "calm"]
+    energy_level: Literal["low", "medium", "high"]
+    voice_music_ratio: Literal["voice_dominant", "balanced", "music_dominant"]
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    model_id: str = ""
+
+
+class FireRedAudioSourceResult(BaseModel):
+    voice_music_ratio: Literal["voice_dominant", "balanced", "music_dominant"]
+    speech_ratio: float | None = None
+    singing_ratio: float | None = None
+    music_ratio: float | None = None
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    model_id: str = ""
+
+
+class SigLIPEmbedResult(BaseModel):
+    embedding: list[float]
+    dimensions: int
+    model_id: str = ""
+
+
+class SignalStackAudioStackResult(BaseModel):
+    audio_mood: Literal["upbeat", "emotional", "dramatic", "tense", "calm"]
+    energy_level: Literal["low", "medium", "high"]
+    voice_music_ratio: Literal["voice_dominant", "balanced", "music_dominant"]
+    beats_model_id: str = ""
+    firered_model_id: str = ""
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
 class CreativeLibraryIngestResult(BaseModel):
     sync_run_id: int | None = None
     processed_rows: int = 0

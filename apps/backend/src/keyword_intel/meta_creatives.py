@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import requests
@@ -17,10 +18,25 @@ DEFAULT_AD_FIELDS = (
     "adset{id,name,effective_status},"
     "creative{id,name,thumbnail_url,image_hash,object_story_spec,asset_feed_spec}"
 )
+AD_FIELD_FALLBACKS = (
+    DEFAULT_AD_FIELDS,
+    (
+        "id,name,status,effective_status,updated_time,"
+        "campaign{id,name},"
+        "adset{id,name},"
+        "creative{id,name,thumbnail_url,image_hash,object_story_spec,asset_feed_spec}"
+    ),
+    (
+        "id,name,status,effective_status,updated_time,"
+        "campaign{id,name},"
+        "adset{id,name},"
+        "creative{id,name,thumbnail_url,image_hash,object_story_spec}"
+    ),
+)
 DEFAULT_INSIGHT_FIELDS = (
     "account_id,account_name,campaign_id,campaign_name,adset_id,adset_name,"
     "ad_id,ad_name,spend,impressions,clicks,cpc,cpm,ctr,frequency,"
-    "account_currency,actions,action_values,purchase_roas,video_3_sec_watched_actions,"
+    "account_currency,actions,action_values,purchase_roas,"
     "date_start,date_stop"
 )
 PURCHASE_ACTION_KEYS = {
@@ -32,6 +48,9 @@ PURCHASE_ACTION_KEYS = {
 LINK_CLICK_ACTION_KEYS = {
     "link_click",
     "outbound_click",
+}
+VIDEO_VIEW_ACTION_KEYS = {
+    "video_view",
 }
 
 
@@ -67,13 +86,58 @@ def _normalize_account_id(value: str) -> str:
     return f"act_{digits}" if digits else text
 
 
-def _request_json(url: str, *, params: dict[str, Any], timeout_sec: float) -> dict[str, Any]:
-    response = requests.get(url, params=params, timeout=timeout_sec)
-    response.raise_for_status()
-    payload = response.json()
+def _meta_error(payload: object) -> dict[str, Any]:
     if not isinstance(payload, dict):
-        raise RuntimeError("meta api returned unexpected payload format")
-    return payload
+        return {}
+    error = payload.get("error")
+    return dict(error) if isinstance(error, dict) else {}
+
+
+def _is_retryable_meta_status(status_code: int) -> bool:
+    return status_code in {429, 500, 502, 503, 504}
+
+
+def _is_retryable_meta_error(payload: object) -> bool:
+    error = _meta_error(payload)
+    if not error:
+        return False
+    code = error.get("code")
+    subcode = error.get("error_subcode")
+    is_transient = bool(error.get("is_transient"))
+    return is_transient or code in {1, 2, 4, 17, 32, 613} or subcode in {2446079}
+
+
+def _request_json(url: str, *, params: dict[str, Any], timeout_sec: float) -> dict[str, Any]:
+    last_error: Exception | None = None
+    request_timeout = max(30.0, timeout_sec)
+    for attempt in range(3):
+        try:
+            response = requests.get(url, params=params, timeout=request_timeout)
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt == 2:
+                raise
+            time.sleep(2 * (attempt + 1))
+            continue
+        payload: dict[str, Any] | None = None
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+        if response.ok:
+            if not isinstance(payload, dict):
+                raise RuntimeError("meta api returned unexpected payload format")
+            return payload
+
+        retryable = _is_retryable_meta_status(response.status_code) or _is_retryable_meta_error(payload)
+        message = response.text[:1000]
+        last_error = RuntimeError(f"meta api error {response.status_code}: {message}")
+        if not retryable or attempt == 2:
+            raise last_error
+        time.sleep(2 * (attempt + 1))
+
+    raise last_error or RuntimeError("meta api request failed")
 
 
 def _paged_get(
@@ -101,6 +165,46 @@ def _paged_get(
         next_params = {}
 
     return items
+
+
+def _fetch_ads_with_fallback(
+    *,
+    ad_ids: list[str],
+    settings: ProviderSettings,
+) -> list[dict[str, Any]]:
+    if not ad_ids:
+        return []
+
+    last_error: Exception | None = None
+    items_by_id: dict[str, dict[str, Any]] = {}
+    for chunk_start in range(0, len(ad_ids), 50):
+        chunk_ids = ad_ids[chunk_start : chunk_start + 50]
+        chunk_error: Exception | None = None
+        for fields in AD_FIELD_FALLBACKS:
+            try:
+                payload = _request_json(
+                    f"{GRAPH_API_BASE}/{settings.meta_graph_api_version}/",
+                    params={
+                        "ids": ",".join(chunk_ids),
+                        "fields": fields,
+                        "access_token": settings.meta_access_token,
+                    },
+                    timeout_sec=settings.http_timeout_sec,
+                )
+                for ad_id in chunk_ids:
+                    item = payload.get(ad_id)
+                    if isinstance(item, dict):
+                        items_by_id[ad_id] = dict(item)
+                chunk_error = None
+                break
+            except Exception as exc:
+                chunk_error = exc
+                last_error = exc
+        if chunk_error is not None:
+            raise chunk_error
+    if not items_by_id and last_error is not None:
+        raise last_error
+    return [items_by_id[ad_id] for ad_id in ad_ids if ad_id in items_by_id]
 
 
 def _action_total(rows: list[dict[str, Any]], keys: set[str]) -> float | None:
@@ -134,7 +238,10 @@ def _video_3s_views(row: dict[str, Any]) -> int | None:
             return int(round(float(str(item.get("value", "")).replace(",", "").strip())))
         except ValueError:
             continue
-    return None
+    fallback = _action_total(_list_of_dicts(row.get("actions")), VIDEO_VIEW_ACTION_KEYS)
+    if fallback is None:
+        return None
+    return int(round(fallback))
 
 
 def _story_parts(creative: dict[str, Any]) -> dict[str, Any]:
@@ -314,6 +421,7 @@ def sync_meta_creatives(
     until: str | None = None,
     time_increment: int = 1,
     breakdowns: list[str] | None = None,
+    countries: list[str] | None = None,
     limit: int = 200,
     sync_label: str = "",
 ) -> MetaCreativePullResult:
@@ -325,17 +433,6 @@ def sync_meta_creatives(
         raise RuntimeError("missing Meta ad account ID")
 
     active_breakdowns = [item.strip() for item in (breakdowns or ["country"]) if item.strip()]
-    ads = _paged_get(
-        account_path=resolved_account_id,
-        edge="ads",
-        params={
-            "fields": DEFAULT_AD_FIELDS,
-            "limit": max(1, min(limit, 500)),
-        },
-        settings=settings,
-    )
-    ads_by_id = {_clean_text(item.get("id")): item for item in ads if _clean_text(item.get("id"))}
-
     insight_params: dict[str, Any] = {
         "fields": DEFAULT_INSIGHT_FIELDS,
         "level": "ad",
@@ -344,6 +441,11 @@ def sync_meta_creatives(
     }
     if active_breakdowns:
         insight_params["breakdowns"] = ",".join(active_breakdowns)
+    active_countries = [item.strip().upper() for item in (countries or []) if item and item.strip()]
+    if active_countries:
+        insight_params["filtering"] = json.dumps(
+            [{"field": "country", "operator": "IN", "value": active_countries}]
+        )
     if since and until:
         insight_params["time_range"] = json.dumps({"since": since, "until": until})
     else:
@@ -355,6 +457,19 @@ def sync_meta_creatives(
         params=insight_params,
         settings=settings,
     )
+    ad_ids = []
+    seen_ad_ids: set[str] = set()
+    for item in insights:
+        ad_id = _clean_text(item.get("ad_id"))
+        if ad_id and ad_id not in seen_ad_ids:
+            seen_ad_ids.add(ad_id)
+            ad_ids.append(ad_id)
+
+    ads = _fetch_ads_with_fallback(
+        ad_ids=ad_ids,
+        settings=settings,
+    )
+    ads_by_id = {_clean_text(item.get("id")): item for item in ads if _clean_text(item.get("id"))}
 
     normalized_rows = []
     for insight in insights:

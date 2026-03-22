@@ -1,9 +1,11 @@
 __all__ = [
     "api",
+    "beats_audio",
     "campaigns",
     "cli",
     "competitors",
     "creative_library",
+    "creative_rollups",
     "creative_overlays",
     "discovery",
     "external_competitors",
@@ -13,9 +15,11 @@ __all__ = [
     "monitoring",
     "pipeline",
     "providers",
+    "firered_audio",
     "scoring",
     "serp",
     "searx_discovery",
+    "siglip_embed",
     "settings",
     "storage",
 ]

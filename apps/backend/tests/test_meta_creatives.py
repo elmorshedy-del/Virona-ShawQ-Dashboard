@@ -17,35 +17,6 @@ def test_sync_meta_creatives_normalizes_video_to_thumbnail_only(monkeypatch, tmp
     def fake_paged_get(*, account_path: str, edge: str, params: dict, settings) -> list[dict]:
         del settings
         assert account_path == "act_1234567890"
-        if edge == "ads":
-            return [
-                {
-                    "id": "ad_1",
-                    "name": "Hook Ad",
-                    "status": "ACTIVE",
-                    "effective_status": "ACTIVE",
-                    "updated_time": "2024-01-02T00:00:00+0000",
-                    "campaign": {"id": "camp_1", "name": "Scale", "objective": "OUTCOME_SALES"},
-                    "adset": {"id": "adset_1", "name": "Broad"},
-                    "creative": {
-                        "id": "cr_1",
-                        "name": "Winter Hook",
-                        "thumbnail_url": "https://cdn.example.com/video-thumb.jpg",
-                        "object_story_spec": {
-                            "video_data": {
-                                "video_id": "vid_123",
-                                "image_url": "https://cdn.example.com/video-thumb.jpg",
-                                "message": "Wear it loud",
-                                "title": "Tatreez Hoodie",
-                                "call_to_action": {
-                                    "type": "SHOP_NOW",
-                                    "value": {"link": "https://shawq.co/products/tatreez-hoodie"},
-                                },
-                            }
-                        },
-                    },
-                }
-            ]
         assert edge == "insights"
         assert params["breakdowns"] == "country"
         return [
@@ -100,6 +71,40 @@ def test_sync_meta_creatives_normalizes_video_to_thumbnail_only(monkeypatch, tmp
         ]
 
     monkeypatch.setattr(meta_creatives, "_paged_get", fake_paged_get)
+
+    def fake_fetch_ads_with_fallback(*, ad_ids: list[str], settings) -> list[dict]:
+        del settings
+        assert ad_ids == ["ad_1"]
+        return [
+            {
+                "id": "ad_1",
+                "name": "Hook Ad",
+                "status": "ACTIVE",
+                "effective_status": "ACTIVE",
+                "updated_time": "2024-01-02T00:00:00+0000",
+                "campaign": {"id": "camp_1", "name": "Scale", "objective": "OUTCOME_SALES"},
+                "adset": {"id": "adset_1", "name": "Broad"},
+                "creative": {
+                    "id": "cr_1",
+                    "name": "Winter Hook",
+                    "thumbnail_url": "https://cdn.example.com/video-thumb.jpg",
+                    "object_story_spec": {
+                        "video_data": {
+                            "video_id": "vid_123",
+                            "image_url": "https://cdn.example.com/video-thumb.jpg",
+                            "message": "Wear it loud",
+                            "title": "Tatreez Hoodie",
+                            "call_to_action": {
+                                "type": "SHOP_NOW",
+                                "value": {"link": "https://shawq.co/products/tatreez-hoodie"},
+                            },
+                        }
+                    },
+                },
+            }
+        ]
+
+    monkeypatch.setattr(meta_creatives, "_fetch_ads_with_fallback", fake_fetch_ads_with_fallback)
 
     result = meta_creatives.sync_meta_creatives(
         db_path=str(db_path),
