@@ -5,6 +5,7 @@ __all__ = [
     "cli",
     "competitors",
     "creative_library",
+    "creative_labels",
     "creative_rollups",
     "creative_overlays",
     "discovery",

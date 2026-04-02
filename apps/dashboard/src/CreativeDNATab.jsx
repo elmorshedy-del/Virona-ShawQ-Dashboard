@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import CreativeUsaRollupTab from "./CreativeUsaRollupTab";
+import CreativeOpsTab from "./CreativeOpsTab";
 import {
   fetchCreativeDNAProfile,
   refreshCreativeDNA,
@@ -74,12 +74,8 @@ export default function CreativeDNATab() {
         if (!cancelled) {
           setProfile(payload);
         }
-      } catch (err) {
-        // A 404 error is expected if the profile doesn't exist yet.
-        // Other errors should be logged to aid debugging.
-        if (!String(err?.message || "").includes("404")) {
-          console.error("Failed to load Creative DNA profile:", err);
-        }
+      } catch {
+        // no saved profile yet
       }
     }
     void loadExisting();
@@ -416,15 +412,15 @@ export default function CreativeDNATab() {
           </button>
           <button
             type="button"
-            onClick={() => setWorkspaceMode("usa-rollup")}
-            className={workspaceMode === "usa-rollup" ? "tab active" : "tab"}
+            onClick={() => setWorkspaceMode("creative-ops")}
+            className={workspaceMode === "creative-ops" ? "tab active" : "tab"}
           >
-            USA Rollup
+            Creative Ops
           </button>
         </div>
       </section>
-      {workspaceMode === "usa-rollup" ? (
-        <CreativeUsaRollupTab tenantKey={tenantKey.trim() || DEFAULT_TENANT_KEY} storeKey={storeKey} />
+      {workspaceMode === "creative-ops" ? (
+        <CreativeOpsTab tenantKey={tenantKey.trim() || DEFAULT_TENANT_KEY} storeKey={storeKey} />
       ) : (
         brandDnaPane
       )}
