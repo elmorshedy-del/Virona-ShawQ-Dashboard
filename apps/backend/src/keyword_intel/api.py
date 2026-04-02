@@ -26,6 +26,13 @@ from .blackbox import (
 )
 from .beats_audio import analyze_beats_audio
 from .firered_audio import analyze_firered_audio_source
+from .creative_labels import get_creative_label_record, materialize_creative_labels
+from .creative_dataset_hub import (
+    build_ml_dataset,
+    list_creative_workbench_queue,
+    preview_ml_dataset,
+    run_creative_label_batch,
+)
 from .creative_library import (
     get_creative_record,
     ingest_creative_library_rows,
@@ -36,6 +43,7 @@ from .creative_rollups import (
     list_usa_creative_rollups,
     materialize_usa_creative_rollups,
 )
+from .claude_subjective import score_usa_rollup_with_claude
 from .meta_creatives import sync_meta_creatives
 from .creative_dna import append_vector_mark, refresh_creative_dna_profile
 from .creative_dna_storage import load_creative_dna_profile
@@ -43,6 +51,9 @@ from .creative_overlays import generate_reel_overlay_plan
 from .google_ads_push import GoogleAdsCampaignPusher
 from .models import (
     BeatsAudioAnalysisResult,
+    ClaudeSubjectiveScoreResult,
+    CreativeLabelMaterializationResult,
+    CreativeLabelRecord,
     FireRedAudioSourceResult,
     SigLIPEmbedResult,
     SignalStackAudioStackResult,
@@ -139,7 +150,60 @@ class CreativeUsaRollupMaterializeRequest(BaseModel):
     tenant_key: str = "default"
     store_key: str
     lookback_days: int = 60
+    lookback_window: str | None = None
+    min_spend_threshold: float = 30.0
     metric_keys: list[str] = Field(default_factory=lambda: ["spend", "roas", "orders", "ctr", "hook_rate"])
+
+
+class CreativeWorkbenchQueueRequest(BaseModel):
+    tenant_key: str = "default"
+    store_key: str
+    lookback_days: int = 90
+    lookback_window: str | None = None
+    status: Literal["all", "labeled", "unlabeled"] = "all"
+    limit: int = 50
+    offset: int = 0
+
+
+class CreativeBatchLabelRequest(BaseModel):
+    tenant_key: str = "default"
+    store_key: str
+    lookback_days: int = 90
+    lookback_window: str | None = None
+    status: Literal["all", "labeled", "unlabeled"] = "unlabeled"
+    limit: int = 10
+    force_refresh: bool = False
+    rollup_ids: list[str] = Field(default_factory=list)
+    variant_ids: list[str] = Field(default_factory=list)
+
+
+class CreativeDatasetPreviewRequest(BaseModel):
+    tenant_key: str = "default"
+    store_key: str
+    lookback_days: int = 90
+    lookback_window: str | None = None
+    geo: str = "US"
+    min_spend_threshold: float = 30.0
+    labeled_only: bool = True
+    feature_groups: list[str] = Field(default_factory=list)
+    selected_fields: list[str] = Field(default_factory=list)
+    target_metric: str = "log_blended_roas"
+    sample_limit: int = 5
+
+
+class CreativeDatasetBuildRequest(BaseModel):
+    tenant_key: str = "default"
+    store_key: str
+    dataset_name: str
+    lookback_days: int = 90
+    lookback_window: str | None = None
+    geo: str = "US"
+    min_spend_threshold: float = 30.0
+    labeled_only: bool = True
+    feature_groups: list[str] = Field(default_factory=list)
+    selected_fields: list[str] = Field(default_factory=list)
+    target_metric: str = "log_blended_roas"
+    output_format: Literal["csv", "json"] = "csv"
 
 
 class SerpSearchRequest(BaseModel):
@@ -181,6 +245,22 @@ class BeatsAudioAnalyzeRequest(BaseModel):
 
 class SigLIPEmbedRequest(BaseModel):
     image_url: str
+
+
+class ClaudeSubjectiveScoreRequest(BaseModel):
+    tenant_key: str = "default"
+    store_key: str
+    rollup_id: str
+    force_refresh: bool = False
+
+
+class CreativeLabelMaterializeRequest(BaseModel):
+    tenant_key: str = "default"
+    store_key: str
+    canonical_creative_id: str | None = None
+    rollup_id: str | None = None
+    variant_id: str | None = None
+    force_refresh: bool = False
 
 
 class BlackboxIngestRequest(BaseModel):
@@ -353,6 +433,13 @@ def _split_csv_list(value: str | None) -> list[str]:
     return [item.strip() for item in text.split(",") if item.strip()]
 
 
+def _coerce_optional_str_param(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text or "annotation=" in text:
+        return None
+    return text
+
+
 def _to_event_input(payload: BlackboxIngestRequest, request: Request) -> EventInput:
     salt = _hash_salt()
     client_host = request.client.host if request.client else None
@@ -455,7 +542,7 @@ def analyze(payload: AnalyzeRequest) -> dict:
 def get_creative_dna_profile(
     tenant_key: str = Query(default="default"),
     store_key: str = Query(...),
-) -> dict:
+) -> dict | None:
     settings = load_settings()
     profile = load_creative_dna_profile(
         settings.db_path,
@@ -463,7 +550,7 @@ def get_creative_dna_profile(
         store_key=_normalize_store_key(store_key),
     )
     if profile is None:
-        raise HTTPException(status_code=404, detail="creative dna profile not found")
+        return None
     return profile.model_dump()
 
 
@@ -624,7 +711,9 @@ def creative_library_usa_rollup_materialize(payload: CreativeUsaRollupMaterializ
             tenant_key=str(payload.tenant_key or "default").strip() or "default",
             store_key=_normalize_store_key(payload.store_key),
             lookback_days=max(1, min(payload.lookback_days, 365)),
+            lookback_window=_coerce_optional_str_param(payload.lookback_window),
             metric_keys=list(payload.metric_keys or []),
+            min_spend_threshold=max(20.0, min(float(payload.min_spend_threshold), 500.0)),
         )
     except HTTPException:
         raise
@@ -639,6 +728,7 @@ def creative_library_usa_rollup_list(
     tenant_key: str = Query(default="default"),
     store_key: str = Query(...),
     lookback_days: int = Query(default=60, ge=1, le=365),
+    lookback_window: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     metric_keys: str | None = Query(default=None),
@@ -649,6 +739,7 @@ def creative_library_usa_rollup_list(
         tenant_key=str(tenant_key or "default").strip() or "default",
         store_key=_normalize_store_key(store_key),
         lookback_days=_coerce_int_param(lookback_days, 60),
+        lookback_window=_coerce_optional_str_param(lookback_window),
         limit=_coerce_int_param(limit, 100),
         offset=_coerce_int_param(offset, 0),
         metric_keys=_split_csv_list(metric_keys),
@@ -660,6 +751,8 @@ def creative_library_usa_rollup_detail(
     rollup_id: str,
     tenant_key: str = Query(default="default"),
     store_key: str = Query(...),
+    lookback_days: int = Query(default=60, ge=1, le=365),
+    lookback_window: str | None = Query(default=None),
     metric_keys: str | None = Query(default=None),
 ) -> dict[str, Any]:
     settings = load_settings()
@@ -668,11 +761,137 @@ def creative_library_usa_rollup_detail(
         tenant_key=str(tenant_key or "default").strip() or "default",
         store_key=_normalize_store_key(store_key),
         rollup_id=str(rollup_id or "").strip(),
+        lookback_days=_coerce_int_param(lookback_days, 60),
+        lookback_window=_coerce_optional_str_param(lookback_window),
         metric_keys=_split_csv_list(metric_keys),
     )
     if detail is None:
         raise HTTPException(status_code=404, detail="usa creative rollup not found")
     return detail
+
+
+@app.get("/creative-library/workbench/queue")
+def creative_library_workbench_queue(
+    tenant_key: str = Query(default="default"),
+    store_key: str = Query(...),
+    lookback_days: int = Query(default=90, ge=1, le=365),
+    lookback_window: str | None = Query(default=None),
+    status: str = Query(default="all"),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    settings = load_settings()
+    return list_creative_workbench_queue(
+        db_path=settings.db_path,
+        tenant_key=str(tenant_key or "default").strip() or "default",
+        store_key=_normalize_store_key(store_key),
+        lookback_days=_coerce_int_param(lookback_days, 90),
+        lookback_window=_coerce_optional_str_param(lookback_window),
+        status=str(status or "all").strip().lower() or "all",
+        limit=_coerce_int_param(limit, 50),
+        offset=_coerce_int_param(offset, 0),
+    )
+
+
+@app.post("/creative-library/workbench/batch-label")
+def creative_library_workbench_batch_label(payload: CreativeBatchLabelRequest) -> dict[str, Any]:
+    settings = load_settings()
+    if not settings.qwen_ready:
+        raise HTTPException(status_code=503, detail="Qwen/DashScope is not configured")
+    if not settings.gemini_ready:
+        raise HTTPException(status_code=503, detail="Gemini is not configured")
+    if not settings.firered_ready:
+        raise HTTPException(status_code=503, detail="FireRedVAD endpoint is not configured")
+    if not settings.anthropic_ready:
+        raise HTTPException(status_code=503, detail="Anthropic Claude is not configured")
+
+    try:
+        return run_creative_label_batch(
+            db_path=settings.db_path,
+            tenant_key=str(payload.tenant_key or "default").strip() or "default",
+            store_key=_normalize_store_key(payload.store_key),
+            lookback_days=max(1, min(payload.lookback_days, 365)),
+            lookback_window=_coerce_optional_str_param(payload.lookback_window),
+            status=str(payload.status or "unlabeled").strip().lower() or "unlabeled",
+            limit=max(1, min(payload.limit, 100)),
+            force_refresh=bool(payload.force_refresh),
+            rollup_ids=list(payload.rollup_ids or []),
+            variant_ids=list(payload.variant_ids or []),
+            dashscope_api_key=settings.dashscope_api_key,
+            dashscope_base_url=settings.dashscope_base_url,
+            dashscope_model=settings.dashscope_model,
+            dashscope_timeout_sec=settings.dashscope_timeout_sec,
+            google_ai_api_key=settings.google_ai_api_key,
+            gemini_base_url=settings.gemini_base_url,
+            gemini_model=settings.gemini_model,
+            gemini_timeout_sec=settings.gemini_timeout_sec,
+            firered_endpoint_url=settings.firered_endpoint_url,
+            firered_api_token=settings.firered_api_token,
+            firered_timeout_sec=settings.firered_timeout_sec,
+            anthropic_api_key=settings.anthropic_api_key,
+            anthropic_model=settings.anthropic_model,
+            anthropic_base_url=settings.anthropic_base_url,
+            anthropic_timeout_sec=settings.anthropic_timeout_sec,
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise _to_http_error(operation="creative batch label", exc=exc) from exc
+
+
+@app.post("/creative-library/dataset-hub/preview")
+def creative_library_dataset_preview(payload: CreativeDatasetPreviewRequest) -> dict[str, Any]:
+    settings = load_settings()
+    try:
+        return preview_ml_dataset(
+            db_path=settings.db_path,
+            tenant_key=str(payload.tenant_key or "default").strip() or "default",
+            store_key=_normalize_store_key(payload.store_key),
+            lookback_days=max(1, min(payload.lookback_days, 365)),
+            lookback_window=_coerce_optional_str_param(payload.lookback_window),
+            geo=str(payload.geo or "US").strip().upper() or "US",
+            min_spend_threshold=max(0.0, float(payload.min_spend_threshold)),
+            labeled_only=bool(payload.labeled_only),
+            feature_groups=list(payload.feature_groups or []),
+            selected_fields=list(payload.selected_fields or []),
+            target_metric=str(payload.target_metric or "log_blended_roas").strip() or "log_blended_roas",
+            sample_limit=max(1, min(payload.sample_limit, 25)),
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise _to_http_error(operation="dataset preview", exc=exc) from exc
+
+
+@app.post("/creative-library/dataset-hub/build")
+def creative_library_dataset_build(payload: CreativeDatasetBuildRequest) -> dict[str, Any]:
+    settings = load_settings()
+    try:
+        return build_ml_dataset(
+            db_path=settings.db_path,
+            tenant_key=str(payload.tenant_key or "default").strip() or "default",
+            store_key=_normalize_store_key(payload.store_key),
+            dataset_name=str(payload.dataset_name or "").strip() or "creative-dataset",
+            lookback_days=max(1, min(payload.lookback_days, 365)),
+            lookback_window=_coerce_optional_str_param(payload.lookback_window),
+            geo=str(payload.geo or "US").strip().upper() or "US",
+            min_spend_threshold=max(0.0, float(payload.min_spend_threshold)),
+            labeled_only=bool(payload.labeled_only),
+            feature_groups=list(payload.feature_groups or []),
+            selected_fields=list(payload.selected_fields or []),
+            target_metric=str(payload.target_metric or "log_blended_roas").strip() or "log_blended_roas",
+            output_format=str(payload.output_format or "csv").strip().lower() or "csv",
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise _to_http_error(operation="dataset build", exc=exc) from exc
 
 
 @app.post("/serp/search")
@@ -863,6 +1082,103 @@ def signalstack_siglip_embed(payload: SigLIPEmbedRequest) -> dict[str, Any]:
         raise
     except Exception as exc:  # pragma: no cover
         raise _to_http_error(operation="SigLIP embedding", exc=exc) from exc
+
+
+@app.post("/signalstack/claude/subjective-score")
+def signalstack_claude_subjective_score(payload: ClaudeSubjectiveScoreRequest) -> dict[str, Any]:
+    settings = load_settings()
+    if not settings.anthropic_ready:
+        raise HTTPException(status_code=503, detail="Anthropic Claude is not configured")
+
+    try:
+        result: ClaudeSubjectiveScoreResult = score_usa_rollup_with_claude(
+            db_path=settings.db_path,
+            tenant_key=str(payload.tenant_key or "default").strip() or "default",
+            store_key=_normalize_store_key(payload.store_key),
+            rollup_id=str(payload.rollup_id or "").strip(),
+            anthropic_api_key=settings.anthropic_api_key,
+            anthropic_model=settings.anthropic_model,
+            anthropic_base_url=settings.anthropic_base_url,
+            timeout_sec=settings.anthropic_timeout_sec,
+            force_refresh=bool(payload.force_refresh),
+        )
+        return result.model_dump()
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise _to_http_error(operation="Claude subjective score", exc=exc) from exc
+
+
+@app.post("/creative-library/labels/materialize")
+def creative_library_labels_materialize(payload: CreativeLabelMaterializeRequest) -> dict[str, Any]:
+    settings = load_settings()
+    if not settings.qwen_ready:
+        raise HTTPException(status_code=503, detail="Qwen/DashScope is not configured")
+    if not settings.gemini_ready:
+        raise HTTPException(status_code=503, detail="Gemini is not configured")
+    if not settings.firered_ready:
+        raise HTTPException(status_code=503, detail="FireRedVAD endpoint is not configured")
+    if not settings.anthropic_ready:
+        raise HTTPException(status_code=503, detail="Anthropic Claude is not configured")
+
+    resolved_creative_id = str(payload.canonical_creative_id or payload.rollup_id or "").strip()
+    if not resolved_creative_id:
+        raise HTTPException(status_code=422, detail="canonical_creative_id or rollup_id is required")
+
+    try:
+        result: CreativeLabelMaterializationResult = materialize_creative_labels(
+            db_path=settings.db_path,
+            tenant_key=str(payload.tenant_key or "default").strip() or "default",
+            store_key=_normalize_store_key(payload.store_key),
+            canonical_creative_id=resolved_creative_id,
+            variant_id=str(payload.variant_id or "").strip() or None,
+            dashscope_api_key=settings.dashscope_api_key,
+            dashscope_base_url=settings.dashscope_base_url,
+            dashscope_model=settings.dashscope_model,
+            dashscope_timeout_sec=settings.dashscope_timeout_sec,
+            google_ai_api_key=settings.google_ai_api_key,
+            gemini_base_url=settings.gemini_base_url,
+            gemini_model=settings.gemini_model,
+            gemini_timeout_sec=settings.gemini_timeout_sec,
+            firered_endpoint_url=settings.firered_endpoint_url,
+            firered_api_token=settings.firered_api_token,
+            firered_timeout_sec=settings.firered_timeout_sec,
+            anthropic_api_key=settings.anthropic_api_key,
+            anthropic_model=settings.anthropic_model,
+            anthropic_base_url=settings.anthropic_base_url,
+            anthropic_timeout_sec=settings.anthropic_timeout_sec,
+            force_refresh=bool(payload.force_refresh),
+        )
+        return result.model_dump()
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise _to_http_error(operation="creative label materialization", exc=exc) from exc
+
+
+@app.get("/creative-library/labels/{canonical_creative_id}")
+def creative_library_labels_get(
+    canonical_creative_id: str,
+    store_key: str = Query(...),
+    tenant_key: str = Query(default="default"),
+    variant_id: str | None = Query(default=None),
+) -> dict[str, Any] | None:
+    settings = load_settings()
+    try:
+        record: CreativeLabelRecord | None = get_creative_label_record(
+            db_path=settings.db_path,
+            tenant_key=str(tenant_key or "default").strip() or "default",
+            store_key=_normalize_store_key(store_key),
+            canonical_creative_id=str(canonical_creative_id or "").strip(),
+            variant_id=str(variant_id or "").strip() or None,
+        )
+        if record is None:
+            return None
+        return record.model_dump()
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise _to_http_error(operation="creative label fetch", exc=exc) from exc
 
 
 @app.post("/blackbox/ingest")

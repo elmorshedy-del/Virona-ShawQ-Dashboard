@@ -12,6 +12,10 @@ from keyword_intel.creative_overlays import (
 )
 from keyword_intel.models import (
     BeatsAudioAnalysisResult,
+    ClaudeSubjectiveScore,
+    ClaudeSubjectiveScoreResult,
+    CreativeLabelMaterializationResult,
+    CreativeLabelRecord,
     CreativeLibraryIngestResult,
     CreativeDNAMark,
     CreativeDNAProfile,
@@ -512,12 +516,16 @@ def test_creative_library_usa_rollup_materialize_forwards_request(monkeypatch) -
         tenant_key: str,
         store_key: str,
         lookback_days: int,
+        lookback_window: str | None,
+        min_spend_threshold: float,
         metric_keys: list[str],
     ):
         captured["db_path"] = db_path
         captured["tenant_key"] = tenant_key
         captured["store_key"] = store_key
         captured["lookback_days"] = lookback_days
+        captured["lookback_window"] = lookback_window
+        captured["min_spend_threshold"] = min_spend_threshold
         captured["metric_keys"] = metric_keys
         return {"success": True, "rollup_count": 8}
 
@@ -535,6 +543,8 @@ def test_creative_library_usa_rollup_materialize_forwards_request(monkeypatch) -
     assert captured["db_path"] == "test.db"
     assert captured["store_key"] == "shawq.co"
     assert captured["lookback_days"] == 90
+    assert captured["lookback_window"] is None
+    assert captured["min_spend_threshold"] == 30.0
     assert captured["metric_keys"] == ["spend", "roas", "orders", "ctr", "hook_rate"]
     assert response["rollup_count"] == 8
 
@@ -548,6 +558,7 @@ def test_creative_library_usa_rollup_list_forwards_request(monkeypatch) -> None:
         tenant_key: str,
         store_key: str,
         lookback_days: int,
+        lookback_window: str | None,
         limit: int,
         offset: int,
         metric_keys: list[str],
@@ -556,6 +567,7 @@ def test_creative_library_usa_rollup_list_forwards_request(monkeypatch) -> None:
         captured["tenant_key"] = tenant_key
         captured["store_key"] = store_key
         captured["lookback_days"] = lookback_days
+        captured["lookback_window"] = lookback_window
         captured["limit"] = limit
         captured["offset"] = offset
         captured["metric_keys"] = metric_keys
@@ -575,6 +587,7 @@ def test_creative_library_usa_rollup_list_forwards_request(monkeypatch) -> None:
 
     assert captured["store_key"] == "shawq.co"
     assert captured["lookback_days"] == 60
+    assert captured["lookback_window"] is None
     assert captured["limit"] == 25
     assert captured["metric_keys"] == []
     assert response["count"] == 1
@@ -795,3 +808,256 @@ def test_signalstack_siglip_embed_forwards_request(monkeypatch) -> None:
     assert captured["image_url"] == "https://cdn.example.test/thumb.jpg"
     assert response["dimensions"] == 3
     assert response["model_id"] == "google/siglip2-so400m-patch14-384"
+
+
+def test_signalstack_claude_subjective_score_forwards_request(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_score_usa_rollup_with_claude(
+        *,
+        db_path: str,
+        tenant_key: str,
+        store_key: str,
+        rollup_id: str,
+        anthropic_api_key: str,
+        anthropic_model: str,
+        anthropic_base_url: str,
+        timeout_sec: float,
+        force_refresh: bool,
+    ) -> ClaudeSubjectiveScoreResult:
+        captured["db_path"] = db_path
+        captured["tenant_key"] = tenant_key
+        captured["store_key"] = store_key
+        captured["rollup_id"] = rollup_id
+        captured["anthropic_model"] = anthropic_model
+        captured["force_refresh"] = force_refresh
+        return ClaudeSubjectiveScoreResult(
+            rollup_id=rollup_id,
+            variant_id=rollup_id,
+            model_id=anthropic_model,
+            prompt_version="claude_subjective_v1",
+            input_hash="abc123",
+            cache_hit=True,
+            score=ClaudeSubjectiveScore(
+                emotional_angle="pride",
+                heritage_vibe="strong",
+                premium_vs_casual="balanced",
+                ugc_vs_polished="hybrid",
+                hook_type="direct_statement",
+                opening_style="direct_statement",
+                cta_style="identity_extension",
+                cause_vs_product="balanced",
+                text_density="low",
+                face_presence="some",
+                evidence={"heritage_vibe": "visible cultural cues"},
+            ),
+        )
+
+    monkeypatch.setattr(
+        api,
+        "load_settings",
+        lambda: SimpleNamespace(
+            db_path="test.db",
+            anthropic_ready=True,
+            anthropic_api_key="test-key",
+            anthropic_model="claude-sonnet-4-6",
+            anthropic_base_url="https://api.anthropic.com/v1/messages",
+            anthropic_timeout_sec=45.0,
+        ),
+    )
+    monkeypatch.setattr(api, "score_usa_rollup_with_claude", fake_score_usa_rollup_with_claude)
+
+    response = api.signalstack_claude_subjective_score(
+        api.ClaudeSubjectiveScoreRequest(
+            tenant_key="tenant-a",
+            store_key="shawq.co",
+            rollup_id="variant_1",
+            force_refresh=True,
+        )
+    )
+
+    assert captured["db_path"] == "test.db"
+    assert captured["tenant_key"] == "tenant-a"
+    assert captured["store_key"] == "shawq.co"
+    assert captured["rollup_id"] == "variant_1"
+    assert captured["anthropic_model"] == "claude-sonnet-4-6"
+    assert captured["force_refresh"] is True
+    assert response["cache_hit"] is True
+    assert response["score"]["heritage_vibe"] == "strong"
+
+
+def test_creative_library_labels_materialize_forwards_request(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_materialize_creative_labels(**kwargs) -> CreativeLabelMaterializationResult:
+        captured.update(kwargs)
+        return CreativeLabelMaterializationResult(
+            tenant_key="tenant-a",
+            requested_store_key="shawq.co",
+            resolved_store_key="shawq",
+            canonical_creative_id="asset_1",
+            variant_id="variant_1",
+            cache_hits={
+                "stage_a_qwen": False,
+                "stage_b_gemini": False,
+                "stage_c_audio": False,
+                "stage_d_claude": False,
+            },
+            models={
+                "qwen": "qwen-vl-max",
+                "gemini": "gemini-2.5-flash",
+                "audio": "firered-test",
+                "claude": "claude-sonnet-4-6",
+            },
+            labels=CreativeLabelRecord(
+                canonical_creative_id="asset_1",
+                variant_id="variant_1",
+                labeled_at="2026-03-27T00:00:00+00:00",
+                production_feel="native",
+                delivery_format="on_body_showcase",
+                face_presence="minor",
+                body_presence="major",
+                hands_presence="minor",
+                face_role="supporting",
+                body_role="primary",
+                hands_role="supporting",
+                on_body_prominence="dominant",
+                detail_intensity="moderate",
+                texture_emphasis="moderate",
+                product_prominence="dominant",
+                motion_style="handheld_reveal",
+                opening_focus="product",
+                styling_count="single",
+                text_density="low",
+                text_role="selling",
+                opening_text_focus="clear",
+                extracted_text_sequence=[],
+                audio_source_type="singing",
+                voiceover_present="no",
+                music_energy="upbeat",
+                opening_mechanism="offer_open",
+                opening_energy="punchy",
+                emotional_angle="pride_identity",
+                heritage_emphasis_level="strong",
+                cause_product_balance="balanced",
+                craft_emphasis="moderate",
+                surprise_detail="subtle",
+                occasion_framing="religious",
+                evidence={
+                    "production_feel": "Production feel is native; opening focus is product and motion style is handheld_reveal.",
+                    "delivery_format": "Delivery format is on_body_showcase; text role is selling with text density low.",
+                    "subject_visibility": "Face is minor and supporting. Body is major and primary. Hands are minor and supporting.",
+                    "product_presentation": "On-body prominence is dominant, detail intensity is moderate, texture emphasis is moderate, product prominence is dominant, and motion style is handheld_reveal.",
+                    "opening": "Offer-led opening with punchy pacing.",
+                    "creative_angle": "Pride identity is the dominant emotion. Heritage language is explicit while staying balanced with product selling.",
+                    "audio_layer": "Audio source is singing, voiceover is no, and music energy is upbeat.",
+                },
+            ),
+        )
+
+    monkeypatch.setattr(
+        api,
+        "load_settings",
+        lambda: SimpleNamespace(
+            db_path="test.db",
+            qwen_ready=True,
+            gemini_ready=True,
+            firered_ready=True,
+            anthropic_ready=True,
+            dashscope_api_key="dashscope-key",
+            dashscope_base_url="https://dashscope.example.test/v1",
+            dashscope_model="qwen-vl-max",
+            dashscope_timeout_sec=55.0,
+            google_ai_api_key="gemini-key",
+            gemini_base_url="https://gemini.example.test/v1beta",
+            gemini_model="gemini-2.5-flash",
+            gemini_timeout_sec=45.0,
+            firered_endpoint_url="https://firered.example.test",
+            firered_api_token="firered-token",
+            firered_timeout_sec=35.0,
+            anthropic_api_key="anthropic-key",
+            anthropic_model="claude-sonnet-4-6",
+            anthropic_base_url="https://api.anthropic.com/v1/messages",
+            anthropic_timeout_sec=65.0,
+        ),
+    )
+    monkeypatch.setattr(api, "materialize_creative_labels", fake_materialize_creative_labels)
+
+    response = api.creative_library_labels_materialize(
+        api.CreativeLabelMaterializeRequest(
+            tenant_key="tenant-a",
+            store_key="shawq.co",
+            rollup_id="asset_1",
+            variant_id="variant_1",
+            force_refresh=True,
+        )
+    )
+
+    assert captured["db_path"] == "test.db"
+    assert captured["canonical_creative_id"] == "asset_1"
+    assert captured["variant_id"] == "variant_1"
+    assert captured["anthropic_model"] == "claude-sonnet-4-6"
+    assert captured["force_refresh"] is True
+    assert response["labels"]["heritage_emphasis_level"] == "strong"
+
+
+def test_creative_library_labels_get_returns_record(monkeypatch) -> None:
+    monkeypatch.setattr(api, "load_settings", lambda: SimpleNamespace(db_path="test.db"))
+    monkeypatch.setattr(
+        api,
+        "get_creative_label_record",
+        lambda **kwargs: CreativeLabelRecord(
+            canonical_creative_id="asset_1",
+            variant_id="variant_1",
+            labeled_at="2026-03-27T00:00:00+00:00",
+            production_feel="native",
+            delivery_format="on_body_showcase",
+            face_presence="minor",
+            body_presence="major",
+            hands_presence="minor",
+            face_role="supporting",
+            body_role="primary",
+            hands_role="supporting",
+            on_body_prominence="dominant",
+            detail_intensity="moderate",
+            texture_emphasis="moderate",
+            product_prominence="dominant",
+            motion_style="handheld_reveal",
+            opening_focus="product",
+            styling_count="single",
+            text_density="low",
+            text_role="selling",
+            opening_text_focus="clear",
+            extracted_text_sequence=[],
+            audio_source_type="singing",
+            voiceover_present="no",
+            music_energy="upbeat",
+            opening_mechanism="offer_open",
+            opening_energy="punchy",
+            emotional_angle="pride_identity",
+            heritage_emphasis_level="strong",
+            cause_product_balance="balanced",
+            craft_emphasis="moderate",
+            surprise_detail="subtle",
+            occasion_framing="religious",
+            evidence={
+                "production_feel": "Production feel is native; opening focus is product and motion style is handheld_reveal.",
+                "delivery_format": "Delivery format is on_body_showcase; text role is selling with text density low.",
+                "subject_visibility": "Face is minor and supporting. Body is major and primary. Hands are minor and supporting.",
+                "product_presentation": "On-body prominence is dominant, detail intensity is moderate, texture emphasis is moderate, product prominence is dominant, and motion style is handheld_reveal.",
+                "opening": "Offer-led opening with punchy pacing.",
+                "creative_angle": "Pride identity is the dominant emotion. Heritage language is explicit while staying balanced with product selling.",
+                "audio_layer": "Audio source is singing, voiceover is no, and music energy is upbeat.",
+            },
+        ),
+    )
+
+    response = api.creative_library_labels_get(
+        canonical_creative_id="asset_1",
+        store_key="shawq.co",
+        tenant_key="tenant-a",
+        variant_id="variant_1",
+    )
+
+    assert response["canonical_creative_id"] == "asset_1"
+    assert response["heritage_emphasis_level"] == "strong"

@@ -5,73 +5,79 @@ import {
   fetchCreativeUsaRollup,
   fetchCreativeUsaRollupDetail,
   materializeCreativeUsaRollup,
+  scoreClaudeSubjective,
 } from "./api";
+import { WINDOW_TO_DAYS, fmtMoney, fmtNumber, fmtPercent } from "./creativeOpsShared";
 
-function fmtNumber(value, digits = 0) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
-  return Number(value).toLocaleString(undefined, {
-    maximumFractionDigits: digits,
-    minimumFractionDigits: digits,
-  });
-}
-
-function fmtPercent(value) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
-  return `${fmtNumber(value, 2)}%`;
-}
-
-function metricCards(items) {
+function metricCards(items, currency) {
   if (!items.length) {
     return [
       { label: "Creatives", value: 0 },
-      { label: "Median Spend", value: "-" },
-      { label: "Median ROAS", value: "-" },
-      { label: "Median Orders", value: "-" },
-      { label: "Median CTR", value: "-" },
-      { label: "Median Hook Rate", value: "-" },
+      { label: "Total Spend", value: "-" },
+      { label: "Portfolio ROAS", value: "-" },
+      { label: "Total Orders", value: "-" },
+      { label: "Weighted CTR", value: "-" },
+      { label: "Weighted Hook Rate", value: "-" },
+      { label: "Outliers", value: "-" },
     ];
   }
-  const median = (values) => {
-    const clean = values.filter((value) => value !== null && value !== undefined).sort((a, b) => a - b);
-    if (!clean.length) return null;
-    const mid = Math.floor(clean.length / 2);
-    return clean.length % 2 === 0 ? (clean[mid - 1] + clean[mid]) / 2 : clean[mid];
-  };
+  const totalSpend = items.reduce((sum, item) => sum + (Number(item.total_spend) || 0), 0);
+  const totalRevenue = items.reduce((sum, item) => sum + (Number(item.total_revenue) || 0), 0);
+  const totalOrders = items.reduce((sum, item) => sum + (Number(item.total_orders) || 0), 0);
+  const totalImpressions = items.reduce((sum, item) => sum + (Number(item.total_impressions) || 0), 0);
+  const weightedClicks = items.reduce(
+    (sum, item) => sum + ((Number(item.total_impressions) || 0) * (Number(item.ctr) || 0)) / 100,
+    0,
+  );
+  const weightedVideo3s = items.reduce(
+    (sum, item) => sum + ((Number(item.total_impressions) || 0) * (Number(item.hook_rate) || 0)) / 100,
+    0,
+  );
+  const portfolioRoas = totalSpend > 0 ? totalRevenue / totalSpend : null;
+  const weightedCtr = totalImpressions > 0 ? (weightedClicks / totalImpressions) * 100 : null;
+  const weightedHook = totalImpressions > 0 ? (weightedVideo3s / totalImpressions) * 100 : null;
+  const outlierCount = items.filter((item) => item.is_outlier).length;
   return [
     { label: "Creatives", value: items.length },
-    { label: "Median Spend", value: fmtNumber(median(items.map((item) => item.median_spend)), 2) },
-    { label: "Median ROAS", value: fmtNumber(median(items.map((item) => item.median_roas)), 2) },
-    { label: "Median Orders", value: fmtNumber(median(items.map((item) => item.median_orders)), 1) },
-    { label: "Median CTR", value: fmtPercent(median(items.map((item) => item.median_ctr))) },
-    { label: "Median Hook Rate", value: fmtPercent(median(items.map((item) => item.median_hook_rate))) },
+    { label: "Total Spend", value: fmtMoney(totalSpend, currency) },
+    { label: "Portfolio ROAS", value: fmtNumber(portfolioRoas, 2) },
+    { label: "Total Orders", value: fmtNumber(totalOrders, 0) },
+    { label: "Weighted CTR", value: fmtPercent(weightedCtr) },
+    { label: "Weighted Hook Rate", value: fmtPercent(weightedHook) },
+    { label: "Outliers", value: fmtNumber(outlierCount, 0) },
   ];
 }
 
 export default function CreativeUsaRollupTab({ tenantKey, storeKey }) {
   const metricKeys = useMemo(() => ["spend", "roas", "orders", "ctr", "hook_rate"], []);
-  const [lookbackDays, setLookbackDays] = useState(60);
+  const [lookbackWindow, setLookbackWindow] = useState("90d");
   const [rowLimit, setRowLimit] = useState(100);
+  const [minSpendThreshold] = useState(30);
   const [loading, setLoading] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [materializing, setMaterializing] = useState(false);
   const [audioLoading, setAudioLoading] = useState(false);
   const [siglipLoading, setSiglipLoading] = useState(false);
+  const [claudeLoading, setClaudeLoading] = useState(false);
   const [error, setError] = useState("");
   const [items, setItems] = useState([]);
   const [selectedId, setSelectedId] = useState("");
   const [detail, setDetail] = useState(null);
   const [audioStack, setAudioStack] = useState(null);
   const [siglip, setSiglip] = useState(null);
+  const [claudeSubjective, setClaudeSubjective] = useState(null);
 
   async function loadRollup({ selectFirst = false } = {}) {
     if (!storeKey) return;
     setLoading(true);
     setError("");
     try {
+      const lookbackDays = WINDOW_TO_DAYS[lookbackWindow] || 90;
       const payload = await fetchCreativeUsaRollup({
         tenantKey,
         storeKey,
         lookbackDays,
+        lookbackWindow,
         limit: rowLimit,
         metricKeys,
       });
@@ -92,7 +98,7 @@ export default function CreativeUsaRollupTab({ tenantKey, storeKey }) {
   useEffect(() => {
     void loadRollup({ selectFirst: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantKey, storeKey, lookbackDays, rowLimit, metricKeys]);
+  }, [tenantKey, storeKey, lookbackWindow, rowLimit, metricKeys]);
 
   useEffect(() => {
     async function loadDetail() {
@@ -103,11 +109,15 @@ export default function CreativeUsaRollupTab({ tenantKey, storeKey }) {
       setLoadingDetail(true);
       setAudioStack(null);
       setSiglip(null);
+      setClaudeSubjective(null);
       try {
+        const lookbackDays = WINDOW_TO_DAYS[lookbackWindow] || 90;
         const payload = await fetchCreativeUsaRollupDetail({
           tenantKey,
           storeKey,
           rollupId: selectedId,
+          lookbackDays,
+          lookbackWindow,
           metricKeys,
         });
         setDetail(payload);
@@ -118,9 +128,10 @@ export default function CreativeUsaRollupTab({ tenantKey, storeKey }) {
       }
     }
     void loadDetail();
-  }, [selectedId, tenantKey, storeKey, metricKeys]);
+  }, [selectedId, tenantKey, storeKey, lookbackWindow, metricKeys]);
 
-  const cards = useMemo(() => metricCards(items), [items]);
+  const displayCurrency = detail?.currency || items.find((item) => item.currency)?.currency || "TRY";
+  const cards = useMemo(() => metricCards(items, displayCurrency), [displayCurrency, items]);
   const activeVisualUrl = detail?.preview_url || detail?.thumbnail_url || "";
   const audioMediaUrl = useMemo(() => {
     const candidate = String(detail?.preview_url || "").trim();
@@ -133,7 +144,15 @@ export default function CreativeUsaRollupTab({ tenantKey, storeKey }) {
     setMaterializing(true);
     setError("");
     try {
-      await materializeCreativeUsaRollup({ tenantKey, storeKey, lookbackDays, metricKeys });
+      const lookbackDays = WINDOW_TO_DAYS[lookbackWindow] || 90;
+      await materializeCreativeUsaRollup({
+        tenantKey,
+        storeKey,
+        lookbackDays,
+        lookbackWindow,
+        minSpendThreshold,
+        metricKeys,
+      });
       await loadRollup({ selectFirst: true });
     } catch (err) {
       setError(err.message || "USA rollup materialization failed");
@@ -170,6 +189,25 @@ export default function CreativeUsaRollupTab({ tenantKey, storeKey }) {
     }
   }
 
+  async function onRunClaudeSubjective(forceRefresh = false) {
+    if (!detail?.rollup_id) return;
+    setClaudeLoading(true);
+    setError("");
+    try {
+      const payload = await scoreClaudeSubjective({
+        tenantKey,
+        storeKey,
+        rollupId: detail.rollup_id,
+        forceRefresh,
+      });
+      setClaudeSubjective(payload);
+    } catch (err) {
+      setError(err.message || "Claude subjective score failed");
+    } finally {
+      setClaudeLoading(false);
+    }
+  }
+
   return (
     <>
       <section className="panel hero">
@@ -177,24 +215,26 @@ export default function CreativeUsaRollupTab({ tenantKey, storeKey }) {
           <p className="eyebrow">USA Rollup</p>
           <h1>Canonical Creative Comparison</h1>
           <p>
-            Merge duplicate USA usages into one creative view and compare by spend, ROAS, orders,
-            CTR, and 3-second hook rate before the full scoring stack is finalized.
+            One row per canonical creative in USA. Metrics are blended over the full window, with a
+            spend floor and row-level outlier flags.
           </p>
         </div>
         <div className="form">
-          <select value={lookbackDays} onChange={(event) => setLookbackDays(Number(event.target.value))}>
-            <option value={60}>Last 60 days</option>
-            <option value={90}>Last 90 days</option>
+          <select value={lookbackWindow} onChange={(event) => setLookbackWindow(event.target.value)}>
+            <option value="30d">Last 30 days</option>
+            <option value="60d">Last 60 days</option>
+            <option value="90d">Last 90 days</option>
+            <option value="all_time">All time</option>
           </select>
           <select value={rowLimit} onChange={(event) => setRowLimit(Number(event.target.value))}>
             <option value={50}>50 creatives</option>
             <option value={100}>100 creatives</option>
             <option value={200}>200 creatives</option>
           </select>
-          <button type="button" onClick={onMaterialize} disabled={materializing || !storeKey}>
-            {materializing ? "Materializing..." : "Build USA Rollup"}
-          </button>
-        </div>
+            <button type="button" onClick={onMaterialize} disabled={materializing || !storeKey}>
+              {materializing ? "Materializing..." : "Build USA Rollup"}
+            </button>
+          </div>
         {error ? <p className="error">{error}</p> : null}
       </section>
 
@@ -211,11 +251,11 @@ export default function CreativeUsaRollupTab({ tenantKey, storeKey }) {
         <article className="panel">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">Merged USA Creatives</p>
-              <h3>Median Rollup</h3>
-            </div>
-            <span className="chip">{loading ? "Refreshing" : `${items.length} creatives`}</span>
-          </div>
+                  <p className="eyebrow">Merged USA Creatives</p>
+                  <h3>Canonical Performance</h3>
+                </div>
+                <span className="chip">{loading ? "Refreshing" : `${items.length} creatives`}</span>
+              </div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -238,21 +278,21 @@ export default function CreativeUsaRollupTab({ tenantKey, storeKey }) {
                     <td>
                       <strong>{item.creative_name || item.headline || "Untitled Creative"}</strong>
                       <div className="muted small-line">
-                        {item.usage_count} usages · {item.snapshot_count} snapshots
-                        {item.outlier_count ? ` · ${item.outlier_count} outliers` : ""}
+                        {item.usage_count} usages · {item.variant_count || 0} variants · {item.snapshot_count} snapshots
+                        {item.is_outlier ? " · flagged outlier" : ""}
                       </div>
                     </td>
-                    <td>{fmtNumber(item.median_spend, 2)}</td>
-                    <td>{fmtNumber(item.median_roas, 2)}</td>
-                    <td>{fmtNumber(item.median_orders, 1)}</td>
-                    <td>{fmtPercent(item.median_ctr)}</td>
-                    <td>{fmtPercent(item.median_hook_rate)}</td>
+                    <td>{fmtMoney(item.total_spend, item.currency || displayCurrency)}</td>
+                    <td>{fmtNumber(item.blended_roas, 2)}</td>
+                    <td>{fmtNumber(item.total_orders, 0)}</td>
+                    <td>{fmtPercent(item.ctr)}</td>
+                    <td>{fmtPercent(item.hook_rate)}</td>
                   </tr>
                 ))}
                 {!items.length ? (
                   <tr>
                     <td colSpan={6} className="muted">
-                      No USA rollup rows yet. Materialize the last {lookbackDays} days first.
+                      No USA rollup rows yet. Materialize the selected window first.
                     </td>
                   </tr>
                 ) : null}
@@ -277,11 +317,12 @@ export default function CreativeUsaRollupTab({ tenantKey, storeKey }) {
 
               <div className="metrics compact-metrics">
                 {[
-                  { label: "Median Spend", value: fmtNumber(detail.median_spend, 2) },
-                  { label: "Median ROAS", value: fmtNumber(detail.median_roas, 2) },
-                  { label: "Median Orders", value: fmtNumber(detail.median_orders, 1) },
-                  { label: "Median CTR", value: fmtPercent(detail.median_ctr) },
-                  { label: "Median Hook Rate", value: fmtPercent(detail.median_hook_rate) },
+                  { label: "Total Spend", value: fmtMoney(detail.total_spend, detail.currency || displayCurrency) },
+                  { label: "Total Revenue", value: fmtMoney(detail.total_revenue, detail.currency || displayCurrency) },
+                  { label: "Blended ROAS", value: fmtNumber(detail.blended_roas, 2) },
+                  { label: "Total Orders", value: fmtNumber(detail.total_orders, 0) },
+                  { label: "CTR", value: fmtPercent(detail.ctr) },
+                  { label: "Hook Rate", value: fmtPercent(detail.hook_rate) },
                 ].map((item) => (
                   <article key={item.label}>
                     <h2>{item.value}</h2>
@@ -296,6 +337,9 @@ export default function CreativeUsaRollupTab({ tenantKey, storeKey }) {
                   <p>{detail.body_text || "No body text saved"}</p>
                   <p className="muted">{detail.headline || "No headline saved"}</p>
                 </div>
+                <span className="chip">
+                  {detail.lookback_window || "window"} · floor {fmtMoney(minSpendThreshold, detail.currency || displayCurrency)}
+                </span>
               </div>
 
               <div className="section-heading">
@@ -345,11 +389,37 @@ export default function CreativeUsaRollupTab({ tenantKey, storeKey }) {
                   </div>
                 ) : null}
 
-                {(detail.outliers || []).length ? (
+                <div className="item">
+                  <div>
+                    <strong>Claude Subjective Layer</strong>
+                    <p>Cached strategic read of heritage vibe, tone, hook style, premium feel, and UGC polish.</p>
+                  </div>
+                  <button type="button" onClick={() => onRunClaudeSubjective(false)} disabled={claudeLoading || !detail?.rollup_id}>
+                    {claudeLoading ? "Running..." : "Run"}
+                  </button>
+                </div>
+                {claudeSubjective ? (
+                  <div className="item">
+                    <div>
+                      <strong>
+                        {claudeSubjective.score.heritage_vibe} heritage · {claudeSubjective.score.premium_vs_casual} · {claudeSubjective.score.ugc_vs_polished}
+                      </strong>
+                      <p>
+                        {claudeSubjective.score.emotional_angle} · {claudeSubjective.score.hook_type} · {claudeSubjective.score.opening_style}
+                      </p>
+                      <p className="muted">
+                        {claudeSubjective.model_id} · {claudeSubjective.prompt_version}
+                        {claudeSubjective.cache_hit ? " · cached" : " · fresh"}
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+
+                {detail.is_outlier ? (
                   <div className="item">
                     <div>
                       <strong>Outliers</strong>
-                      <p>{detail.outliers.length} snapshot-level outliers flagged in the current lookback window.</p>
+                      <p>This canonical creative is flagged as a blended-ROAS outlier inside the selected USA window.</p>
                     </div>
                     <span className="chip warn">Flagged</span>
                   </div>
@@ -358,9 +428,9 @@ export default function CreativeUsaRollupTab({ tenantKey, storeKey }) {
                 <div className="item">
                   <div>
                     <strong>Still Pending</strong>
-                    <p>Music mood finalization, Claude subjective pass, and prompt tightening stay outside the current locked path.</p>
+                    <p>Music mood finalization and broader prompt tightening stay outside the current locked path.</p>
                   </div>
-                  <span className="chip">{detail.scoring_status?.claude_subjective || "pending"}</span>
+                  <span className="chip">{claudeSubjective ? "ready" : detail.scoring_status?.claude_subjective || "pending"}</span>
                 </div>
               </div>
 
