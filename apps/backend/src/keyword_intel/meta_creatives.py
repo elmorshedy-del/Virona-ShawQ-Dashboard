@@ -311,15 +311,26 @@ def _creative_asset_info(creative: dict[str, Any]) -> tuple[str, str, str, str]:
     parts = _story_parts(creative)
     thumbnail_url = _first_non_empty(
         creative.get("thumbnail_url"),
+        creative.get("image_url"),
         parts["video_data"].get("image_url"),
+        parts["link_data"].get("image_url"),
         parts["link_data"].get("picture"),
         parts["photo_data"].get("url"),
+        parts["photo_data"].get("image_url"),
+        _first_non_empty(*[item.get("thumbnail_url") for item in _list_of_dicts(_mapping(creative.get("asset_feed_spec")).get("videos"))]),
+        _first_non_empty(*[item.get("picture") for item in _list_of_dicts(_mapping(creative.get("asset_feed_spec")).get("videos"))]),
+        _first_non_empty(*[item.get("url") for item in _list_of_dicts(_mapping(creative.get("asset_feed_spec")).get("images"))]),
+        _first_non_empty(*[item.get("image_url") for item in _list_of_dicts(_mapping(creative.get("asset_feed_spec")).get("images"))]),
     )
     image_hash = _first_non_empty(
         parts["link_data"].get("image_hash"),
         creative.get("image_hash"),
     )
-    video_id = _first_non_empty(parts["video_data"].get("video_id"))
+    video_id = _first_non_empty(
+        parts["video_data"].get("video_id"),
+        parts["link_data"].get("video_id"),
+        *[item.get("video_id") for item in _list_of_dicts(_mapping(creative.get("asset_feed_spec")).get("videos"))],
+    )
     child_attachments = _list_of_dicts(parts["link_data"].get("child_attachments"))
     first_card = child_attachments[0] if child_attachments else {}
 

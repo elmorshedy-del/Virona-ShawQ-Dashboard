@@ -101,6 +101,18 @@ class ProviderSettings:
     siglip_endpoint_url: str = ""
     siglip_api_token: str = ""
     siglip_timeout_sec: float = 120.0
+    dashscope_api_key: str = ""
+    dashscope_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    dashscope_model: str = "qwen-vl-max"
+    dashscope_timeout_sec: float = 120.0
+    google_ai_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    gemini_timeout_sec: float = 120.0
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-6"
+    anthropic_base_url: str = "https://api.anthropic.com/v1/messages"
+    anthropic_timeout_sec: float = 120.0
 
     @property
     def google_ads_ready(self) -> bool:
@@ -128,6 +140,18 @@ class ProviderSettings:
     @property
     def siglip_ready(self) -> bool:
         return bool(self.siglip_endpoint_url)
+
+    @property
+    def qwen_ready(self) -> bool:
+        return bool(self.dashscope_api_key and self.dashscope_model)
+
+    @property
+    def gemini_ready(self) -> bool:
+        return bool(self.google_ai_api_key and self.gemini_model)
+
+    @property
+    def anthropic_ready(self) -> bool:
+        return bool(self.anthropic_api_key and self.anthropic_model)
 
     @property
     def serp_ready(self) -> bool:
@@ -182,6 +206,31 @@ def load_settings() -> ProviderSettings:
         siglip_endpoint_url=os.getenv("SIGLIP_ENDPOINT_URL", "").strip(),
         siglip_api_token=os.getenv("SIGLIP_API_TOKEN", os.getenv("HF_TOKEN", "")).strip(),
         siglip_timeout_sec=max(10.0, _env_float("SIGLIP_TIMEOUT_SEC", 120.0)),
+        dashscope_api_key=os.getenv("DASHSCOPE_API_KEY", "").strip(),
+        dashscope_base_url=(
+            os.getenv("DASHSCOPE_BASE_URL", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+            .strip()
+            .rstrip("/")
+            or "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+        ),
+        dashscope_model=os.getenv("DASHSCOPE_MODEL", "qwen-vl-max").strip() or "qwen-vl-max",
+        dashscope_timeout_sec=max(10.0, _env_float("DASHSCOPE_TIMEOUT_SEC", 120.0)),
+        google_ai_api_key=os.getenv("GOOGLE_AI_API_KEY", os.getenv("GEMINI_API_KEY", "")).strip(),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash",
+        gemini_base_url=(
+            os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta")
+            .strip()
+            .rstrip("/")
+            or "https://generativelanguage.googleapis.com/v1beta"
+        ),
+        gemini_timeout_sec=max(10.0, _env_float("GEMINI_TIMEOUT_SEC", 120.0)),
+        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", "").strip(),
+        anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6").strip() or "claude-sonnet-4-6",
+        anthropic_base_url=(
+            os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1/messages").strip()
+            or "https://api.anthropic.com/v1/messages"
+        ),
+        anthropic_timeout_sec=max(10.0, _env_float("ANTHROPIC_TIMEOUT_SEC", 120.0)),
         google_ads_api_version=os.getenv("GOOGLE_ADS_API_VERSION", "v22"),
         google_ads_customer_id=google_ads_customer_id,
         google_ads_login_customer_id=google_ads_login_customer_id,

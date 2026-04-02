@@ -86,4 +86,39 @@ def test_analyze_beats_audio_requires_an_input_url() -> None:
     with pytest.raises(ValueError) as exc_info:
         analyze_beats_audio(endpoint_url="https://beats.example.test")
 
-    assert str(exc_info.value) == "audio_url or video_url is required"
+    assert str(exc_info.value) == "audio_url or video_url or uploaded media is required"
+
+
+def test_analyze_beats_audio_posts_audio_base64(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_post(url: str, *, headers: dict, json: dict, timeout: float) -> _FakeResponse:
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return _FakeResponse(
+            {
+                "audio_mood": "upbeat",
+                "energy_level": "high",
+                "voice_music_ratio": "music_dominant",
+            }
+        )
+
+    monkeypatch.setattr("keyword_intel.hf_endpoints.requests.post", fake_post)
+
+    result = analyze_beats_audio(
+        endpoint_url="https://beats.example.test",
+        audio_bytes=b"wav-bytes",
+        audio_mime_type="audio/wav",
+        audio_filename="source.wav",
+    )
+
+    assert result.audio_mood == "upbeat"
+    assert captured["json"] == {
+        "inputs": {
+            "audio_base64": "d2F2LWJ5dGVz",
+            "audio_mime_type": "audio/wav",
+            "audio_filename": "source.wav",
+        }
+    }

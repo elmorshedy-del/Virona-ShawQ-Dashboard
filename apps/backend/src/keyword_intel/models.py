@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Product(BaseModel):
@@ -354,6 +354,203 @@ class SignalStackAudioStackResult(BaseModel):
     beats_model_id: str = ""
     firered_model_id: str = ""
     evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class ClaudeSubjectiveScore(BaseModel):
+    emotional_angle: Literal["urgency", "pride", "warmth", "nostalgia", "aspiration", "calm", "tension", "playfulness", "trust", "curiosity"]
+    heritage_vibe: Literal["none", "subtle", "moderate", "strong"]
+    premium_vs_casual: Literal["casual", "balanced", "premium"]
+    ugc_vs_polished: Literal["ugc", "hybrid", "polished"]
+    hook_type: Literal["question", "direct_statement", "visual_reveal", "product_demo", "offer", "story", "other"]
+    opening_style: Literal["punch_first", "direct_statement", "story_open", "tension_open", "question_open", "slow_build"]
+    cta_style: Literal["direct_command", "urgency", "soft_invitation", "identity_extension", "none"]
+    cause_vs_product: Literal["cause_led", "balanced", "product_led"]
+    text_density: Literal["none", "low", "medium", "high"]
+    face_presence: Literal["none", "some", "dominant"]
+    evidence: dict[str, str] = Field(default_factory=dict)
+
+
+class ClaudeSubjectiveScoreResult(BaseModel):
+    rollup_id: str
+    variant_id: str
+    model_id: str
+    prompt_version: str
+    input_hash: str
+    cache_hit: bool = False
+    score: ClaudeSubjectiveScore
+
+
+class CreativeLabelExtractedTextFrame(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    timestamp: str
+    text: str = ""
+
+
+class CreativeStageDEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    opening: str
+    emotional: str
+    heritage: str
+    craft: str
+    surprise: str
+    occasion: str
+
+
+class CreativeLabelEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    production_feel: str
+    delivery_format: str
+    subject_visibility: str
+    product_presentation: str
+    opening: str
+    creative_angle: str
+    audio_layer: str
+
+
+class CreativeStageAVisualLabels(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    production_feel: Literal["native", "clean", "polished"]
+    delivery_format: Literal[
+        "model_outfit_reveal",
+        "on_body_showcase",
+        "problem_solution_reveal",
+        "hands_product_reveal",
+        "product_macro_showcase",
+        "product_flatlay_showcase",
+        "ugc_testimonial",
+        "voiceover_demo",
+        "text_led_showcase",
+        "mixed_demo",
+    ]
+    face_presence: Literal["none", "minor", "major"]
+    body_presence: Literal["none", "minor", "major"]
+    hands_presence: Literal["none", "minor", "major"]
+    face_role: Literal["background", "supporting", "primary", "not_applicable"]
+    body_role: Literal["background", "supporting", "primary", "not_applicable"]
+    hands_role: Literal["background", "supporting", "primary", "not_applicable"]
+    on_body_prominence: Literal["none", "partial", "dominant"]
+    detail_intensity: Literal["low", "moderate", "high", "rich_macro"]
+    texture_emphasis: Literal["none", "subtle", "moderate", "strong"]
+    product_prominence: Literal["low", "moderate", "high", "dominant"]
+    motion_style: Literal["static_showcase", "slow_detail_pan", "handheld_reveal", "guided_demo", "mixed"]
+    opening_focus: Literal["person", "product", "text", "mixed"]
+    styling_count: Literal["single", "multiple"]
+
+
+class CreativeStageBTextLabels(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    extracted_text_sequence: list[CreativeLabelExtractedTextFrame] = Field(default_factory=list)
+    text_density: Literal["none", "low", "medium", "high"]
+    text_role: Literal["none", "support", "selling", "story_led", "dominant"]
+    opening_text_focus: Literal["none", "support", "clear", "dominant"]
+
+
+class CreativeStageCAudioLabels(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    audio_source_type: Literal["speech", "singing", "music", "mixed", "silent"]
+    voiceover_present: Literal["yes", "no"]
+    music_energy: Literal["calm", "moderate", "upbeat", "not_applicable"]
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    model_id: str = ""
+
+
+class CreativeStageDStrategicLabels(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    opening_mechanism: Literal[
+        "direct_claim",
+        "visual_reveal",
+        "outfit_reveal",
+        "detail_reveal",
+        "problem_open",
+        "offer_open",
+        "identity_open",
+        "story_open",
+        "curiosity_claim",
+        "social_proof_open",
+        "scarcity_open",
+        "mixed",
+    ]
+    opening_energy: Literal["calm", "steady", "punchy", "aggressive"]
+    emotional_angle: Literal["pride_identity", "urgency", "warmth_nostalgia", "aspiration", "curiosity", "trust"]
+    heritage_emphasis_level: Literal["none", "subtle", "moderate", "strong"]
+    cause_product_balance: Literal["cause_led", "cause_tilted", "balanced", "product_tilted", "product_led"]
+    craft_emphasis: Literal["none", "subtle", "moderate", "strong"]
+    surprise_detail: Literal["none", "subtle", "deliberate"]
+    occasion_framing: Literal["none", "seasonal", "religious", "cultural_event", "everyday"]
+    evidence: CreativeStageDEvidence
+
+
+class CreativeLabelRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    canonical_creative_id: str
+    variant_id: str
+    labeled_at: str
+    production_feel: Literal["native", "clean", "polished"]
+    delivery_format: Literal[
+        "model_outfit_reveal",
+        "on_body_showcase",
+        "problem_solution_reveal",
+        "hands_product_reveal",
+        "product_macro_showcase",
+        "product_flatlay_showcase",
+        "ugc_testimonial",
+        "voiceover_demo",
+        "text_led_showcase",
+        "mixed_demo",
+    ]
+    face_presence: Literal["none", "minor", "major"]
+    body_presence: Literal["none", "minor", "major"]
+    hands_presence: Literal["none", "minor", "major"]
+    face_role: Literal["background", "supporting", "primary", "not_applicable"]
+    body_role: Literal["background", "supporting", "primary", "not_applicable"]
+    hands_role: Literal["background", "supporting", "primary", "not_applicable"]
+    on_body_prominence: Literal["none", "partial", "dominant"]
+    detail_intensity: Literal["low", "moderate", "high", "rich_macro"]
+    texture_emphasis: Literal["none", "subtle", "moderate", "strong"]
+    product_prominence: Literal["low", "moderate", "high", "dominant"]
+    motion_style: Literal["static_showcase", "slow_detail_pan", "handheld_reveal", "guided_demo", "mixed"]
+    opening_focus: Literal["person", "product", "text", "mixed"]
+    styling_count: Literal["single", "multiple"]
+    text_density: Literal["none", "low", "medium", "high"]
+    text_role: Literal["none", "support", "selling", "story_led", "dominant"]
+    opening_text_focus: Literal["none", "support", "clear", "dominant"]
+    extracted_text_sequence: list[CreativeLabelExtractedTextFrame] = Field(default_factory=list)
+    audio_source_type: Literal["speech", "singing", "music", "mixed", "silent"]
+    voiceover_present: Literal["yes", "no"]
+    music_energy: Literal["calm", "moderate", "upbeat", "not_applicable"]
+    opening_mechanism: Literal[
+        "direct_claim",
+        "visual_reveal",
+        "outfit_reveal",
+        "detail_reveal",
+        "problem_open",
+        "offer_open",
+        "identity_open",
+        "story_open",
+        "curiosity_claim",
+        "social_proof_open",
+        "scarcity_open",
+        "mixed",
+    ]
+    opening_energy: Literal["calm", "steady", "punchy", "aggressive"]
+    emotional_angle: Literal["pride_identity", "urgency", "warmth_nostalgia", "aspiration", "curiosity", "trust"]
+    heritage_emphasis_level: Literal["none", "subtle", "moderate", "strong"]
+    cause_product_balance: Literal["cause_led", "cause_tilted", "balanced", "product_tilted", "product_led"]
+    craft_emphasis: Literal["none", "subtle", "moderate", "strong"]
+    surprise_detail: Literal["none", "subtle", "deliberate"]
+    occasion_framing: Literal["none", "seasonal", "religious", "cultural_event", "everyday"]
+    evidence: CreativeLabelEvidence
+
+
+class CreativeLabelMaterializationResult(BaseModel):
+    tenant_key: str = "default"
+    requested_store_key: str
+    resolved_store_key: str
+    canonical_creative_id: str
+    variant_id: str
+    cache_hits: dict[str, bool] = Field(default_factory=dict)
+    models: dict[str, str] = Field(default_factory=dict)
+    labels: CreativeLabelRecord
 
 
 class CreativeLibraryIngestResult(BaseModel):
