@@ -765,57 +765,58 @@ def _replace_performance_rows(
     lookback_window: str,
     rows: list[dict[str, Any]],
 ) -> None:
-    conn.execute(
-        """
-        DELETE FROM creative_performance
-        WHERE tenant_key = ? AND store_key = ? AND geo = ? AND lookback_window = ?
-        """,
-        (tenant_key, store_key, geo, lookback_window),
-    )
-    for row in rows:
+    with conn:
         conn.execute(
             """
-            INSERT INTO creative_performance (
-                tenant_key, store_key, canonical_creative_id, representative_variant_id, family_id,
-                geo, lookback_window, computed_at, creative_name, media_type, thumbnail_url, preview_url,
-                body_text, headline, currency, blended_roas, log_blended_roas, total_orders, ctr,
-                hook_rate, total_spend, total_revenue, total_impressions, usage_count, variant_count,
-                snapshot_count, active_days, first_active, last_active, is_outlier
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            DELETE FROM creative_performance
+            WHERE tenant_key = ? AND store_key = ? AND geo = ? AND lookback_window = ?
             """,
-            (
-                tenant_key,
-                store_key,
-                row["canonical_creative_id"],
-                row["representative_variant_id"],
-                row["family_id"],
-                geo,
-                lookback_window,
-                row["computed_at"],
-                row["creative_name"],
-                row["media_type"],
-                row["thumbnail_url"],
-                row["preview_url"],
-                row["body_text"],
-                row["headline"],
-                row["currency"],
-                row["blended_roas"],
-                row["log_blended_roas"],
-                row["total_orders"],
-                row["ctr"],
-                row["hook_rate"],
-                row["total_spend"],
-                row["total_revenue"],
-                row["total_impressions"],
-                row["usage_count"],
-                row["variant_count"],
-                row["snapshot_count"],
-                row["active_days"],
-                row["first_active"],
-                row["last_active"],
-                row["is_outlier"],
-            ),
+            (tenant_key, store_key, geo, lookback_window),
         )
+        for row in rows:
+            conn.execute(
+                """
+                INSERT INTO creative_performance (
+                    tenant_key, store_key, canonical_creative_id, representative_variant_id, family_id,
+                    geo, lookback_window, computed_at, creative_name, media_type, thumbnail_url, preview_url,
+                    body_text, headline, currency, blended_roas, log_blended_roas, total_orders, ctr,
+                    hook_rate, total_spend, total_revenue, total_impressions, usage_count, variant_count,
+                    snapshot_count, active_days, first_active, last_active, is_outlier
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tenant_key,
+                    store_key,
+                    row["canonical_creative_id"],
+                    row["representative_variant_id"],
+                    row["family_id"],
+                    geo,
+                    lookback_window,
+                    row["computed_at"],
+                    row["creative_name"],
+                    row["media_type"],
+                    row["thumbnail_url"],
+                    row["preview_url"],
+                    row["body_text"],
+                    row["headline"],
+                    row["currency"],
+                    row["blended_roas"],
+                    row["log_blended_roas"],
+                    row["total_orders"],
+                    row["ctr"],
+                    row["hook_rate"],
+                    row["total_spend"],
+                    row["total_revenue"],
+                    row["total_impressions"],
+                    row["usage_count"],
+                    row["variant_count"],
+                    row["snapshot_count"],
+                    row["active_days"],
+                    row["first_active"],
+                    row["last_active"],
+                    row["is_outlier"],
+                ),
+            )
 
 
 def materialize_usa_creative_rollups(
