@@ -329,7 +329,7 @@ tr.clickable:hover {
 }
 
 tr.clickable.active {
-  background: rgba(17, 24, 39, 0.06);
+  background: rgba(var(--button-primary-rgb), 0.06);
 }
 
 th {
