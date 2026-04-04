@@ -16,7 +16,7 @@ import AIAnalytics from './components/AIAnalytics';
 import AIBudget from './components/AIBudget';
 import BudgetCalculator from './components/BudgetCalculator';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
-import CreativeAnalysis from './components/CreativeAnalysis.jsx';
+import CreativeAnalysisHub from './components/CreativeAnalysisHub.jsx';
 import FatigueDetector from './components/FatigueDetector';
 import MetricsChartsTab from './components/MetricsChartsTab';
 import AttributionTab from './components/AttributionTab';
@@ -24,7 +24,6 @@ import InsightsTab from './components/InsightsTab';
 import SessionIntelligenceTab from './components/SessionIntelligenceTab';
 import NeoMetaTab from './components/NeoMetaTab';
 import ProductFinderPremium from './components/ProductFinderPremium';
-import CreativeIntelligence from './components/CreativeIntelligence';
 import CreativeStudio from './components/CreativeStudio';
 import ExchangeRateDebug from './components/ExchangeRateDebug';
 import CurrencyToggle from './components/CurrencyToggle';
@@ -2272,10 +2271,7 @@ export default function App() {
         )}
 
         {activeTab === CREATIVE_ANALYSIS_TAB_INDEX && (
-          <>
-            <CreativeIntelligence store={currentStore} />
-            <CreativeAnalysis store={store} />
-          </>
+          <CreativeAnalysisHub store={store} currentStore={currentStore} />
         )}
 
         {activeTab === CREATIVE_STUDIO_TAB_INDEX && (
