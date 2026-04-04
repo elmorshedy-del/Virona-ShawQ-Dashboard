@@ -1,7 +1,7 @@
 :root {
   --bg: #f8fafc;
   --bg-2: #fafaf9;
-  --bgWarm: #f8fafc;
+  --bgWarm: var(--bg);
   --panel: #ffffff;
   --ink: #1e293b;
   --muted: #64748b;
