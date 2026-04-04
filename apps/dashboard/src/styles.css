@@ -17,10 +17,11 @@
   --good-soft: #d1fae5;
   --warn: #f59e0b;
   --warn-soft: #fef3c7;
-  --button-primary: #111827;
+  --button-primary-rgb: 17, 24, 39;
+  --button-primary: rgb(var(--button-primary-rgb));
   --button-primary-hover: #0b1220;
-  --button-primary-shadow: 0 1px 2px rgba(17, 24, 39, 0.14);
-  --button-primary-shadow-hover: 0 4px 12px rgba(17, 24, 39, 0.16);
+  --button-primary-shadow: 0 1px 2px rgba(var(--button-primary-rgb), 0.14);
+  --button-primary-shadow-hover: 0 4px 12px rgba(var(--button-primary-rgb), 0.16);
   font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
