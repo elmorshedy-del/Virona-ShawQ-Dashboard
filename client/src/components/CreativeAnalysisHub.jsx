@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import CreativeAnalysis from './CreativeAnalysis.jsx';
 import CreativeIntelligence from './CreativeIntelligence.jsx';
 import CreativeIntelligenceOpsHub from './CreativeIntelligenceOpsHub.jsx';
+import './CreativeAnalysisHub.css';
 
 const HUB_TABS = [
   { id: 'intelligence', label: 'Creative Intelligence' },
@@ -35,14 +36,14 @@ export default function CreativeAnalysisHub({ store, currentStore }) {
   };
 
   return (
-    <div className="px-6 pb-10 space-y-6">
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+    <div className="creative-analysis-hub px-6 pb-10 space-y-6">
+      <div className="creative-analysis-hub__panel bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-200">
-          <div className="text-sm font-semibold text-gray-800">Creative Surfaces</div>
-          <div className="text-xs text-gray-500 mt-1">Use the same tab to switch between analysis and operations.</div>
+          <div className="creative-analysis-hub__title text-sm font-semibold text-gray-800">Creative Surfaces</div>
+          <div className="creative-analysis-hub__subtitle text-xs text-gray-500 mt-1">Use the same tab to switch between analysis and operations.</div>
         </div>
         <div className="p-5">
-          <div className="inline-flex items-center gap-1 rounded-xl border border-gray-200 bg-white p-1">
+          <div className="creative-analysis-hub__tabs inline-flex items-center gap-1 rounded-xl border border-gray-200 bg-white p-1">
             {HUB_TABS.map((tab) => {
               const isActive = activeTab === tab.id;
               return (
@@ -50,9 +51,9 @@ export default function CreativeAnalysisHub({ store, currentStore }) {
                   key={tab.id}
                   type="button"
                   onClick={() => handleSetTab(tab.id)}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  className={`creative-analysis-hub__tab rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
                     isActive
-                      ? 'bg-gray-900 text-white'
+                      ? 'creative-analysis-hub__tab--active bg-gray-900 text-white'
                       : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >

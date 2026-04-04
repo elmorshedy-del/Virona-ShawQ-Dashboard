@@ -199,7 +199,7 @@ function buildMetricCards(items, currency) {
 
 function SectionTabs({ active, onChange }) {
   return (
-    <div className="inline-flex items-center gap-1 rounded-xl border border-gray-200 bg-white p-1 shadow-sm">
+    <div className="creative-ops-hub__tabs inline-flex items-center gap-1 rounded-xl border border-gray-200 bg-white p-1 shadow-sm">
       {SECTION_TABS.map((tab) => {
         const isActive = active === tab.id;
         return (
@@ -207,8 +207,10 @@ function SectionTabs({ active, onChange }) {
             key={tab.id}
             type="button"
             onClick={() => onChange(tab.id)}
-            className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
-              isActive ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
+            className={`creative-ops-hub__tab rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+              isActive
+                ? 'creative-ops-hub__tab--active bg-gray-900 text-white'
+                : 'text-gray-600 hover:bg-gray-100'
             }`}
           >
             {tab.label}
@@ -591,7 +593,7 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
   }, [section, workbenchSelectedId, tenantKey, storeKey, workbenchWindow]);
 
   return (
-    <div className="px-6 pb-10 space-y-6">
+    <div className="creative-ops-hub px-6 pb-10 space-y-6">
       <section className="bg-white rounded-2xl shadow-sm border border-gray-200 p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -669,7 +671,7 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
             </div>
             <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-3">
               {libraryMetricCards.map((card) => (
-                <div key={card.label} className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2">
+                <div key={card.label} className="creative-ops-hub__metric-card rounded-xl border border-gray-200 bg-gray-50 px-3 py-2">
                   <p className="text-[11px] uppercase tracking-wide text-gray-500">{card.label}</p>
                   <p className="text-sm font-semibold text-gray-900 mt-1">{card.value}</p>
                 </div>
@@ -684,7 +686,7 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
                 <span className="text-xs text-gray-500">{fmtNumber(libraryRows.length, 0)} rows</span>
               </div>
               <div className="overflow-auto max-h-[560px]">
-                <table className="min-w-full text-sm">
+                <table className="creative-ops-hub__table min-w-full text-sm">
                   <thead className="sticky top-0 bg-white">
                     <tr className="text-left text-gray-500 border-b border-gray-200">
                       <th className="py-2 pr-3">Creative</th>
@@ -700,8 +702,8 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
                       <tr
                         key={row.rollup_id}
                         onClick={() => setLibrarySelectedId(row.rollup_id)}
-                        className={`cursor-pointer border-b border-gray-100 ${
-                          librarySelectedId === row.rollup_id ? 'bg-gray-100' : 'hover:bg-gray-50'
+                        className={`creative-ops-hub__row cursor-pointer border-b border-gray-100 ${
+                          librarySelectedId === row.rollup_id ? 'is-active bg-gray-100' : 'hover:bg-gray-50'
                         }`}
                       >
                         <td className="py-2 pr-3">
@@ -752,7 +754,7 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
                       ['Hook', fmtPercent(libraryDetail.hook_rate, 2)],
                       ['LPV Rate', fmtPercent(libraryDetail.lpv_rate, 2)],
                     ].map(([label, value]) => (
-                      <div key={label} className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5">
+                      <div key={label} className="creative-ops-hub__detail-stat rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5">
                         <p className="text-[10px] uppercase tracking-wide text-gray-500">{label}</p>
                         <p className="text-sm font-semibold text-gray-900">{value}</p>
                       </div>
@@ -854,7 +856,7 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
                 <span className="text-xs text-gray-500">{fmtNumber(workbenchRows.length, 0)} rows</span>
               </div>
               <div className="overflow-auto max-h-[560px]">
-                <table className="min-w-full text-sm">
+                <table className="creative-ops-hub__table min-w-full text-sm">
                   <thead className="sticky top-0 bg-white">
                     <tr className="text-left text-gray-500 border-b border-gray-200">
                       <th className="py-2 pr-3">Creative</th>
@@ -868,8 +870,8 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
                       <tr
                         key={row.rollup_id}
                         onClick={() => setWorkbenchSelectedId(row.rollup_id)}
-                        className={`cursor-pointer border-b border-gray-100 ${
-                          workbenchSelectedId === row.rollup_id ? 'bg-gray-100' : 'hover:bg-gray-50'
+                        className={`creative-ops-hub__row cursor-pointer border-b border-gray-100 ${
+                          workbenchSelectedId === row.rollup_id ? 'is-active bg-gray-100' : 'hover:bg-gray-50'
                         }`}
                       >
                         <td className="py-2 pr-3">
@@ -880,7 +882,7 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
                         </td>
                         <td className="py-2 pr-3">
                           <span
-                            className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${
+                            className={`creative-ops-hub__chip inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${
                               row.label_status === 'labeled'
                                 ? 'bg-gray-100 text-gray-700'
                                 : 'bg-gray-100 text-gray-700'
@@ -926,7 +928,7 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
                       ['Hook', fmtPercent(workbenchDetail.hook_rate, 2)],
                       ['LPV', fmtPercent(workbenchDetail.lpv_rate, 2)],
                     ].map(([label, value]) => (
-                      <div key={label} className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5">
+                      <div key={label} className="creative-ops-hub__detail-stat rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5">
                         <p className="text-[10px] uppercase tracking-wide text-gray-500">{label}</p>
                         <p className="text-sm font-semibold text-gray-900">{value}</p>
                       </div>
@@ -953,7 +955,7 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
                   <div className="rounded-lg border border-gray-200 p-3">
                     <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Stored Labels</p>
                     {workbenchLabels ? (
-                      <pre className="mt-2 text-[11px] leading-5 text-gray-700 whitespace-pre-wrap break-all">
+                      <pre className="creative-ops-hub__codeblock mt-2 text-[11px] leading-5 text-gray-700 whitespace-pre-wrap break-all">
                         {JSON.stringify(workbenchLabels, null, 2)}
                       </pre>
                     ) : (
@@ -1055,7 +1057,7 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
                   key={groupId}
                   type="button"
                   onClick={() => toggleDatasetGroup(groupId)}
-                  className={`rounded-full px-3 py-1 text-xs font-semibold border ${
+                  className={`creative-ops-hub__chip rounded-full px-3 py-1 text-xs font-semibold border ${
                     datasetGroups.includes(groupId)
                       ? 'bg-gray-100 text-gray-700 border-gray-300'
                       : 'bg-gray-50 text-gray-600 border-gray-200'
@@ -1073,7 +1075,7 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
                     key={field}
                     type="button"
                     onClick={() => toggleDatasetField(field)}
-                    className={`rounded-full px-3 py-1 text-xs font-semibold border ${
+                    className={`creative-ops-hub__chip rounded-full px-3 py-1 text-xs font-semibold border ${
                       datasetSelectedFields.includes(field)
                         ? 'bg-gray-100 text-gray-700 border-gray-300'
                         : 'bg-gray-50 text-gray-600 border-gray-200'
@@ -1115,19 +1117,19 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
             {datasetPreview ? (
               <div className="space-y-3">
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5">
+                  <div className="creative-ops-hub__detail-stat rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5">
                     <p className="text-[10px] uppercase tracking-wide text-gray-500">Rows</p>
                     <p className="text-sm font-semibold text-gray-900">{fmtNumber(datasetPreview.row_count, 0)}</p>
                   </div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5">
+                  <div className="creative-ops-hub__detail-stat rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5">
                     <p className="text-[10px] uppercase tracking-wide text-gray-500">Target Non-Null</p>
                     <p className="text-sm font-semibold text-gray-900">{fmtNumber(datasetPreview.target_non_null_count, 0)}</p>
                   </div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5">
+                  <div className="creative-ops-hub__detail-stat rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5">
                     <p className="text-[10px] uppercase tracking-wide text-gray-500">Fields</p>
                     <p className="text-sm font-semibold text-gray-900">{fmtNumber((datasetPreview.selected_fields || []).length, 0)}</p>
                   </div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5">
+                  <div className="creative-ops-hub__detail-stat rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5">
                     <p className="text-[10px] uppercase tracking-wide text-gray-500">Target</p>
                     <p className="text-sm font-semibold text-gray-900">{datasetPreview.target_metric || datasetTarget}</p>
                   </div>
@@ -1135,7 +1137,7 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
                 <div className="rounded-lg border border-gray-200 p-3">
                   <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Missingness</p>
                   <div className="mt-2 overflow-auto max-h-40">
-                    <table className="min-w-full text-xs">
+                    <table className="creative-ops-hub__table min-w-full text-xs">
                       <thead>
                         <tr className="text-left text-gray-500 border-b border-gray-100">
                           <th className="py-1 pr-3">Field</th>
@@ -1155,7 +1157,7 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
                 </div>
                 <div className="rounded-lg border border-gray-200 p-3">
                   <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Sample Rows</p>
-                  <pre className="mt-2 text-[11px] leading-5 text-gray-700 whitespace-pre-wrap break-all">
+                  <pre className="creative-ops-hub__codeblock mt-2 text-[11px] leading-5 text-gray-700 whitespace-pre-wrap break-all">
                     {JSON.stringify(datasetPreview.sample_rows || [], null, 2)}
                   </pre>
                 </div>
