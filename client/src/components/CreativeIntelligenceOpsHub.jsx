@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 const WINDOW_TO_DAYS = {
   '30d': 30,
@@ -281,9 +281,11 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
     setStoreKey(initialStoreKey);
   }, [initialStoreKey]);
 
-  const clearError = () => setGlobalError('');
+  const clearError = useCallback(() => {
+    setGlobalError('');
+  }, []);
 
-  const loadLibraryRows = async ({ selectFirst = false } = {}) => {
+  const loadLibraryRows = useCallback(async ({ selectFirst = false } = {}) => {
     if (!storeKey) return;
     clearError();
     setLibraryLoading(true);
@@ -300,19 +302,18 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
       );
       const rows = Array.isArray(payload?.items) ? payload.items : [];
       setLibraryRows(rows);
-      if (selectFirst) {
-        setLibrarySelectedId(rows[0]?.rollup_id || '');
-      } else if (!rows.some((row) => row.rollup_id === librarySelectedId)) {
-        setLibrarySelectedId(rows[0]?.rollup_id || '');
-      }
+      setLibrarySelectedId((prev) => {
+        if (selectFirst) return rows[0]?.rollup_id || '';
+        return rows.some((row) => row.rollup_id === prev) ? prev : rows[0]?.rollup_id || '';
+      });
     } catch (error) {
       setGlobalError(error?.message || 'Failed to load USA rollup');
     } finally {
       setLibraryLoading(false);
     }
-  };
+  }, [clearError, libraryDays, libraryLimit, libraryWindow, storeKey, tenantKey]);
 
-  const loadLibraryDetail = async (rollupId) => {
+  const loadLibraryDetail = useCallback(async (rollupId) => {
     if (!storeKey || !rollupId) {
       setLibraryDetail(null);
       return;
@@ -336,9 +337,9 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
     } finally {
       setLibraryDetailLoading(false);
     }
-  };
+  }, [clearError, libraryDays, libraryWindow, storeKey, tenantKey]);
 
-  const materializeLibrary = async () => {
+  const materializeLibrary = useCallback(async () => {
     if (!storeKey) return;
     clearError();
     setLibraryMaterializing(true);
@@ -361,9 +362,9 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
     } finally {
       setLibraryMaterializing(false);
     }
-  };
+  }, [clearError, libraryDays, libraryWindow, loadLibraryRows, storeKey, tenantKey]);
 
-  const loadWorkbenchRows = async ({ selectFirst = false } = {}) => {
+  const loadWorkbenchRows = useCallback(async ({ selectFirst = false } = {}) => {
     if (!storeKey) return;
     clearError();
     setWorkbenchLoading(true);
@@ -380,19 +381,18 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
       );
       const rows = Array.isArray(payload?.items) ? payload.items : [];
       setWorkbenchRows(rows);
-      if (selectFirst) {
-        setWorkbenchSelectedId(rows[0]?.rollup_id || '');
-      } else if (!rows.some((row) => row.rollup_id === workbenchSelectedId)) {
-        setWorkbenchSelectedId(rows[0]?.rollup_id || '');
-      }
+      setWorkbenchSelectedId((prev) => {
+        if (selectFirst) return rows[0]?.rollup_id || '';
+        return rows.some((row) => row.rollup_id === prev) ? prev : rows[0]?.rollup_id || '';
+      });
     } catch (error) {
       setGlobalError(error?.message || 'Failed to load workbench queue');
     } finally {
       setWorkbenchLoading(false);
     }
-  };
+  }, [clearError, storeKey, tenantKey, workbenchDays, workbenchLimit, workbenchStatus, workbenchWindow]);
 
-  const loadWorkbenchDetail = async (rollupId) => {
+  const loadWorkbenchDetail = useCallback(async (rollupId) => {
     if (!storeKey || !rollupId) {
       setWorkbenchDetail(null);
       setWorkbenchLabels(null);
@@ -423,7 +423,8 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
             })}`,
           );
           setWorkbenchLabels(labels || null);
-        } catch {
+        } catch (error) {
+          console.error(`Failed to load labels for rollup ${rollupId}:`, error);
           setWorkbenchLabels(null);
         }
       }
@@ -434,9 +435,9 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
     } finally {
       setWorkbenchDetailLoading(false);
     }
-  };
+  }, [clearError, storeKey, tenantKey, workbenchDays, workbenchWindow]);
 
-  const runSingleLabel = async (forceRefresh = false) => {
+  const runSingleLabel = useCallback(async (forceRefresh = false) => {
     if (!workbenchDetail?.rollup_id) return;
     clearError();
     setWorkbenchSingleLoading(true);
@@ -459,9 +460,9 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
     } finally {
       setWorkbenchSingleLoading(false);
     }
-  };
+  }, [clearError, loadWorkbenchRows, storeKey, tenantKey, workbenchDetail]);
 
-  const runBatchLabel = async (forceRefresh = false) => {
+  const runBatchLabel = useCallback(async (forceRefresh = false) => {
     if (!workbenchRows.length) return;
     clearError();
     setWorkbenchBatchLoading(true);
@@ -487,7 +488,17 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
     } finally {
       setWorkbenchBatchLoading(false);
     }
-  };
+  }, [
+    clearError,
+    loadWorkbenchRows,
+    storeKey,
+    tenantKey,
+    workbenchDays,
+    workbenchLimit,
+    workbenchRows.length,
+    workbenchStatus,
+    workbenchWindow,
+  ]);
 
   const toggleDatasetGroup = (groupId) => {
     setDatasetGroups((prev) => {
@@ -503,7 +514,7 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
     });
   };
 
-  const previewDataset = async () => {
+  const previewDataset = useCallback(async () => {
     if (!storeKey) return;
     clearError();
     setDatasetPreviewLoading(true);
@@ -535,9 +546,21 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
     } finally {
       setDatasetPreviewLoading(false);
     }
-  };
+  }, [
+    clearError,
+    datasetDays,
+    datasetGeo,
+    datasetGroups,
+    datasetLabeledOnly,
+    datasetMinSpend,
+    datasetSelectedFields,
+    datasetTarget,
+    datasetWindow,
+    storeKey,
+    tenantKey,
+  ]);
 
-  const buildDataset = async () => {
+  const buildDataset = useCallback(async () => {
     if (!storeKey) return;
     clearError();
     setDatasetBuildLoading(true);
@@ -566,31 +589,41 @@ export default function CreativeIntelligenceOpsHub({ store, currentStore }) {
     } finally {
       setDatasetBuildLoading(false);
     }
-  };
+  }, [
+    clearError,
+    datasetDays,
+    datasetGeo,
+    datasetGroups,
+    datasetLabeledOnly,
+    datasetMinSpend,
+    datasetName,
+    datasetOutput,
+    datasetSelectedFields,
+    datasetTarget,
+    datasetWindow,
+    storeKey,
+    tenantKey,
+  ]);
 
   useEffect(() => {
     if (section !== 'library') return;
     void loadLibraryRows({ selectFirst: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [section, tenantKey, storeKey, libraryWindow, libraryLimit]);
+  }, [loadLibraryRows, section]);
 
   useEffect(() => {
     if (section !== 'library') return;
     void loadLibraryDetail(librarySelectedId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [section, librarySelectedId, tenantKey, storeKey, libraryWindow]);
+  }, [librarySelectedId, loadLibraryDetail, section]);
 
   useEffect(() => {
     if (section !== 'workbench') return;
     void loadWorkbenchRows({ selectFirst: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [section, tenantKey, storeKey, workbenchWindow, workbenchStatus, workbenchLimit]);
+  }, [loadWorkbenchRows, section]);
 
   useEffect(() => {
     if (section !== 'workbench') return;
     void loadWorkbenchDetail(workbenchSelectedId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [section, workbenchSelectedId, tenantKey, storeKey, workbenchWindow]);
+  }, [loadWorkbenchDetail, section, workbenchSelectedId]);
 
   return (
     <div className="creative-ops-hub px-6 pb-10 space-y-6">
