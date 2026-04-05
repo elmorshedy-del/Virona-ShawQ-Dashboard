@@ -34,6 +34,7 @@ import conversionUiFixLabRouter from './routes/conversionUiFixLab.js';
 import campaignIntelligenceRouter from './routes/campaignIntelligence.js';
 import dashboardDailyBriefRouter from './routes/dashboardDailyBrief.js';
 import blackboxRouter from './routes/blackbox.js';
+import creativeIntelligenceProxyRouter from './routes/creativeIntelligenceProxy.js';
 import { backfillBlackboxFromShopifyPixelEvents } from './services/blackboxService.js';
 import { ensureFaceModelsLoaded } from './services/testimonialExtractorService.js';
 import { runWhatIfMigration } from './db/whatifMigration.js';
@@ -298,6 +299,7 @@ app.use('/api/conversion-ui-fix-lab', conversionUiFixLabRouter);
 app.use('/api/campaign-intelligence', campaignIntelligenceRouter);
 app.use('/api/dashboard-daily-brief', dashboardDailyBriefRouter);
 app.use('/api/blackbox', blackboxRouter);
+app.use('/api', creativeIntelligenceProxyRouter);
 
 // Serve static files in production
 const clientDist = path.join(__dirname, '../client/dist');
