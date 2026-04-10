@@ -132,6 +132,23 @@ function buildCampaignFilter(params, columnPrefix = '') {
   return { clause: '', value: null };
 }
 
+function normalizeChannel(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'facebook' || normalized === 'instagram') return normalized;
+  return '';
+}
+
+function buildPublisherPlatformFilter(params, columnPrefix = '') {
+  const channel = normalizeChannel(params?.channel);
+  if (!channel) return { clause: '', value: null };
+
+  const column = columnPrefix ? `${columnPrefix}publisher_platform` : 'publisher_platform';
+  return {
+    clause: ` AND LOWER(COALESCE(${column}, '')) = ?`,
+    value: channel
+  };
+}
+
 // ============================================================================
 // SALLA DETECTION
 // ============================================================================
@@ -223,18 +240,20 @@ export function getCitiesByCountry(store, countryCode, params) {
 function getTotalsForRange(db, store, startDate, endDate, params = {}) {
   const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const { clause: platformClause, value: platformValue } = buildPublisherPlatformFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
+  const platformArgs = platformValue ? [platformValue] : [];
 
   const metaTotals = db.prepare(`
     SELECT SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders
-    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
-  `).get(store, startDate, endDate, ...campaignArgs) || {};
+    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
+  `).get(store, startDate, endDate, ...campaignArgs, ...platformArgs) || {};
 
   let totalSpend = metaTotals.spend || 0;
   let totalRevenue = metaTotals.revenue || 0;
   let totalOrders = metaTotals.orders || 0;
 
-  if (store === 'shawq' && !campaignValue) {
+  if (store === 'shawq' && !campaignValue && !platformValue) {
     const ecomData = db.prepare(`
       SELECT COUNT(*) as orders, SUM(${SHOPIFY_REVENUE_SQL}) as revenue
       FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
@@ -267,14 +286,16 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
     }
   }
 
-  const manualData = db.prepare(`
-    SELECT SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
-    FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?${manualCampaignClause}
-  `).get(store, startDate, endDate, ...manualCampaignArgs) || {};
+  if (!platformValue) {
+    const manualData = db.prepare(`
+      SELECT SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
+      FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?${manualCampaignClause}
+    `).get(store, startDate, endDate, ...manualCampaignArgs) || {};
 
-  totalSpend += manualData.spend || 0;
-  totalRevenue += manualData.revenue || 0;
-  totalOrders += manualData.orders || 0;
+    totalSpend += manualData.spend || 0;
+    totalRevenue += manualData.revenue || 0;
+    totalOrders += manualData.orders || 0;
+  }
 
   const override = db.prepare(`
     SELECT SUM(amount) as amount FROM manual_spend_overrides WHERE store = ? AND date BETWEEN ? AND ?
@@ -294,12 +315,14 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
 function getMetaTotalsForRange(db, store, startDate, endDate, params = {}) {
   const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const { clause: platformClause, value: platformValue } = buildPublisherPlatformFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
+  const platformArgs = platformValue ? [platformValue] : [];
 
   const metaTotals = db.prepare(`
     SELECT SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders
-    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
-  `).get(store, startDate, endDate, ...campaignArgs) || {};
+    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
+  `).get(store, startDate, endDate, ...campaignArgs, ...platformArgs) || {};
 
   const totalSpend = metaTotals.spend || 0;
   const totalRevenue = metaTotals.revenue || 0;
@@ -324,7 +347,9 @@ export function getDashboard(store, params) {
   const prevRange = getPreviousDateRange(startDate, endDate);
   const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const { clause: platformClause, value: platformValue } = buildPublisherPlatformFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
+  const platformArgs = platformValue ? [platformValue] : [];
   const includeInactive = shouldIncludeInactive(params);
 
   const current = getTotalsForRange(db, store, startDate, endDate, params);
@@ -353,10 +378,10 @@ export function getDashboard(store, params) {
       SUM(clicks) as clicks, SUM(conversions) as conversions, SUM(conversion_value) as conversionValue,
       SUM(landing_page_views) as lpv, SUM(add_to_cart) as atc, SUM(checkouts_initiated) as checkout
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
     GROUP BY campaign_name
     ORDER BY spend DESC
-  `).all(store, startDate, endDate, ...campaignArgs);
+  `).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
 
   const campaigns = campaignData.map(c => ({
     ...c,
@@ -381,8 +406,8 @@ export function getDashboard(store, params) {
       SUM(add_to_cart) as atc_total, SUM(checkouts_initiated) as checkout_total,
       COUNT(DISTINCT campaign_name) as campaign_count
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
-  `).get(store, startDate, endDate, ...campaignArgs) || {};
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
+  `).get(store, startDate, endDate, ...campaignArgs, ...platformArgs) || {};
 
   const metaCampaignCount = metaTotals.campaign_count || 0;
   const metaImpressionsTotal = metaTotals.impressions_total || 0;
@@ -1222,7 +1247,9 @@ function getTrends(store, startDate, endDate, params = {}) {
   const db = getDb();
   const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const { clause: platformClause, value: platformValue } = buildPublisherPlatformFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
+  const platformArgs = platformValue ? [platformValue] : [];
   const allDates = [];
   const start = new Date(startDate);
   const end = new Date(endDate);
@@ -1231,13 +1258,13 @@ function getTrends(store, startDate, endDate, params = {}) {
   }
 
   let salesData = [];
-  if (store === 'shawq' && !campaignValue) {
+  if (store === 'shawq' && !campaignValue && !platformValue) {
     salesData = db.prepare(`SELECT date, COUNT(*) as orders, SUM(${SHOPIFY_REVENUE_SQL}) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 GROUP BY date`).all(store, startDate, endDate);
   } else {
-    salesData = db.prepare(`SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause} GROUP BY date`).all(store, startDate, endDate, ...campaignArgs);
+    salesData = db.prepare(`SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause} GROUP BY date`).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
   }
 
-  const spendData = db.prepare(`SELECT date, SUM(spend) as spend FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause} GROUP BY date`).all(store, startDate, endDate, ...campaignArgs);
+  const spendData = db.prepare(`SELECT date, SUM(spend) as spend FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause} GROUP BY date`).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
 
   const map = new Map();
   allDates.forEach(d => map.set(d, { date: d, orders: 0, revenue: 0, spend: 0 }));
@@ -1257,7 +1284,9 @@ function getMetaTrends(store, startDate, endDate, params = {}) {
   const db = getDb();
   const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const { clause: platformClause, value: platformValue } = buildPublisherPlatformFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
+  const platformArgs = platformValue ? [platformValue] : [];
   const allDates = [];
   const start = new Date(startDate);
   const end = new Date(endDate);
@@ -1268,16 +1297,16 @@ function getMetaTrends(store, startDate, endDate, params = {}) {
   const salesData = db.prepare(`
     SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
     GROUP BY date
-  `).all(store, startDate, endDate, ...campaignArgs);
+  `).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
 
   const spendData = db.prepare(`
     SELECT date, SUM(spend) as spend
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
     GROUP BY date
-  `).all(store, startDate, endDate, ...campaignArgs);
+  `).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
 
   const map = new Map();
   allDates.forEach(d => map.set(d, { date: d, orders: 0, revenue: 0, spend: 0 }));
@@ -2180,7 +2209,9 @@ export function getEfficiency(store, params) {
   const prevRange = getPreviousDateRange(startDate, endDate);
   const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const { clause: platformClause, value: platformValue } = buildPublisherPlatformFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
+  const platformArgs = platformValue ? [platformValue] : [];
 
   const current = getMetaTotalsForRange(db, store, startDate, endDate, params);
   const previous = getMetaTotalsForRange(db, store, prevRange.startDate, prevRange.endDate, params);
@@ -2203,13 +2234,91 @@ export function getEfficiency(store, params) {
     status = 'red';
   }
 
+  const aggregateStats = db.prepare(`
+    SELECT
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(conversions) as purchases
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
+  `).get(store, startDate, endDate, ...campaignArgs, ...platformArgs) || {};
+
+  const prevAggregateStats = db.prepare(`
+    SELECT
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(conversions) as purchases
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
+  `).get(store, prevRange.startDate, prevRange.endDate, ...campaignArgs, ...platformArgs) || {};
+
+  const toSafeNumber = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+  const toRate = (num, den) => den > 0 ? (num / den) * 100 : 0;
+  const toPctChange = (curr, prev) => prev > 0 ? ((curr - prev) / prev) * 100 : 0;
+
+  const currentReach = toSafeNumber(aggregateStats.reach);
+  const previousReach = toSafeNumber(prevAggregateStats.reach);
+  const currentClicks = toSafeNumber(aggregateStats.clicks);
+  const previousClicks = toSafeNumber(prevAggregateStats.clicks);
+  const currentImpressions = toSafeNumber(aggregateStats.impressions);
+  const previousImpressions = toSafeNumber(prevAggregateStats.impressions);
+  const currentLpv = toSafeNumber(aggregateStats.lpv);
+  const previousLpv = toSafeNumber(prevAggregateStats.lpv);
+  const currentPurchases = toSafeNumber(aggregateStats.purchases);
+  const previousPurchases = toSafeNumber(prevAggregateStats.purchases);
+  const currentAtc = toSafeNumber(aggregateStats.atc);
+  const previousAtc = toSafeNumber(prevAggregateStats.atc);
+
+  const currentCtr = toRate(currentClicks, currentImpressions);
+  const previousCtr = toRate(previousClicks, previousImpressions);
+  const currentLpvRate = toRate(currentLpv, currentClicks);
+  const previousLpvRate = toRate(previousLpv, previousClicks);
+  const currentCvr = toRate(currentPurchases, currentClicks);
+  const previousCvr = toRate(previousPurchases, previousClicks);
+  const currentPurchaseRate = toRate(currentPurchases, currentImpressions);
+  const previousPurchaseRate = toRate(previousPurchases, previousImpressions);
+  const currentAtcRate = toRate(currentAtc, currentClicks);
+  const previousAtcRate = toRate(previousAtc, previousClicks);
+
+  const sparklineData = db.prepare(`
+    SELECT
+      date,
+      SUM(impressions) as impressions,
+      SUM(clicks) as clicks,
+      SUM(reach) as reach,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(conversions) as purchases,
+      SUM(spend) as spend
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
+    GROUP BY date
+    ORDER BY date ASC
+  `).all(store, startDate, endDate, ...campaignArgs, ...platformArgs)
+    .map((row) => ({
+      date: row.date,
+      impressions: toSafeNumber(row.impressions),
+      clicks: toSafeNumber(row.clicks),
+      reach: toSafeNumber(row.reach),
+      lpv: toSafeNumber(row.lpv),
+      atc: toSafeNumber(row.atc),
+      purchases: toSafeNumber(row.purchases),
+      spend: toSafeNumber(row.spend)
+    }));
+
   const countryRows = db.prepare(`
     SELECT country, SUM(spend) as spend, SUM(conversions) as orders, SUM(conversion_value) as revenue
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'${statusFilter}${campaignClause}
+    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'${statusFilter}${campaignClause}${platformClause}
     GROUP BY country
     ORDER BY SUM(spend) DESC
-  `).all(store, startDate, endDate, ...campaignArgs);
+  `).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
 
   const averageCac = current.cac || 0;
   const averageRoas = current.roas || 0;
@@ -2248,14 +2357,35 @@ export function getEfficiency(store, params) {
 
   return {
     status,
-    current,
-    previous,
+    current: {
+      ...current,
+      ctr: currentCtr,
+      lpvRate: currentLpvRate,
+      cvr: currentCvr,
+      purchaseRate: currentPurchaseRate
+    },
+    previous: {
+      ...previous,
+      ctr: previousCtr,
+      lpvRate: previousLpvRate,
+      cvr: previousCvr,
+      purchaseRate: previousPurchaseRate
+    },
     spendChange,
     roasChange,
     efficiencyRatio,
     averageCac: current.cac,
     marginalCac,
     marginalPremium: current.cac > 0 ? ((marginalCac - current.cac) / current.cac) * 100 : 0,
+    changes: {
+      uniqueReach: toPctChange(currentReach, previousReach),
+      lpvRate: toPctChange(currentLpvRate, previousLpvRate),
+      atcRate: toPctChange(currentAtcRate, previousAtcRate),
+      ctr: toPctChange(currentCtr, previousCtr),
+      cvr: toPctChange(currentCvr, previousCvr),
+      purchaseRate: toPctChange(currentPurchaseRate, previousPurchaseRate)
+    },
+    sparklineData,
     countries
   };
 }
