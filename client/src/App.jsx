@@ -19,6 +19,7 @@ import UnifiedAnalytics from './components/UnifiedAnalytics';
 import CreativeAnalysisHub from './components/CreativeAnalysisHub.jsx';
 import FatigueDetector from './components/FatigueDetector';
 import MetricsChartsTab from './components/MetricsChartsTab';
+import MetaMetricsTab from './components/MetaMetricsTab';
 import AttributionTab from './components/AttributionTab';
 import InsightsTab from './components/InsightsTab';
 import SessionIntelligenceTab from './components/SessionIntelligenceTab';
@@ -656,7 +657,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Campaign Intelligence', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Product Finder', 'Customer Insights', 'Conversion/UI Fix Lab', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Watchtower', 'CRO Forensics', 'Checkout Blackbox'];
+const TABS = ['Dashboard', 'Meta Metrics', 'Campaign Intelligence', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Product Finder', 'Customer Insights', 'Conversion/UI Fix Lab', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Watchtower', 'CRO Forensics', 'Checkout Blackbox'];
 const TAB_INDEX = Object.freeze(
   TABS.reduce((indexMap, tabLabel, index) => {
     indexMap[tabLabel] = index;
@@ -666,6 +667,7 @@ const TAB_INDEX = Object.freeze(
 const DASHBOARD_TAB_INDEX = TAB_INDEX['Dashboard'];
 const CAMPAIGN_INTELLIGENCE_TAB_INDEX = TAB_INDEX['Campaign Intelligence'];
 const METRICS_CHARTS_TAB_INDEX = TAB_INDEX['Metrics Charts'];
+const META_METRICS_TAB_INDEX = TAB_INDEX['Meta Metrics'];
 const ATTRIBUTION_TAB_INDEX = TAB_INDEX['Attribution'];
 const INSIGHTS_TAB_INDEX = TAB_INDEX['Insights'];
 const SESSION_INTELLIGENCE_TAB_INDEX = TAB_INDEX['Session Intelligence'];
@@ -686,7 +688,7 @@ const EXCHANGE_RATES_TAB_INDEX = TAB_INDEX['Exchange Rates'];
 const WATCHTOWER_TAB_INDEX = TAB_INDEX['Watchtower'];
 const CRO_FORENSICS_TAB_INDEX = TAB_INDEX['CRO Forensics'];
 const CHECKOUT_BLACKBOX_TAB_INDEX = TAB_INDEX['Checkout Blackbox'];
-const TABS_VERSION = '2026-02-22-checkout-blackbox-v1';
+const TABS_VERSION = '2026-04-10-meta-metrics-v2';
 const MOBILE_VIEWPORT_MAX_WIDTH_PX = 768;
 const MOBILE_VIEWPORT_QUERY = `(max-width: ${MOBILE_VIEWPORT_MAX_WIDTH_PX}px)`;
 const MOBILE_DASHBOARD_TREND_POINTS = 14;
@@ -2182,6 +2184,18 @@ export default function App() {
             formatCurrency={formatCurrency}
             formatNumber={formatNumber}
             campaignScopeLabel={campaignScopeLabel}
+          />
+        )}
+
+        {activeTab === META_METRICS_TAB_INDEX && (
+          <MetaMetricsTab
+            store={store}
+            dashboard={dashboard}
+            metaAdManagerData={metaAdManagerData}
+            timeOfDay={timeOfDay}
+            globalDateRange={dashboard?.dateRange || dateRange}
+            formatCurrency={formatCurrency}
+            formatNumber={formatNumber}
           />
         )}
 

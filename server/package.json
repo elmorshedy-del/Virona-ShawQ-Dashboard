@@ -8,7 +8,9 @@
     "dev": "node --watch server.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
     "@google/generative-ai": "^0.24.1",
+    "@resvg/resvg-js": "^2.6.2",
     "axios": "^1.13.2",
     "better-sqlite3": "^9.4.3",
     "cloudinary": "^2.8.0",
@@ -22,6 +24,8 @@
     "puppeteer": "^24.35.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "@anthropic-ai/sdk": "^0.39.0"
+    "satori": "^0.26.0",
+    "sharp": "^0.34.5",
+    "twemoji": "^14.0.2"
   }
 }
