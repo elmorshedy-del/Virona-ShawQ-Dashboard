@@ -465,13 +465,21 @@ function buildHourlyData(timeOfDayData) {
   }));
 }
 
+const ACTIVE_STATUSES = new Set(['ACTIVE', 'UNKNOWN']);
+
+function isEffectivelyActive(campaign) {
+  const status = (campaign?.effective_status ?? '').toString().toUpperCase().trim();
+  return !status || ACTIVE_STATUSES.has(status);
+}
+
 function buildCampaignOptions(dashboard) {
   const campaigns = Array.isArray(dashboard?.campaigns) ? dashboard.campaigns : [];
   const byId = new Map();
 
   campaigns.forEach((campaign) => {
-    const campaignId = String(campaign?.campaignId || '').trim();
-    const campaignName = String(campaign?.campaignName || '').trim();
+    if (!isEffectivelyActive(campaign)) return;
+    const campaignId = String(campaign?.campaignId || campaign?.campaign_id || '').trim();
+    const campaignName = String(campaign?.campaignName || campaign?.campaign_name || '').trim();
     if (!campaignId || !campaignName) return;
 
     const existing = byId.get(campaignId);
