@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import MetricCard from './MetricCard';
 import Sidebar from './Sidebar';
 import GenderPanel from './GenderPanel';
@@ -33,6 +33,11 @@ function resolveValidMeasure(value, options, fallbackValue) {
   return options.includes(value) ? value : (options[0] || fallbackValue);
 }
 
+function resolveValidChannel(value, fallbackValue) {
+  if (value === 'facebook' || value === 'instagram') return value;
+  return fallbackValue === 'instagram' ? 'instagram' : DEFAULT_CHANNEL;
+}
+
 function parseUtcMonthYear(dateKey) {
   if (!dateKey) return {};
   const parsedDate = new Date(`${dateKey}T00:00:00Z`);
@@ -51,23 +56,40 @@ export default function DashboardShell({
   hourlyData = DEFAULT_HOURLY_DATA,
   highlightedDays = DEFAULT_HIGHLIGHTED_DAYS,
   countryLiveView = null,
+  activeChannel = DEFAULT_CHANNEL,
+  selectedMeasure = DEFAULT_MEASURE,
+  selectedCampaignId = DEFAULT_CAMPAIGN_ID,
   measureOptions = DEFAULT_MEASURE_OPTIONS,
   campaignOptions = DEFAULT_CAMPAIGN_OPTIONS,
+  defaultChannel = DEFAULT_CHANNEL,
   periodEndDate = null,
   onFiltersChange,
   onMetricClick
 }) {
-  const [activeChannel, setActiveChannel] = useState(DEFAULT_CHANNEL);
-  const [selectedMeasure, setSelectedMeasure] = useState(DEFAULT_MEASURE);
-  const [selectedCampaignId, setSelectedCampaignId] = useState(DEFAULT_CAMPAIGN_ID);
+  const normalizedChannel = resolveValidChannel(activeChannel, defaultChannel);
+  const normalizedMeasure = resolveValidMeasure(selectedMeasure, measureOptions, DEFAULT_MEASURE);
+  const normalizedCampaignId = resolveValidCampaignId(selectedCampaignId, campaignOptions, DEFAULT_CAMPAIGN_ID);
 
   useEffect(() => {
-    setSelectedMeasure((current) => resolveValidMeasure(current, measureOptions, DEFAULT_MEASURE));
-  }, [measureOptions]);
+    if (
+      normalizedChannel === activeChannel
+      && normalizedMeasure === selectedMeasure
+      && normalizedCampaignId === selectedCampaignId
+    ) {
+      return;
+    }
 
-  useEffect(() => {
-    setSelectedCampaignId((current) => resolveValidCampaignId(current, campaignOptions, DEFAULT_CAMPAIGN_ID));
-  }, [campaignOptions]);
+    onFiltersChange?.({
+      channel: normalizedChannel,
+      measure: normalizedMeasure,
+      campaignId: normalizedCampaignId
+    });
+  }, [
+    activeChannel,
+    onFiltersChange,
+    selectedCampaignId,
+    selectedMeasure
+  ]);
 
   const calendarDefaults = useMemo(
     () => parseUtcMonthYear(periodEndDate),
@@ -76,9 +98,9 @@ export default function DashboardShell({
 
   const notifyFilters = (patch) => {
     const nextFilters = {
-      channel: patch.channel ?? activeChannel,
-      measure: patch.measure ?? selectedMeasure,
-      campaignId: patch.campaignId ?? selectedCampaignId
+      channel: patch.channel ?? normalizedChannel,
+      measure: patch.measure ?? normalizedMeasure,
+      campaignId: patch.campaignId ?? normalizedCampaignId
     };
 
     if (Object.prototype.hasOwnProperty.call(patch, 'year')) {
@@ -92,17 +114,14 @@ export default function DashboardShell({
   };
 
   const handleChannelChange = (channel) => {
-    setActiveChannel(channel);
     notifyFilters({ channel });
   };
 
   const handleCampaignChange = (value) => {
-    setSelectedCampaignId(value);
     notifyFilters({ campaignId: value });
   };
 
   const handleMeasureChange = (value) => {
-    setSelectedMeasure(value);
     notifyFilters({ measure: value });
   };
 
@@ -133,16 +152,16 @@ export default function DashboardShell({
           className="absolute left-[74px] top-[64px] whitespace-nowrap font-medium not-italic leading-[normal] text-[12px]"
           style={{ color: 'rgba(201,227,255,0.74)' }}
         >
-          Overview · {selectedMeasure}
+          Overview · {normalizedMeasure}
         </p>
 
         <Sidebar
-          activeChannel={activeChannel}
+          activeChannel={normalizedChannel}
+          selectedMeasure={normalizedMeasure}
+          selectedCampaignId={normalizedCampaignId}
           onChannelChange={handleChannelChange}
-          selectedMeasure={selectedMeasure}
           onMeasureChange={handleMeasureChange}
           measureOptions={measureOptions}
-          selectedCampaignId={selectedCampaignId}
           onCampaignChange={handleCampaignChange}
           campaignOptions={campaignOptions}
         />
@@ -161,26 +180,26 @@ export default function DashboardShell({
           );
         })}
 
-        <GenderPanel data={genderData} measure={selectedMeasure} />
-        <AgePanel bars={ageBars} measure={selectedMeasure} />
-        <WeekAdTypePanel groups={weekGroups} measure={selectedMeasure} />
+        <GenderPanel data={genderData} measure={normalizedMeasure} />
+        <AgePanel bars={ageBars} measure={normalizedMeasure} />
+        <WeekAdTypePanel groups={weekGroups} measure={normalizedMeasure} />
         <MonthPanel
           highlightedDays={highlightedDays}
-          measure={selectedMeasure}
+          measure={normalizedMeasure}
           initialYear={calendarDefaults.initialYear}
           initialMonth={calendarDefaults.initialMonth}
           onMonthChange={(year, month) => {
             notifyFilters({
-              channel: activeChannel,
-              measure: selectedMeasure,
-              campaignId: selectedCampaignId,
+              channel: normalizedChannel,
+              measure: normalizedMeasure,
+              campaignId: normalizedCampaignId,
               year,
               month
             });
           }}
         />
         <CountryPanel liveView={countryLiveView} />
-        <EventHourPanel data={hourlyData} measure={selectedMeasure} />
+        <EventHourPanel data={hourlyData} measure={normalizedMeasure} />
       </div>
 
       <div className="absolute inset-0 rounded-[inherit] pointer-events-none shadow-[inset_0px_1px_10px_0px_rgba(215,247,255,0.08)]" />

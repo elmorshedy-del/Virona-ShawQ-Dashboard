@@ -94,8 +94,10 @@ const SHOPPER_BACKFILL_MAX_PENDING_STORES = Math.min(
   16
 );
 const REALTIME_FOCUS_GEO_LIMIT = 12;
-const REALTIME_GEO_FALLBACK_SAMPLE_LIMIT = 1500;
+const REALTIME_COUNTRY_LIMIT = 30;
+const REALTIME_PIXEL_SAMPLE_LIMIT = 1500;
 const REALTIME_GEO_CACHE_TTL_MS = 15 * 1000;
+const REALTIME_PIXEL_FALLBACK_CACHE_TTL_MS = 15 * 1000;
 const REALTIME_METRIC_TREND_DAYS = Math.min(
   Math.max(parseInt(process.env.SESSION_INTELLIGENCE_REALTIME_TREND_DAYS || '7', 10) || 7, 5),
   14
@@ -112,6 +114,7 @@ const lastShopperBackfillByStore = new Map();
 const pendingShopperBackfillByStore = new Set();
 const realtimeFocusGeoFallbackCache = new Map();
 const realtimeMetricReferenceCache = new Map();
+const realtimePixelFallbackCache = new Map();
 const lastJourneyEntryBackfillByStore = new Map();
 const SESSION_JOURNEY_SUPPORTED_LOCALE_CODES = new Set([
   'ar',
@@ -4125,7 +4128,7 @@ function getRealtimeFocusGeoFallback(db, normalizedStore, windowExpr, focusCount
         AND created_at >= datetime('now', ?)
       ORDER BY id DESC
       LIMIT ?
-    `).all(normalizedStore, windowExpr, REALTIME_GEO_FALLBACK_SAMPLE_LIMIT);
+    `).all(normalizedStore, windowExpr, REALTIME_PIXEL_SAMPLE_LIMIT);
 
     const regionCounts = new Map();
     const cityCounts = new Map();
@@ -4161,6 +4164,132 @@ function getRealtimeFocusGeoFallback(db, normalizedStore, windowExpr, focusCount
     );
     return { regions: [], cities: [] };
   }
+}
+
+function computeRealtimePixelFallback(db, normalizedStore, windowExpr) {
+  try {
+    const rows = db.prepare(`
+      SELECT event_ts, created_at, payload_json
+      FROM shopify_pixel_events
+      WHERE store = ?
+        AND created_at >= datetime('now', ?)
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(normalizedStore, windowExpr, REALTIME_PIXEL_SAMPLE_LIMIT);
+
+    const sessionKeys = new Set();
+    const shopperKeys = new Set();
+    const countryCounts = new Map();
+    const regionCountsByCountry = new Map();
+    const cityCountsByCountry = new Map();
+    let lastEventAt = null;
+
+    for (const row of rows) {
+      const candidateEventAt = normalizeSqliteDateTime(row?.event_ts || row?.created_at);
+      if (candidateEventAt && (!lastEventAt || candidateEventAt > lastEventAt)) {
+        lastEventAt = candidateEventAt;
+      }
+
+      const payload = safeJsonParse(row?.payload_json);
+      if (!payload || typeof payload !== 'object') continue;
+
+      const identifiers = extractSessionIdentifiers(payload);
+      const sessionKey = buildRealtimePixelSessionKey(identifiers);
+      const shopperKey = buildRealtimePixelShopperKey(identifiers);
+
+      if (sessionKey) sessionKeys.add(sessionKey);
+      if (shopperKey) shopperKeys.add(shopperKey);
+
+      const country = extractCountryCode(payload);
+      if (!country) continue;
+
+      incrementMapCount(countryCounts, country);
+
+      const region = extractRegionLabel(payload);
+      const city = extractCityLabel(payload);
+      if (region) incrementNestedMapCount(regionCountsByCountry, country, region);
+      if (city) incrementNestedMapCount(cityCountsByCountry, country, city);
+    }
+
+    const countries = topCountsFromMap(countryCounts, REALTIME_COUNTRY_LIMIT);
+    const focusCountry = countries[0]?.value || null;
+
+    return {
+      events: rows.length,
+      activeSessions: sessionKeys.size,
+      activeShoppers: shopperKeys.size,
+      lastEventAt,
+      countries,
+      focusCountry,
+      focusRegions: focusCountry
+        ? topCountsFromMap(regionCountsByCountry.get(focusCountry) || new Map(), REALTIME_FOCUS_GEO_LIMIT)
+        : [],
+      focusCities: focusCountry
+        ? topCountsFromMap(cityCountsByCountry.get(focusCountry) || new Map(), REALTIME_FOCUS_GEO_LIMIT)
+        : []
+    };
+  } catch (error) {
+    console.warn(
+      '[SessionIntelligence] realtime pixel fallback failed:',
+      { store: normalizedStore },
+      error?.message || error
+    );
+    return {
+      events: 0,
+      activeSessions: 0,
+      activeShoppers: 0,
+      lastEventAt: null,
+      countries: [],
+      focusCountry: null,
+      focusRegions: [],
+      focusCities: []
+    };
+  }
+}
+
+function getRealtimePixelFallback(db, normalizedStore, windowExpr) {
+  const cacheKey = `${normalizedStore}|${windowExpr}`;
+  const nowMs = Date.now();
+  const cached = realtimePixelFallbackCache.get(cacheKey);
+  if (cached && cached.expiresAtMs > nowMs) {
+    return cached.value;
+  }
+
+  const value = computeRealtimePixelFallback(db, normalizedStore, windowExpr);
+  realtimePixelFallbackCache.set(cacheKey, {
+    value,
+    expiresAtMs: nowMs + REALTIME_PIXEL_FALLBACK_CACHE_TTL_MS
+  });
+  return value;
+}
+
+function resolveRealtimeLastEventAt(primaryValue, fallbackValue) {
+  if (!primaryValue) return fallbackValue || null;
+  if (!fallbackValue) return primaryValue;
+  return fallbackValue > primaryValue ? fallbackValue : primaryValue;
+}
+
+function buildRealtimePixelIdentityKey(identifiers = {}, priorities = []) {
+  for (const { field, prefix } of priorities) {
+    if (identifiers[field]) return `${prefix}:${identifiers[field]}`;
+  }
+  return null;
+}
+
+function buildRealtimePixelSessionKey(identifiers = {}) {
+  return buildRealtimePixelIdentityKey(identifiers, [
+    { field: 'sessionId', prefix: 'session' },
+    { field: 'clientId', prefix: 'client' },
+    { field: 'eventId', prefix: 'event' }
+  ]);
+}
+
+function buildRealtimePixelShopperKey(identifiers = {}) {
+  return buildRealtimePixelIdentityKey(identifiers, [
+    { field: 'userId', prefix: 'user' },
+    { field: 'clientId', prefix: 'client' },
+    { field: 'sessionId', prefix: 'session' }
+  ]);
 }
 
 export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 30, limit = 10 } = {}) {
@@ -4325,8 +4454,8 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
     purchase: sumWhere(isPurchase)
   };
 
-  const countries = topCountsFromMap(countryCounts, 30);
-  const focusCountry = countries[0]?.value || null;
+  let countries = topCountsFromMap(countryCounts, REALTIME_COUNTRY_LIMIT);
+  let focusCountry = countries[0]?.value || null;
   let focusRegions = focusCountry
     ? topCountsFromMap(regionCountsByCountry.get(focusCountry) || new Map(), REALTIME_FOCUS_GEO_LIMIT)
     : [];
@@ -4340,14 +4469,34 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
     focusCities = fallback.cities;
   }
 
+  const pixelFallback = (!focusCountry || !totals?.last_event_at || Number(totals?.events) <= 0)
+    ? getRealtimePixelFallback(db, normalizedStore, windowExpr)
+    : null;
+
+  if (!focusCountry && pixelFallback?.countries?.length) {
+    countries = pixelFallback.countries;
+    focusCountry = pixelFallback.focusCountry;
+    focusRegions = pixelFallback.focusRegions;
+    focusCities = pixelFallback.focusCities;
+  }
+
+  const lastEventAt = resolveRealtimeLastEventAt(totals?.last_event_at || null, pixelFallback?.lastEventAt || null);
+  const totalEvents = Number(totals?.events) || 0;
+  const metricActiveSessions = safeFiniteNumber(realtimeMetrics?.sessions?.current, 0);
+  const metricActiveShoppers = safeFiniteNumber(realtimeMetrics?.shoppers?.current, 0);
+  const metricEvents = safeFiniteNumber(realtimeMetrics?.events?.current, 0);
+  const fallbackActiveSessions = Math.max(latest.length, pixelFallback?.activeSessions || 0);
+  const fallbackActiveShoppers = Math.max(visitors.size, pixelFallback?.activeShoppers || 0);
+  const fallbackEvents = Math.max(totalEvents, pixelFallback?.events || 0);
+
   return {
     store: normalizedStore,
     windowMinutes: window,
     updatedAt: new Date().toISOString(),
-    lastEventAt: totals?.last_event_at || null,
-    activeSessions: safeFiniteNumber(realtimeMetrics?.sessions?.current, latest.length),
-    activeShoppers: safeFiniteNumber(realtimeMetrics?.shoppers?.current, visitors.size),
-    events: safeFiniteNumber(realtimeMetrics?.events?.current, Number(totals?.events) || 0),
+    lastEventAt,
+    activeSessions: metricActiveSessions > 0 ? metricActiveSessions : fallbackActiveSessions,
+    activeShoppers: metricActiveShoppers > 0 ? metricActiveShoppers : fallbackActiveShoppers,
+    events: metricEvents > 0 ? metricEvents : fallbackEvents,
     metrics: realtimeMetrics,
     breakdowns: {
       stages: topCountsFromMap(stageCounts, 20).map((row) => ({ stage: row.value, count: row.count })),
