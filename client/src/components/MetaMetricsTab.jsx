@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AuroraBackground from './meta-metrics/AuroraBackground';
 import DashboardShell from './meta-metrics/DashboardShell';
 import {
@@ -181,6 +181,7 @@ export default function MetaMetricsTab({ store, globalDateRange }) {
   useEffect(() => {
     const controller = new AbortController();
     let cancelled = false;
+    let refreshTimer = null;
 
     async function fetchEndpoint(url, fallbackError) {
       const response = await fetch(url, { signal: controller.signal });
@@ -229,14 +230,19 @@ export default function MetaMetricsTab({ store, globalDateRange }) {
       }
     }
 
-    loadOverview();
-    const refreshTimer = window.setInterval(() => {
-      loadOverview({ showLoading: false });
-    }, LIVE_REFRESH_INTERVAL_MS);
+    async function runRefreshCycle(showLoading) {
+      await loadOverview({ showLoading });
+      if (cancelled) return;
+      refreshTimer = window.setTimeout(() => {
+        void runRefreshCycle(false);
+      }, LIVE_REFRESH_INTERVAL_MS);
+    }
+
+    void runRefreshCycle(true);
 
     return () => {
       cancelled = true;
-      window.clearInterval(refreshTimer);
+      if (refreshTimer) window.clearTimeout(refreshTimer);
       controller.abort();
     };
   }, [demographicsQuery, queryString]);
@@ -251,6 +257,9 @@ export default function MetaMetricsTab({ store, globalDateRange }) {
   const surfaceHeight = Math.max(scaledHeight + (OUTER_FRAME_PADDING_PX * 2), MIN_SURFACE_HEIGHT_PX);
   const filterConfig = overview?.filters || buildFallbackOverview().filters;
   const shell = overview?.shell || buildFallbackOverview().shell;
+  const handleFiltersChange = useCallback((nextFilters) => {
+    setFilters((current) => ({ ...current, ...nextFilters }));
+  }, []);
 
   return (
     <div
@@ -292,9 +301,7 @@ export default function MetaMetricsTab({ store, globalDateRange }) {
               campaignOptions={filterConfig.campaignOptions}
               defaultChannel={filterConfig.defaultChannel}
               periodEndDate={overview?.period?.endDate || null}
-              onFiltersChange={(nextFilters) => {
-                setFilters((current) => ({ ...current, ...nextFilters }));
-              }}
+              onFiltersChange={handleFiltersChange}
             />
           </div>
         </div>

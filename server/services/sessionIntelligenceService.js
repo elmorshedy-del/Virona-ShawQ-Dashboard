@@ -4269,18 +4269,27 @@ function resolveRealtimeLastEventAt(primaryValue, fallbackValue) {
   return fallbackValue > primaryValue ? fallbackValue : primaryValue;
 }
 
-function buildRealtimePixelSessionKey(identifiers = {}) {
-  if (identifiers.sessionId) return `session:${identifiers.sessionId}`;
-  if (identifiers.clientId) return `client:${identifiers.clientId}`;
-  if (identifiers.eventId) return `event:${identifiers.eventId}`;
+function buildRealtimePixelIdentityKey(identifiers = {}, priorities = []) {
+  for (const { field, prefix } of priorities) {
+    if (identifiers[field]) return `${prefix}:${identifiers[field]}`;
+  }
   return null;
 }
 
+function buildRealtimePixelSessionKey(identifiers = {}) {
+  return buildRealtimePixelIdentityKey(identifiers, [
+    { field: 'sessionId', prefix: 'session' },
+    { field: 'clientId', prefix: 'client' },
+    { field: 'eventId', prefix: 'event' }
+  ]);
+}
+
 function buildRealtimePixelShopperKey(identifiers = {}) {
-  if (identifiers.userId) return `user:${identifiers.userId}`;
-  if (identifiers.clientId) return `client:${identifiers.clientId}`;
-  if (identifiers.sessionId) return `session:${identifiers.sessionId}`;
-  return null;
+  return buildRealtimePixelIdentityKey(identifiers, [
+    { field: 'userId', prefix: 'user' },
+    { field: 'clientId', prefix: 'client' },
+    { field: 'sessionId', prefix: 'session' }
+  ]);
 }
 
 export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 30, limit = 10 } = {}) {

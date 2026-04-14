@@ -86,9 +86,6 @@ export default function DashboardShell({
     });
   }, [
     activeChannel,
-    normalizedCampaignId,
-    normalizedChannel,
-    normalizedMeasure,
     onFiltersChange,
     selectedCampaignId,
     selectedMeasure
