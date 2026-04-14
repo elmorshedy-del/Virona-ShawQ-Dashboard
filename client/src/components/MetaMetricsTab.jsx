@@ -33,6 +33,7 @@ function buildFallbackOverview() {
   return {
     period: null,
     filters: {
+      defaultChannel: DEFAULT_FILTERS.channel,
       measureOptions: DEFAULT_MEASURE_OPTIONS,
       campaignOptions: DEFAULT_CAMPAIGN_OPTIONS
     },
@@ -284,8 +285,12 @@ export default function MetaMetricsTab({ store, globalDateRange }) {
               hourlyData={shell.hourlyData}
               highlightedDays={shell.highlightedDays}
               countryLiveView={shell.countryLiveView}
+              activeChannel={filters.channel}
+              selectedMeasure={filters.measure}
+              selectedCampaignId={filters.campaignId}
               measureOptions={filterConfig.measureOptions}
               campaignOptions={filterConfig.campaignOptions}
+              defaultChannel={filterConfig.defaultChannel}
               periodEndDate={overview?.period?.endDate || null}
               onFiltersChange={(nextFilters) => {
                 setFilters((current) => ({ ...current, ...nextFilters }));

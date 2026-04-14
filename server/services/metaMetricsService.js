@@ -61,6 +61,7 @@ const DEFAULT_MEASURE_OPTIONS = [
   'Avg Budget'
 ];
 const METRIC_COLOR_ORDER = ['cyan', 'indigo', 'teal', 'cyan', 'indigo', 'teal', 'cyan', 'indigo', 'teal', 'cyan', 'indigo', 'teal'];
+const DEFAULT_CHANNEL = 'facebook';
 
 function toNumber(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -176,6 +177,12 @@ function buildCampaignFilter(query = {}) {
   };
 }
 
+function buildCampaignOptionsQuery(query = {}) {
+  const nextQuery = { ...query };
+  delete nextQuery.campaignId;
+  return nextQuery;
+}
+
 function buildChannelFilter(query = {}) {
   const channel = String(query.channel || '').trim().toLowerCase();
   if (channel !== 'facebook' && channel !== 'instagram') {
@@ -215,6 +222,28 @@ function getAgeGenderRowsFromMetaDaily(store, query = {}, range = null) {
     GROUP BY age, gender
     ORDER BY SUM(impressions) DESC
   `).all(store, startDate, endDate, ...campaignArgs, ...channelArgs);
+}
+
+function getCampaignRowsForOptions(store, query = {}, range = null) {
+  const db = getDb();
+  const { startDate, endDate } = range || resolveDateRange(query);
+  const statusClause = buildStatusFilter(query);
+  const { clause: channelClause, args: channelArgs } = buildChannelFilter(query);
+
+  return db.prepare(`
+    SELECT
+      campaign_id as campaignId,
+      campaign_name as campaignName,
+      MAX(effective_status) as effective_status,
+      SUM(spend) as spend
+    FROM meta_daily_metrics
+    WHERE store = ?
+      AND date BETWEEN ? AND ?
+      ${statusClause}
+      ${channelClause}
+    GROUP BY campaign_id, campaign_name
+    ORDER BY SUM(spend) DESC, campaign_name ASC
+  `).all(store, startDate, endDate, ...channelArgs);
 }
 
 function buildMetricCards({ dashboard, efficiency }) {
@@ -472,8 +501,8 @@ function isEffectivelyActive(campaign) {
   return !status || ACTIVE_STATUSES.has(status);
 }
 
-function buildCampaignOptions(dashboard) {
-  const campaigns = Array.isArray(dashboard?.campaigns) ? dashboard.campaigns : [];
+function buildCampaignOptions(campaignRows = []) {
+  const campaigns = Array.isArray(campaignRows) ? campaignRows : [];
   const byId = new Map();
 
   campaigns.forEach((campaign) => {
@@ -519,10 +548,16 @@ export async function getMetaMetricsOverview({
   liveWindowMinutes = DEFAULT_LIVE_WINDOW_MINUTES
 } = {}) {
   const scopedQuery = { ...query, store };
+  const campaignOptionsQuery = buildCampaignOptionsQuery(scopedQuery);
   const dashboard = getDashboard(store, scopedQuery);
   const efficiency = getEfficiency(store, scopedQuery);
   const timeOfDay = getTimeOfDay(store, scopedQuery);
   const ageGenderRows = getAgeGenderRowsFromMetaDaily(store, scopedQuery, dashboard?.dateRange || null);
+  const campaignOptionRows = getCampaignRowsForOptions(
+    store,
+    campaignOptionsQuery,
+    dashboard?.dateRange || resolveDateRange(campaignOptionsQuery)
+  );
   const realtimeOverview = getSessionIntelligenceRealtimeOverview(store, {
     windowMinutes: liveWindowMinutes,
     limit: DEFAULT_LIVE_ROWS_LIMIT
@@ -533,7 +568,8 @@ export async function getMetaMetricsOverview({
     period: dashboard?.dateRange || null,
     filters: {
       measureOptions: DEFAULT_MEASURE_OPTIONS,
-      campaignOptions: buildCampaignOptions(dashboard)
+      campaignOptions: buildCampaignOptions(campaignOptionRows),
+      defaultChannel: DEFAULT_CHANNEL
     },
     shell: {
       metrics: buildMetricCards({ dashboard, efficiency }),
