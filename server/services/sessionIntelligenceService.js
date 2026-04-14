@@ -97,6 +97,7 @@ const REALTIME_FOCUS_GEO_LIMIT = 12;
 const REALTIME_COUNTRY_LIMIT = 30;
 const REALTIME_PIXEL_SAMPLE_LIMIT = 1500;
 const REALTIME_GEO_CACHE_TTL_MS = 15 * 1000;
+const REALTIME_PIXEL_FALLBACK_CACHE_TTL_MS = 15 * 1000;
 const REALTIME_METRIC_TREND_DAYS = Math.min(
   Math.max(parseInt(process.env.SESSION_INTELLIGENCE_REALTIME_TREND_DAYS || '7', 10) || 7, 5),
   14
@@ -113,6 +114,7 @@ const lastShopperBackfillByStore = new Map();
 const pendingShopperBackfillByStore = new Set();
 const realtimeFocusGeoFallbackCache = new Map();
 const realtimeMetricReferenceCache = new Map();
+const realtimePixelFallbackCache = new Map();
 const lastJourneyEntryBackfillByStore = new Map();
 const SESSION_JOURNEY_SUPPORTED_LOCALE_CODES = new Set([
   'ar',
@@ -4164,7 +4166,7 @@ function getRealtimeFocusGeoFallback(db, normalizedStore, windowExpr, focusCount
   }
 }
 
-function buildRealtimePixelFallback(db, normalizedStore, windowExpr) {
+function computeRealtimePixelFallback(db, normalizedStore, windowExpr) {
   try {
     const rows = db.prepare(`
       SELECT event_ts, created_at, payload_json
@@ -4192,20 +4194,8 @@ function buildRealtimePixelFallback(db, normalizedStore, windowExpr) {
       if (!payload || typeof payload !== 'object') continue;
 
       const identifiers = extractSessionIdentifiers(payload);
-      const sessionKey = identifiers.sessionId
-        ? `session:${identifiers.sessionId}`
-        : identifiers.clientId
-          ? `client:${identifiers.clientId}`
-          : identifiers.eventId
-            ? `event:${identifiers.eventId}`
-            : null;
-      const shopperKey = identifiers.userId
-        ? `user:${identifiers.userId}`
-        : identifiers.clientId
-          ? `client:${identifiers.clientId}`
-          : identifiers.sessionId
-            ? `session:${identifiers.sessionId}`
-            : null;
+      const sessionKey = buildRealtimePixelSessionKey(identifiers);
+      const shopperKey = buildRealtimePixelShopperKey(identifiers);
 
       if (sessionKey) sessionKeys.add(sessionKey);
       if (shopperKey) shopperKeys.add(shopperKey);
@@ -4239,7 +4229,11 @@ function buildRealtimePixelFallback(db, normalizedStore, windowExpr) {
         : []
     };
   } catch (error) {
-    console.warn(`[SessionIntelligence] realtime pixel fallback failed for store=${normalizedStore}:`, error?.message || error);
+    console.warn(
+      '[SessionIntelligence] realtime pixel fallback failed:',
+      { store: normalizedStore },
+      error?.message || error
+    );
     return {
       events: 0,
       activeSessions: 0,
@@ -4251,6 +4245,42 @@ function buildRealtimePixelFallback(db, normalizedStore, windowExpr) {
       focusCities: []
     };
   }
+}
+
+function getRealtimePixelFallback(db, normalizedStore, windowExpr) {
+  const cacheKey = `${normalizedStore}|${windowExpr}`;
+  const nowMs = Date.now();
+  const cached = realtimePixelFallbackCache.get(cacheKey);
+  if (cached && cached.expiresAtMs > nowMs) {
+    return cached.value;
+  }
+
+  const value = computeRealtimePixelFallback(db, normalizedStore, windowExpr);
+  realtimePixelFallbackCache.set(cacheKey, {
+    value,
+    expiresAtMs: nowMs + REALTIME_PIXEL_FALLBACK_CACHE_TTL_MS
+  });
+  return value;
+}
+
+function resolveRealtimeLastEventAt(primaryValue, fallbackValue) {
+  if (!primaryValue) return fallbackValue || null;
+  if (!fallbackValue) return primaryValue;
+  return fallbackValue > primaryValue ? fallbackValue : primaryValue;
+}
+
+function buildRealtimePixelSessionKey(identifiers = {}) {
+  if (identifiers.sessionId) return `session:${identifiers.sessionId}`;
+  if (identifiers.clientId) return `client:${identifiers.clientId}`;
+  if (identifiers.eventId) return `event:${identifiers.eventId}`;
+  return null;
+}
+
+function buildRealtimePixelShopperKey(identifiers = {}) {
+  if (identifiers.userId) return `user:${identifiers.userId}`;
+  if (identifiers.clientId) return `client:${identifiers.clientId}`;
+  if (identifiers.sessionId) return `session:${identifiers.sessionId}`;
+  return null;
 }
 
 export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 30, limit = 10 } = {}) {
@@ -4431,7 +4461,7 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
   }
 
   const pixelFallback = (!focusCountry || !totals?.last_event_at || Number(totals?.events) <= 0)
-    ? buildRealtimePixelFallback(db, normalizedStore, windowExpr)
+    ? getRealtimePixelFallback(db, normalizedStore, windowExpr)
     : null;
 
   if (!focusCountry && pixelFallback?.countries?.length) {
@@ -4441,9 +4471,7 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
     focusCities = pixelFallback.focusCities;
   }
 
-  const lastEventAt = pixelFallback?.lastEventAt && (!totals?.last_event_at || pixelFallback.lastEventAt > totals.last_event_at)
-    ? pixelFallback.lastEventAt
-    : (totals?.last_event_at || null);
+  const lastEventAt = resolveRealtimeLastEventAt(totals?.last_event_at || null, pixelFallback?.lastEventAt || null);
   const totalEvents = Number(totals?.events) || 0;
   const metricActiveSessions = safeFiniteNumber(realtimeMetrics?.sessions?.current, 0);
   const metricActiveShoppers = safeFiniteNumber(realtimeMetrics?.shoppers?.current, 0);

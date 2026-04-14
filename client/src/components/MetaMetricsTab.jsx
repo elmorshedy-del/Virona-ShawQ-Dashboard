@@ -138,6 +138,7 @@ function buildDateRangeSignature(globalDateRange) {
 
 export default function MetaMetricsTab({ store, globalDateRange }) {
   const containerRef = useRef(null);
+  const loadInFlightRef = useRef(false);
   const [overview, setOverview] = useState(() => buildFallbackOverview());
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [loading, setLoading] = useState(true);
@@ -179,7 +180,6 @@ export default function MetaMetricsTab({ store, globalDateRange }) {
   useEffect(() => {
     const controller = new AbortController();
     let cancelled = false;
-    let inFlight = false;
 
     async function fetchEndpoint(url, fallbackError) {
       const response = await fetch(url, { signal: controller.signal });
@@ -191,8 +191,8 @@ export default function MetaMetricsTab({ store, globalDateRange }) {
     }
 
     async function loadOverview({ showLoading = true } = {}) {
-      if (inFlight) return;
-      inFlight = true;
+      if (loadInFlightRef.current) return;
+      loadInFlightRef.current = true;
 
       if (showLoading) setLoading(true);
       setError('');
@@ -223,7 +223,7 @@ export default function MetaMetricsTab({ store, globalDateRange }) {
         if (controller.signal.aborted || cancelled) return;
         setError(loadError?.message || 'Failed to load Meta Metrics data.');
       } finally {
-        inFlight = false;
+        loadInFlightRef.current = false;
         if (!cancelled && showLoading) setLoading(false);
       }
     }
@@ -235,7 +235,6 @@ export default function MetaMetricsTab({ store, globalDateRange }) {
 
     return () => {
       cancelled = true;
-      inFlight = false;
       window.clearInterval(refreshTimer);
       controller.abort();
     };
