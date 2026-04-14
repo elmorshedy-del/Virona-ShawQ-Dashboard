@@ -23,6 +23,7 @@ const DEFAULT_FILTERS = Object.freeze({
 });
 
 const DEFAULT_LIVE_WINDOW_MINUTES = 30;
+const LIVE_REFRESH_INTERVAL_MS = 30 * 1000;
 const OUTER_FRAME_PADDING_PX = 24;
 const MIN_SURFACE_HEIGHT_PX = 760;
 const REFRESHING_LABEL = 'Syncing';
@@ -178,6 +179,7 @@ export default function MetaMetricsTab({ store, globalDateRange }) {
   useEffect(() => {
     const controller = new AbortController();
     let cancelled = false;
+    let inFlight = false;
 
     async function fetchEndpoint(url, fallbackError) {
       const response = await fetch(url, { signal: controller.signal });
@@ -188,8 +190,11 @@ export default function MetaMetricsTab({ store, globalDateRange }) {
       return payload.data;
     }
 
-    async function loadOverview() {
-      setLoading(true);
+    async function loadOverview({ showLoading = true } = {}) {
+      if (inFlight) return;
+      inFlight = true;
+
+      if (showLoading) setLoading(true);
       setError('');
 
       try {
@@ -218,14 +223,20 @@ export default function MetaMetricsTab({ store, globalDateRange }) {
         if (controller.signal.aborted || cancelled) return;
         setError(loadError?.message || 'Failed to load Meta Metrics data.');
       } finally {
-        if (!cancelled) setLoading(false);
+        inFlight = false;
+        if (!cancelled && showLoading) setLoading(false);
       }
     }
 
     loadOverview();
+    const refreshTimer = window.setInterval(() => {
+      loadOverview({ showLoading: false });
+    }, LIVE_REFRESH_INTERVAL_MS);
 
     return () => {
       cancelled = true;
+      inFlight = false;
+      window.clearInterval(refreshTimer);
       controller.abort();
     };
   }, [demographicsQuery, queryString]);
