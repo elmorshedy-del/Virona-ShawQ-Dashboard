@@ -226,7 +226,7 @@ export default function Sidebar({
           top={220}
         />
         <FilterDropdown
-          label="Campaigns Name"
+          label="Active Campaigns"
           value={selectedCampaignId}
           options={campaignOptions}
           onSelect={onCampaignChange}

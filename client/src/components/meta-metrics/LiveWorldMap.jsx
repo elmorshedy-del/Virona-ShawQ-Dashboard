@@ -107,35 +107,34 @@ function injectAnimationStyles() {
   document.head.appendChild(style);
 }
 
-async function importMapRuntime(runtimeName) {
-  const module = await import(runtimeName);
-  return module?.default || module;
-}
-
 async function resolveMapRuntime() {
-  const mapboxAccessToken = typeof import.meta?.env?.VITE_MAPBOX_ACCESS_TOKEN === 'string'
-    ? import.meta.env.VITE_MAPBOX_ACCESS_TOKEN.trim()
-    : '';
-  const runtimes = [
-    { name: 'mapbox-gl', kind: 'mapbox', cssUrl: MAPBOX_CSS_URL, enabled: Boolean(mapboxAccessToken) },
-    { name: 'maplibre-gl', kind: 'maplibre', cssUrl: MAPLIBRE_CSS_URL, enabled: true }
-  ];
+  const mapboxAccessToken =
+    typeof import.meta?.env?.VITE_MAPBOX_ACCESS_TOKEN === 'string'
+      ? import.meta.env.VITE_MAPBOX_ACCESS_TOKEN.trim()
+      : '';
 
-  for (const runtime of runtimes) {
-    if (!runtime.enabled) continue;
+  // Primary: Mapbox GL (only when access token is provided)
+  if (mapboxAccessToken) {
     try {
-      const lib = await importMapRuntime(runtime.name);
-      if (runtime.kind === 'mapbox') {
-        lib.accessToken = mapboxAccessToken;
-      }
-      injectStyleSheet(runtime.cssUrl);
-      return { lib, kind: runtime.kind };
-    } catch (_error) {
-      // try the next runtime
+      const mapboxModule = await import('mapbox-gl');
+      const lib = mapboxModule?.default || mapboxModule;
+      lib.accessToken = mapboxAccessToken;
+      injectStyleSheet(MAPBOX_CSS_URL);
+      return { lib, kind: 'mapbox' };
+    } catch (_err) {
+      // fall through to MapLibre
     }
   }
 
-  throw new Error('Install mapbox-gl or maplibre-gl to render the live world map.');
+  // Fallback: MapLibre GL (no token required, same Carto dark style)
+  try {
+    const maplibreModule = await import('maplibre-gl');
+    const lib = maplibreModule?.default || maplibreModule;
+    injectStyleSheet(MAPLIBRE_CSS_URL);
+    return { lib, kind: 'maplibre' };
+  } catch (_err) {
+    throw new Error('Failed to load map library. Please ensure either mapbox-gl or maplibre-gl is installed.');
+  }
 }
 
 async function loadWorldMapAssets() {
