@@ -15,14 +15,15 @@ import './LandingPageAudit.css';
 const API_BASE = '/api/landing-audit';
 const RING_RADIUS = 86;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
-const INTRO_PHASE_COUNT = 3;
 const INTRO_PHASE_MS = 2_000;
 const INTRO_SCAN_MS = 3_800;
 const INTRO_SCORE_UP_MS = 1_200;
 const INTRO_SCORE_PAUSE_MS = 600;
 const INTRO_SCORE_SETTLE_MS = 900;
 const INTRO_SCORE_HOLD_MS = 800;
-const INTRO_DEMO_SCORE = 87;
+const INTRO_DEMO_SCORE = 72;
+const INTRO_CATEGORIES = ['First Impression', 'Copy & Messaging', 'Call-to-Action', 'Trust & Proof', 'Mobile & Access', 'Performance'];
+const INTRO_CATEGORY_CYCLE_MS = 150;
 const INTRO_SEEN_KEY_PREFIX = 'lpa_intro_seen_';
 const BAR_ANIMATION_STAGGER_MS = 90;
 const COUNTER_ANIMATION_MS = 1_100;
@@ -117,7 +118,9 @@ export default function LandingPageAuditTab({ store }) {
   const [introVisible, setIntroVisible] = useState(false);
   const [introPhase, setIntroPhase] = useState(0);
   const [introScore, setIntroScore] = useState(0);
+  const [introCategory, setIntroCategory] = useState('');
   const introTimeoutRef = useRef([]);
+  const introCatIntervalRef = useRef(null);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -156,6 +159,7 @@ export default function LandingPageAuditTab({ store }) {
     return () => {
       introTimeoutRef.current.forEach((id) => clearTimeout(id));
       introTimeoutRef.current = [];
+      if (introCatIntervalRef.current) clearInterval(introCatIntervalRef.current);
     };
   }, []);
 
@@ -175,9 +179,11 @@ export default function LandingPageAuditTab({ store }) {
   const runIntro = useCallback((score) => {
     introTimeoutRef.current.forEach((id) => clearTimeout(id));
     introTimeoutRef.current = [];
+    if (introCatIntervalRef.current) clearInterval(introCatIntervalRef.current);
     setIntroVisible(true);
     setIntroPhase(0);
     setIntroScore(0);
+    setIntroCategory('Initializing\u2026');
 
     const phase2Start = INTRO_PHASE_MS + INTRO_SCAN_MS;
     const target = Number(score || 0);
@@ -187,9 +193,8 @@ export default function LandingPageAuditTab({ store }) {
     introTimeoutRef.current.push(setTimeout(() => setIntroPhase(2), phase2Start));
 
     /* ── Two-phase score counter (matches original design) ──
-       1.  0 → 100  (overshoot to full) in INTRO_SCORE_UP_MS
-       2.  pause INTRO_SCORE_PAUSE_MS
-       3.  100 → target (settle)       in INTRO_SCORE_SETTLE_MS           */
+       0 → 100 (overshoot) in 1200ms → pause 600ms → 100 → 72 (settle) in 900ms
+       Category text cycles through dimensions at 150ms, then stops at "Opportunities Detected" */
     const animateCounter = (from, to, duration, onDone) => {
       const start = performance.now();
       const step = (now) => {
@@ -204,12 +209,26 @@ export default function LandingPageAuditTab({ store }) {
 
     introTimeoutRef.current.push(
       setTimeout(() => {
+        /* Start category cycling */
+        let catIdx = 0;
+        introCatIntervalRef.current = setInterval(() => {
+          setIntroCategory('Analysing: ' + INTRO_CATEGORIES[catIdx % INTRO_CATEGORIES.length]);
+          catIdx++;
+        }, INTRO_CATEGORY_CYCLE_MS);
+
         /* Phase A – count 0 → 100 */
         animateCounter(0, 100, INTRO_SCORE_UP_MS, () => {
           /* Phase B – pause, then settle 100 → target */
           introTimeoutRef.current.push(
             setTimeout(() => {
-              animateCounter(100, target, INTRO_SCORE_SETTLE_MS);
+              animateCounter(100, target, INTRO_SCORE_SETTLE_MS, () => {
+                /* Stop category cycling and show final message */
+                if (introCatIntervalRef.current) {
+                  clearInterval(introCatIntervalRef.current);
+                  introCatIntervalRef.current = null;
+                }
+                setIntroCategory('Opportunities Detected');
+              });
             }, INTRO_SCORE_PAUSE_MS)
           );
         });
@@ -221,6 +240,10 @@ export default function LandingPageAuditTab({ store }) {
       phase2Start + INTRO_SCORE_UP_MS + INTRO_SCORE_PAUSE_MS + INTRO_SCORE_SETTLE_MS + INTRO_SCORE_HOLD_MS;
     introTimeoutRef.current.push(
       setTimeout(() => {
+        if (introCatIntervalRef.current) {
+          clearInterval(introCatIntervalRef.current);
+          introCatIntervalRef.current = null;
+        }
         setIntroVisible(false);
         setIntroPhase(0);
       }, totalDuration)
@@ -361,10 +384,13 @@ export default function LandingPageAuditTab({ store }) {
           <div className={`lpa-intro-phase lpa-intro-phase--${introPhase}`}>
             {introPhase === 0 && (
               <div className="lpa-intro-headline-card">
-                <h2>
-                  <span>Know</span> <span>why</span> <span>visitors</span> <span className="lpa-violet">leave.</span>
-                </h2>
-                <p>Landing Page Audit</p>
+                <div className="lpa-hl-words-wrap">
+                  <span className="lpa-hl-word" style={{ '--i': 0 }}>Know</span>
+                  <span className="lpa-hl-word" style={{ '--i': 1 }}>why</span>
+                  <span className="lpa-hl-word" style={{ '--i': 2 }}>visitors</span>
+                  <span className="lpa-hl-word lpa-violet" style={{ '--i': 3 }}>leave.</span>
+                </div>
+                <p className="lpa-hl-subhead">Landing Page Audit</p>
               </div>
             )}
             {introPhase === 1 && (
@@ -379,8 +405,11 @@ export default function LandingPageAuditTab({ store }) {
             )}
             {introPhase === 2 && (
               <div className="lpa-intro-score">
-                <div className="lpa-intro-score-number">{introScore}</div>
-                <div className="lpa-intro-score-grade">{audit?.overall?.grade || 'B'}</div>
+                <div className="lpa-sr-category">{introCategory}</div>
+                <div className="lpa-sr-score">{introScore}</div>
+                <div className="lpa-sr-denom">/100</div>
+                <div className="lpa-sr-grade">Grade C+</div>
+                <div className="lpa-sr-verdict">Visitors are leaving before they convert.</div>
               </div>
             )}
           </div>
