@@ -6,7 +6,7 @@ PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "false"
 PUPPETEER_CACHE_DIR = "/app/.cache/puppeteer"
 
 [phases.install]
-cmds = ["npm install"]
+cmds = ["echo 'Root install skipped – client and server install separately in build phase'"]
 
 [phases.install.env]
 PYTHON = "python3"
@@ -15,9 +15,8 @@ PYTHON = "python3"
 cmds = [
   "npm --prefix client install",
   "npm --prefix client run build",
-  "npm --prefix server install",
-  "mkdir -p /app/.cache/puppeteer",
-  "./server/node_modules/.bin/puppeteer browsers install chrome"
+  "PUPPETEER_CACHE_DIR=/app/.cache/puppeteer npm --prefix server install",
+  "mkdir -p /app/.cache/puppeteer"
 ]
 
 [start]

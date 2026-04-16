@@ -2,7 +2,7 @@ services:
   - type: web
     name: virona-shawq-dashboard
     env: node
-    buildCommand: PUPPETEER_CACHE_DIR=/opt/render/project/src/.cache/puppeteer npm install && cd client && npm install && npm run build && cd ../server && PUPPETEER_CACHE_DIR=/opt/render/project/src/.cache/puppeteer npm install && PUPPETEER_CACHE_DIR=/opt/render/project/src/.cache/puppeteer npx --yes puppeteer browsers install chrome
+    buildCommand: cd client && npm install && npm run build && cd ../server && PUPPETEER_CACHE_DIR=/opt/render/project/src/.cache/puppeteer npm install
     startCommand: cd server && npm start
     envVars:
       - key: PUPPETEER_CACHE_DIR
