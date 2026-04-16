@@ -18,7 +18,8 @@ const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 const INTRO_PHASE_COUNT = 3;
 const INTRO_PHASE_MS = 2_000;
 const INTRO_SCAN_MS = 3_800;
-const INTRO_HOLD_MS = 1_800;
+const INTRO_SCORE_COUNT_MS = 1_500;
+const INTRO_SCORE_HOLD_MS = 2_000;
 const INTRO_DEMO_SCORE = 87;
 const INTRO_SEEN_KEY_PREFIX = 'lpa_intro_seen_';
 const BAR_ANIMATION_STAGGER_MS = 90;
@@ -176,29 +177,36 @@ export default function LandingPageAuditTab({ store }) {
     setIntroPhase(0);
     setIntroScore(0);
 
+    const phase2Start = INTRO_PHASE_MS + INTRO_SCAN_MS;
+    const totalDuration = phase2Start + INTRO_SCORE_COUNT_MS + INTRO_SCORE_HOLD_MS;
+
     introTimeoutRef.current.push(setTimeout(() => setIntroPhase(1), INTRO_PHASE_MS));
-    introTimeoutRef.current.push(setTimeout(() => setIntroPhase(2), INTRO_PHASE_MS + INTRO_SCAN_MS));
+    introTimeoutRef.current.push(setTimeout(() => setIntroPhase(2), phase2Start));
     introTimeoutRef.current.push(
       setTimeout(() => {
         setIntroVisible(false);
         setIntroPhase(0);
-      }, INTRO_PHASE_MS + INTRO_SCAN_MS + INTRO_HOLD_MS)
+      }, totalDuration)
     );
 
-    const start = performance.now();
     const target = Number(score || 0);
     const overshoot = Math.min(100, target + 5);
-    const duration = INTRO_PHASE_MS + INTRO_SCAN_MS + 800;
 
-    const animate = (now) => {
-      const progress = Math.min(1, (now - start) / duration);
-      const eased = 1 - Math.pow(1 - progress, 4);
-      const current = progress < 0.85 ? overshoot * (eased / 0.85) : target + ((overshoot - target) * (1 - eased));
-      setIntroScore(Math.round(Math.max(0, Math.min(100, current))));
-      if (progress < 1) requestAnimationFrame(animate);
-    };
-
-    requestAnimationFrame(animate);
+    introTimeoutRef.current.push(
+      setTimeout(() => {
+        const start = performance.now();
+        const animate = (now) => {
+          const progress = Math.min(1, (now - start) / INTRO_SCORE_COUNT_MS);
+          const eased = 1 - Math.pow(1 - progress, 4);
+          const current = progress < 0.85
+            ? overshoot * (eased / 0.85)
+            : target + ((overshoot - target) * (1 - eased));
+          setIntroScore(Math.round(Math.max(0, Math.min(100, current))));
+          if (progress < 1) requestAnimationFrame(animate);
+        };
+        requestAnimationFrame(animate);
+      }, phase2Start)
+    );
   }, []);
 
   useEffect(() => {
