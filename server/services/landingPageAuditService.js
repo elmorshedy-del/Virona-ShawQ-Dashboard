@@ -313,10 +313,13 @@ async function callGemini(systemPrompt, userMessage, modelId) {
     throw new Error('GEMINI_API_KEY is not configured. Set it in your environment to use Gemini models.');
   }
 
-  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
+  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`;
   const response = await fetch(apiUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey
+    },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: systemPrompt }] },
       contents: [{ parts: [{ text: userMessage }] }],
