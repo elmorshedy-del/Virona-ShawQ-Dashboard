@@ -107,6 +107,35 @@ function sanitizeForPrompt(pageData) {
   };
 }
 
+/**
+ * Strip trailing commas and single-line comments that LLMs frequently inject
+ * into otherwise-valid JSON output. Operates only outside quoted strings to
+ * avoid corrupting embedded text values.
+ */
+function sanitizeLlmJson(jsonText) {
+  /* Phase 1 – remove single-line // comments (only outside strings). */
+  let sanitized = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < jsonText.length; i++) {
+    const ch = jsonText[i];
+    if (escaped) { escaped = false; sanitized += ch; continue; }
+    if (ch === '\\' && inString) { escaped = true; sanitized += ch; continue; }
+    if (ch === '"') { inString = !inString; sanitized += ch; continue; }
+    if (!inString && ch === '/' && jsonText[i + 1] === '/') {
+      /* skip to end of line */
+      while (i < jsonText.length && jsonText[i] !== '\n') i++;
+      continue;
+    }
+    sanitized += ch;
+  }
+
+  /* Phase 2 – strip trailing commas before ] or } (with optional whitespace). */
+  sanitized = sanitized.replace(/,\s*([}\]])/g, '$1');
+
+  return sanitized;
+}
+
 function extractJsonFromClaudeText(text) {
   const raw = String(text || '').trim();
   if (!raw) {
@@ -116,17 +145,27 @@ function extractJsonFromClaudeText(text) {
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fenced ? fenced[1].trim() : raw;
 
+  /* First try strict parse, then sanitized, then brace-extraction. */
   try {
     return JSON.parse(candidate);
-  } catch (firstError) {
-    const firstBrace = candidate.indexOf('{');
-    const lastBrace = candidate.lastIndexOf('}');
-    if (firstBrace >= 0 && lastBrace > firstBrace) {
-      const secondCandidate = candidate.slice(firstBrace, lastBrace + 1);
-      return JSON.parse(secondCandidate);
-    }
-    throw firstError;
+  } catch {
+    /* noop – try sanitized */
   }
+
+  const cleaned = sanitizeLlmJson(candidate);
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    /* noop – try brace extraction */
+  }
+
+  const firstBrace = cleaned.indexOf('{');
+  const lastBrace = cleaned.lastIndexOf('}');
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
+  }
+
+  throw new Error('Failed to extract valid JSON from model response.');
 }
 
 function normalizeDimension(rawDimension) {
