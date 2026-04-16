@@ -18,8 +18,10 @@ const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 const INTRO_PHASE_COUNT = 3;
 const INTRO_PHASE_MS = 2_000;
 const INTRO_SCAN_MS = 3_800;
-const INTRO_SCORE_COUNT_MS = 1_500;
-const INTRO_SCORE_HOLD_MS = 2_000;
+const INTRO_SCORE_UP_MS = 1_200;
+const INTRO_SCORE_PAUSE_MS = 600;
+const INTRO_SCORE_SETTLE_MS = 900;
+const INTRO_SCORE_HOLD_MS = 800;
 const INTRO_DEMO_SCORE = 87;
 const INTRO_SEEN_KEY_PREFIX = 'lpa_intro_seen_';
 const BAR_ANIMATION_STAGGER_MS = 90;
@@ -178,34 +180,50 @@ export default function LandingPageAuditTab({ store }) {
     setIntroScore(0);
 
     const phase2Start = INTRO_PHASE_MS + INTRO_SCAN_MS;
-    const totalDuration = phase2Start + INTRO_SCORE_COUNT_MS + INTRO_SCORE_HOLD_MS;
+    const target = Number(score || 0);
 
+    /* Phase-1 (scanner) and Phase-2 (score reveal) transitions */
     introTimeoutRef.current.push(setTimeout(() => setIntroPhase(1), INTRO_PHASE_MS));
     introTimeoutRef.current.push(setTimeout(() => setIntroPhase(2), phase2Start));
+
+    /* ── Two-phase score counter (matches original design) ──
+       1.  0 → 100  (overshoot to full) in INTRO_SCORE_UP_MS
+       2.  pause INTRO_SCORE_PAUSE_MS
+       3.  100 → target (settle)       in INTRO_SCORE_SETTLE_MS           */
+    const animateCounter = (from, to, duration, onDone) => {
+      const start = performance.now();
+      const step = (now) => {
+        const p = Math.min((now - start) / duration, 1);
+        const eased = 1 - Math.pow(1 - p, 3);
+        setIntroScore(Math.round(from + (to - from) * eased));
+        if (p < 1) requestAnimationFrame(step);
+        else if (onDone) onDone();
+      };
+      requestAnimationFrame(step);
+    };
+
+    introTimeoutRef.current.push(
+      setTimeout(() => {
+        /* Phase A – count 0 → 100 */
+        animateCounter(0, 100, INTRO_SCORE_UP_MS, () => {
+          /* Phase B – pause, then settle 100 → target */
+          introTimeoutRef.current.push(
+            setTimeout(() => {
+              animateCounter(100, target, INTRO_SCORE_SETTLE_MS);
+            }, INTRO_SCORE_PAUSE_MS)
+          );
+        });
+      }, phase2Start)
+    );
+
+    /* Dismiss intro after score fully settles + short hold */
+    const totalDuration =
+      phase2Start + INTRO_SCORE_UP_MS + INTRO_SCORE_PAUSE_MS + INTRO_SCORE_SETTLE_MS + INTRO_SCORE_HOLD_MS;
     introTimeoutRef.current.push(
       setTimeout(() => {
         setIntroVisible(false);
         setIntroPhase(0);
       }, totalDuration)
-    );
-
-    const target = Number(score || 0);
-    const overshoot = Math.min(100, target + 5);
-
-    introTimeoutRef.current.push(
-      setTimeout(() => {
-        const start = performance.now();
-        const animate = (now) => {
-          const progress = Math.min(1, (now - start) / INTRO_SCORE_COUNT_MS);
-          const eased = 1 - Math.pow(1 - progress, 4);
-          const current = progress < 0.85
-            ? overshoot * (eased / 0.85)
-            : target + ((overshoot - target) * (1 - eased));
-          setIntroScore(Math.round(Math.max(0, Math.min(100, current))));
-          if (progress < 1) requestAnimationFrame(animate);
-        };
-        requestAnimationFrame(animate);
-      }, phase2Start)
     );
   }, []);
 
