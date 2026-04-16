@@ -108,30 +108,74 @@ function sanitizeForPrompt(pageData) {
 }
 
 /**
- * Strip trailing commas and single-line comments that LLMs frequently inject
- * into otherwise-valid JSON output. Operates only outside quoted strings to
- * avoid corrupting embedded text values.
+ * Strip common LLM JSON artifacts that make otherwise-valid JSON unparseable.
+ * Handles: trailing commas, single-line // comments, single-quoted strings,
+ * and unescaped control characters inside string values.
+ * Operates with string-boundary awareness to avoid corrupting real content.
  */
 function sanitizeLlmJson(jsonText) {
-  /* Phase 1 – remove single-line // comments (only outside strings). */
-  let sanitized = '';
-  let inString = false;
+  /*
+   * Phase 1 – Replace single-quoted strings with double-quoted strings and
+   *           remove single-line // comments.  Both require tracking whether
+   *           we are inside a string literal.
+   */
+  let phase1 = '';
+  let inDouble = false;   // inside a "-delimited string
+  let inSingle = false;   // inside a '-delimited string
   let escaped = false;
+
   for (let i = 0; i < jsonText.length; i++) {
     const ch = jsonText[i];
-    if (escaped) { escaped = false; sanitized += ch; continue; }
-    if (ch === '\\' && inString) { escaped = true; sanitized += ch; continue; }
-    if (ch === '"') { inString = !inString; sanitized += ch; continue; }
-    if (!inString && ch === '/' && i + 1 < jsonText.length && jsonText[i + 1] === '/') {
-      /* skip to end of line */
+
+    if (escaped) { escaped = false; phase1 += ch; continue; }
+
+    /* Backslash inside any string → next char is escaped. */
+    if ((inDouble || inSingle) && ch === '\\') { escaped = true; phase1 += ch; continue; }
+
+    /* Toggle double-quote strings (only when NOT in single-quote string). */
+    if (ch === '"' && !inSingle) { inDouble = !inDouble; phase1 += ch; continue; }
+
+    /* Convert single-quoted strings → double-quoted (only outside double strings). */
+    if (ch === "'" && !inDouble) {
+      if (!inSingle) {
+        /* opening single quote → emit double quote instead */
+        inSingle = true;
+        phase1 += '"';
+        continue;
+      }
+      /* closing single quote → emit double quote instead */
+      inSingle = false;
+      phase1 += '"';
+      continue;
+    }
+
+    /* If inside a single-quoted string and we see an unescaped double quote,
+       escape it so the converted string stays valid. */
+    if (inSingle && ch === '"') { phase1 += '\\"'; continue; }
+
+    /* Strip // comments outside strings. */
+    if (!inDouble && !inSingle && ch === '/' && i + 1 < jsonText.length && jsonText[i + 1] === '/') {
       while (i < jsonText.length && jsonText[i] !== '\n') i++;
       continue;
     }
-    sanitized += ch;
+
+    phase1 += ch;
   }
 
   /* Phase 2 – strip trailing commas before ] or } (with optional whitespace). */
-  sanitized = sanitized.replace(/,\s*([}\]])/g, '$1');
+  let sanitized = phase1.replace(/,\s*([}\]])/g, '$1');
+
+  /*
+   * Phase 3 – escape unescaped control characters inside JSON string values.
+   * Literal newlines / tabs inside strings are invalid JSON; replace them with
+   * their escape sequences.
+   */
+  sanitized = sanitized.replace(/"(?:[^"\\]|\\.)*"/g, (match) =>
+    match
+      .replace(/(?<!\\)\t/g, '\\t')
+      .replace(/(?<!\\)\n/g, '\\n')
+      .replace(/(?<!\\)\r/g, '\\r')
+  );
 
   return sanitized;
 }
@@ -162,7 +206,17 @@ function extractJsonFromClaudeText(text) {
   const firstBrace = cleaned.indexOf('{');
   const lastBrace = cleaned.lastIndexOf('}');
   if (firstBrace >= 0 && lastBrace > firstBrace) {
-    return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
+    try {
+      return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
+    } catch (braceError) {
+      /* Log a snippet of the problematic text to aid debugging. */
+      const snippet = cleaned.slice(
+        Math.max(0, braceError.message.match(/position (\d+)/)?.[1] - 80 || 0),
+        (braceError.message.match(/position (\d+)/)?.[1] || 0) + 80
+      );
+      console.error('[sanitizeLlmJson] brace-extraction failed near:', snippet);
+      throw new Error(`Failed to parse model JSON after sanitization: ${braceError.message}`);
+    }
   }
 
   throw new Error('Failed to extract valid JSON from model response.');
