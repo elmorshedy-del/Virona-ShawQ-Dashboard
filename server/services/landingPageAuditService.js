@@ -122,7 +122,7 @@ function sanitizeLlmJson(jsonText) {
     if (escaped) { escaped = false; sanitized += ch; continue; }
     if (ch === '\\' && inString) { escaped = true; sanitized += ch; continue; }
     if (ch === '"') { inString = !inString; sanitized += ch; continue; }
-    if (!inString && ch === '/' && jsonText[i + 1] === '/') {
+    if (!inString && ch === '/' && i + 1 < jsonText.length && jsonText[i + 1] === '/') {
       /* skip to end of line */
       while (i < jsonText.length && jsonText[i] !== '\n') i++;
       continue;
