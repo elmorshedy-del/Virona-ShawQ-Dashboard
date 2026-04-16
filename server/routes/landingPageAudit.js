@@ -1,6 +1,6 @@
 import express from 'express';
 
-import { runLandingPageAudit } from '../services/landingPageAuditService.js';
+import { runLandingPageAudit, VALID_MODEL_IDS } from '../services/landingPageAuditService.js';
 import { fetchLandingPageData } from '../services/landingPageFetcher.js';
 import { getDb } from '../db/database.js';
 
@@ -54,6 +54,7 @@ router.post('/run', async (req, res) => {
     const businessType = normalizeString(req.body?.businessType);
     const conversionGoal = normalizeString(req.body?.conversionGoal);
     const targetCustomer = normalizeString(req.body?.targetCustomer);
+    const requestedModel = normalizeString(req.body?.model);
 
     if (!store) {
       return res.status(400).json({ success: false, error: 'store is required.' });
@@ -78,10 +79,11 @@ router.post('/run', async (req, res) => {
       businessType,
       conversionGoal,
       targetCustomer,
-      pageData
+      pageData,
+      model: requestedModel
     });
 
-    return res.json({ success: true, audit });
+    return res.json({ success: true, audit, estimatedCost: audit.estimatedCost || null });
   } catch (error) {
     console.error('[LandingPageAudit] run error:', error);
     return res.status(500).json({

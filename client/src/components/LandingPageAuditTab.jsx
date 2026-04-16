@@ -29,14 +29,61 @@ const BAR_ANIMATION_STAGGER_MS = 90;
 const COUNTER_ANIMATION_MS = 1_100;
 const BUSINESS_TYPES = ['SaaS', 'E-commerce', 'Agency', 'Course/Info Product', 'Newsletter/Lead Magnet', 'Startup', 'Other'];
 const CONVERSION_GOALS = ['Sign Up', 'Purchase', 'Lead Form', 'Demo Call', 'Download', 'Other'];
-const DIMENSION_ICON = {
-  'First Impression': '👁️',
-  'Copy & Messaging': '⌨️',
-  'Call-to-Action': '🎯',
-  'Trust & Proof': '🛡️',
-  'Mobile & Access': '📱',
-  Performance: '⚡'
+/* ── Animated SVG dimension icons (matching original design commit 79ac322) ── */
+const DimensionIconEye = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
+    <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+    <circle cx="12" cy="12" r="3" className="lpa-m-eye-pupil" />
+  </svg>
+);
+const DimensionIconCopy = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    <path d="M8 10h8" className="lpa-m-msg-line1" />
+    <path d="M8 14h4" className="lpa-m-msg-line2" />
+  </svg>
+);
+const DimensionIconCTA = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+    <circle cx="12" cy="12" r="3" className="lpa-m-cta-pulse" />
+  </svg>
+);
+const DimensionIconShield = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    <path d="m9 12 2 2 4-4" className="lpa-m-shield-check" />
+  </svg>
+);
+const DimensionIconMobile = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16" className="lpa-m-mobile-device">
+    <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
+    <line x1="12" y1="18" x2="12.01" y2="18" />
+  </svg>
+);
+const DimensionIconBolt = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16" className="lpa-m-bolt-zap">
+    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+  </svg>
+);
+
+const DIMENSION_ICON_COMPONENT = {
+  'First Impression': DimensionIconEye,
+  'Copy & Messaging': DimensionIconCopy,
+  'Call-to-Action': DimensionIconCTA,
+  'Trust & Proof': DimensionIconShield,
+  'Mobile & Access': DimensionIconMobile,
+  Performance: DimensionIconBolt
 };
+
+/* ── Model options with estimated cost per audit ── */
+const MODEL_OPTIONS = [
+  { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', provider: 'anthropic', estimatedCost: '$0.04' },
+  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', provider: 'google', estimatedCost: '$0.01' },
+  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', provider: 'google', estimatedCost: '$0.02' },
+  { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash', provider: 'google', estimatedCost: '$0.005' }
+];
+const DEFAULT_MODEL = MODEL_OPTIONS[0].value;
 
 async function parseApiResponse(response) {
   const text = await response.text();
@@ -106,13 +153,15 @@ export default function LandingPageAuditTab({ store }) {
     url: '',
     businessType: 'E-commerce',
     conversionGoal: 'Purchase',
-    targetCustomer: ''
+    targetCustomer: '',
+    model: DEFAULT_MODEL
   });
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [history, setHistory] = useState([]);
   const [audit, setAudit] = useState(null);
+  const [lastCost, setLastCost] = useState(null);
   const [activeDimension, setActiveDimension] = useState('First Impression');
   const [displayScore, setDisplayScore] = useState(0);
   const [introVisible, setIntroVisible] = useState(false);
@@ -265,6 +314,7 @@ export default function LandingPageAuditTab({ store }) {
   const runAudit = async (event) => {
     event.preventDefault();
     setError('');
+    setLastCost(null);
     setIsRunning(true);
 
     try {
@@ -276,7 +326,8 @@ export default function LandingPageAuditTab({ store }) {
           url: form.url,
           businessType: form.businessType,
           conversionGoal: form.conversionGoal,
-          targetCustomer: form.targetCustomer
+          targetCustomer: form.targetCustomer,
+          model: form.model
         })
       });
 
@@ -287,7 +338,7 @@ export default function LandingPageAuditTab({ store }) {
 
       setAudit(payload.audit);
       setActiveDimension('First Impression');
-      runIntro(payload.audit.overall?.score || 0);
+      if (payload.estimatedCost) setLastCost(payload.estimatedCost);
       await loadHistory();
     } catch (runError) {
       setError(runError.message || 'Failed to run audit');
@@ -466,6 +517,20 @@ export default function LandingPageAuditTab({ store }) {
             />
           </label>
 
+          <label>
+            <span>Model</span>
+            <select
+              value={form.model}
+              onChange={(event) => setForm((prev) => ({ ...prev, model: event.target.value }))}
+            >
+              {MODEL_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label} (~{option.estimatedCost}/audit)
+                </option>
+              ))}
+            </select>
+          </label>
+
           <button className="lpa-run-btn" type="submit" disabled={isRunning}>
             {isRunning ? <Loader2 size={16} className="lpa-spin" /> : <ArrowRight size={16} />}
             {isRunning ? 'Running audit...' : 'Run Audit'}
@@ -474,6 +539,7 @@ export default function LandingPageAuditTab({ store }) {
 
         {error && <p className="lpa-error">{error}</p>}
         {notice && <p className="lpa-notice">{notice}</p>}
+        {lastCost && <p className="lpa-notice">Estimated cost for this audit: {lastCost}</p>}
       </section>
 
       {audit && (
@@ -501,18 +567,21 @@ export default function LandingPageAuditTab({ store }) {
               <p className="lpa-verdict">{audit?.overall?.verdict}</p>
 
               <div className="lpa-metrics">
-                {(audit.dimensions || []).map((dimension, index) => (
-                  <div key={dimension.name} className="lpa-metric-row" style={{ transitionDelay: `${index * BAR_ANIMATION_STAGGER_MS}ms` }}>
-                    <div className="lpa-metric-head">
-                      <span>{DIMENSION_ICON[dimension.name] || '📊'}</span>
-                      <span>{dimension.name}</span>
-                      <strong>{Math.round(dimension.score)}</strong>
+                {(audit.dimensions || []).map((dimension, index) => {
+                  const IconComponent = DIMENSION_ICON_COMPONENT[dimension.name] || null;
+                  return (
+                    <div key={dimension.name} className="lpa-metric-row" style={{ transitionDelay: `${index * BAR_ANIMATION_STAGGER_MS}ms` }}>
+                      <div className="lpa-metric-head">
+                        <span className="lpa-metric-icon">{IconComponent ? <IconComponent /> : '📊'}</span>
+                        <span>{dimension.name}</span>
+                        <strong>{Math.round(dimension.score)}</strong>
+                      </div>
+                      <div className="lpa-metric-track">
+                        <div className="lpa-metric-fill" style={{ width: `${Math.max(0, Math.min(100, dimension.score))}%` }} />
+                      </div>
                     </div>
-                    <div className="lpa-metric-track">
-                      <div className="lpa-metric-fill" style={{ width: `${Math.max(0, Math.min(100, dimension.score))}%` }} />
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </article>
 

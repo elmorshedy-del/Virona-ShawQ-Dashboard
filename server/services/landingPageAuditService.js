@@ -4,11 +4,21 @@ import { getDb } from '../db/database.js';
 
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
 const CLAUDE_MAX_TOKENS = 4096;
+const GEMINI_MAX_TOKENS = 4096;
 const MAX_PROMPT_HTML_CHARS = 60_000;
 const MAX_PROMPT_TEXT_CHARS = 30_000;
 const MAX_FINDINGS_PER_DIMENSION = 20;
 const VALID_GRADES = new Set(['A+', 'A', 'B+', 'B', 'C+', 'C', 'D', 'F']);
 const REQUIRED_DIMENSION_NAMES = ['First Impression', 'Copy & Messaging', 'Call-to-Action', 'Trust & Proof', 'Mobile & Access', 'Performance'];
+
+/* ── Model registry with estimated cost per audit ── */
+const MODEL_REGISTRY = {
+  'claude-sonnet-4-20250514': { provider: 'anthropic', model: 'claude-sonnet-4-20250514', estimatedCost: '$0.04' },
+  'gemini-2.5-flash': { provider: 'google', model: 'gemini-2.5-flash', estimatedCost: '$0.01' },
+  'gemini-2.5-pro': { provider: 'google', model: 'gemini-2.5-pro', estimatedCost: '$0.02' },
+  'gemini-2.0-flash': { provider: 'google', model: 'gemini-2.0-flash', estimatedCost: '$0.005' }
+};
+const VALID_MODEL_IDS = new Set(Object.keys(MODEL_REGISTRY));
 
 const REFERENCE_FILES = Object.freeze([
   {
@@ -285,15 +295,59 @@ function buildSystemPrompt(referenceBundle) {
   ].join('\n\n');
 }
 
+/* ── Provider-specific call helpers ── */
+async function callAnthropic(systemPrompt, userMessage, modelId) {
+  const anthropic = requireAnthropicClient();
+  const response = await anthropic.messages.create({
+    model: modelId || CLAUDE_MODEL,
+    max_tokens: CLAUDE_MAX_TOKENS,
+    system: systemPrompt,
+    messages: [{ role: 'user', content: userMessage }]
+  });
+  return response?.content?.[0]?.text || '';
+}
+
+async function callGemini(systemPrompt, userMessage, modelId) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is not configured. Set it in your environment to use Gemini models.');
+  }
+
+  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
+  const response = await fetch(apiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ parts: [{ text: userMessage }] }],
+      generationConfig: {
+        maxOutputTokens: GEMINI_MAX_TOKENS,
+        temperature: 0.2,
+        responseMimeType: 'application/json'
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => '');
+    throw new Error(`Gemini API error (HTTP ${response.status}): ${errorBody.slice(0, 300)}`);
+  }
+
+  const result = await response.json();
+  return result?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
 export async function runLandingPageAudit({
   store,
   url,
   businessType,
   conversionGoal,
   targetCustomer,
-  pageData
+  pageData,
+  model: requestedModel
 }) {
-  const anthropic = requireAnthropicClient();
+  const modelId = VALID_MODEL_IDS.has(requestedModel) ? requestedModel : CLAUDE_MODEL;
+  const modelEntry = MODEL_REGISTRY[modelId];
   const referenceBundle = await loadReferenceBundle();
   const systemPrompt = buildSystemPrompt(referenceBundle);
 
@@ -307,19 +361,15 @@ export async function runLandingPageAudit({
     pageData: sanitizeForPrompt(pageData)
   };
 
-  const response = await anthropic.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: CLAUDE_MAX_TOKENS,
-    system: systemPrompt,
-    messages: [
-      {
-        role: 'user',
-        content: `Audit this landing page using the exact scoring engine and return only valid JSON.\n\n${JSON.stringify(userPayload, null, 2)}`
-      }
-    ]
-  });
+  const userMessage = `Audit this landing page using the exact scoring engine and return only valid JSON.\n\n${JSON.stringify(userPayload, null, 2)}`;
 
-  const responseText = response?.content?.[0]?.text || '';
+  let responseText;
+  if (modelEntry.provider === 'google') {
+    responseText = await callGemini(systemPrompt, userMessage, modelEntry.model);
+  } else {
+    responseText = await callAnthropic(systemPrompt, userMessage, modelEntry.model);
+  }
+
   const parsedResult = extractJsonFromClaudeText(responseText);
   const normalizedResult = validateAuditResultShape(parsedResult);
 
@@ -354,10 +404,15 @@ export async function runLandingPageAudit({
 
   return {
     id: insertResult.lastInsertRowid,
+    modelUsed: modelId,
+    estimatedCost: modelEntry.estimatedCost,
     ...normalizedResult
   };
 }
 
+export { VALID_MODEL_IDS };
+
 export default {
-  runLandingPageAudit
+  runLandingPageAudit,
+  VALID_MODEL_IDS
 };
