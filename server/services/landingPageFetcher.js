@@ -91,7 +91,7 @@ export async function fetchLandingPageData(targetUrl) {
 
   try {
     browser = await puppeteerExtra.launch({
-      headless: true,
+      headless: 'new',
       timeout: NAVIGATION_TIMEOUT_MS
     });
 

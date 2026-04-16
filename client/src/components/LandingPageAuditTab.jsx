@@ -97,10 +97,10 @@ function readAuditForView(row) {
 export default function LandingPageAuditTab({ store }) {
   const storeId = getStoreId(store);
   const [form, setForm] = useState({
-    url: 'https://shawq.co',
+    url: '',
     businessType: 'E-commerce',
     conversionGoal: 'Purchase',
-    targetCustomer: 'Online apparel shoppers'
+    targetCustomer: ''
   });
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState('');
@@ -234,7 +234,7 @@ export default function LandingPageAuditTab({ store }) {
 
   const deleteAudit = async (id) => {
     try {
-      const response = await fetch(`${API_BASE}/${id}`, { method: 'DELETE' });
+      const response = await fetch(`${API_BASE}/${id}?store=${encodeURIComponent(storeId)}`, { method: 'DELETE' });
       const payload = await parseApiResponse(response);
       if (!response.ok || !payload?.success) {
         throw new Error(payload?.error || 'Delete failed');
@@ -248,7 +248,7 @@ export default function LandingPageAuditTab({ store }) {
 
   const viewAudit = async (id) => {
     try {
-      const response = await fetch(`${API_BASE}/${id}`);
+      const response = await fetch(`${API_BASE}/${id}?store=${encodeURIComponent(storeId)}`);
       const payload = await parseApiResponse(response);
       if (!response.ok || !payload?.success || !payload?.audit) {
         throw new Error(payload?.error || 'Failed to load audit');
@@ -274,6 +274,25 @@ export default function LandingPageAuditTab({ store }) {
     link.download = `landing-audit-${storeId}-${Date.now()}.json`;
     link.click();
     URL.revokeObjectURL(link.href);
+  };
+
+  const exportAuditById = async (id) => {
+    try {
+      const response = await fetch(`${API_BASE}/${id}?store=${encodeURIComponent(storeId)}`);
+      const payload = await parseApiResponse(response);
+      if (!response.ok || !payload?.success || !payload?.audit) {
+        throw new Error(payload?.error || 'Failed to load audit export.');
+      }
+      const targetAudit = payload.audit.result ? { id, ...payload.audit.result } : readAuditForView(payload.audit);
+      const blob = new Blob([JSON.stringify(targetAudit, null, 2)], { type: 'application/json' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `landing-audit-${storeId}-${id}.json`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+    } catch (exportError) {
+      setError(exportError.message || 'Failed to export audit');
+    }
   };
 
   const shareAudit = async () => {
@@ -485,7 +504,7 @@ export default function LandingPageAuditTab({ store }) {
 
           <section className="lpa-actions-row">
             <button type="button" onClick={saveReport}><Save size={15} /> Save Report</button>
-            <button type="button" onClick={exportJson}><Download size={15} /> Export PDF</button>
+            <button type="button" onClick={exportJson}><Download size={15} /> Export JSON</button>
             <button type="button" onClick={shareAudit}><Share2 size={15} /> Share Link</button>
           </section>
         </>
@@ -519,7 +538,7 @@ export default function LandingPageAuditTab({ store }) {
                   <td>{formatDate(row.created_at)}</td>
                   <td className="lpa-row-actions">
                     <button type="button" onClick={() => viewAudit(row.id)} aria-label="View audit"><ExternalLink size={15} /></button>
-                    <button type="button" onClick={exportJson} aria-label="Export audit"><Download size={15} /></button>
+                    <button type="button" onClick={() => exportAuditById(row.id)} aria-label="Export audit"><Download size={15} /></button>
                     <button type="button" onClick={() => deleteAudit(row.id)} aria-label="Delete audit"><Trash2 size={15} /></button>
                   </td>
                 </tr>

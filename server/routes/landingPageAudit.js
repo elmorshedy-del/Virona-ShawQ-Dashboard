@@ -7,10 +7,35 @@ import { getDb } from '../db/database.js';
 const router = express.Router();
 const VALID_BUSINESS_TYPES = new Set(['SaaS', 'E-commerce', 'Agency', 'Course/Info Product', 'Newsletter/Lead Magnet', 'Startup', 'Other']);
 const VALID_CONVERSION_GOALS = new Set(['Sign Up', 'Purchase', 'Lead Form', 'Demo Call', 'Download', 'Other']);
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 60;
+const RATE_LIMIT_BUCKETS = new Map();
 
 function normalizeString(value) {
   return String(value || '').trim();
 }
+
+function rateLimitAuditRoutes(req, res, next) {
+  const routeKey = req.path.split('/')[1] || 'root';
+  const ip = normalizeString(req.ip || req.headers['x-forwarded-for'] || 'unknown');
+  const key = `${routeKey}:${ip}`;
+  const now = Date.now();
+  const bucket = RATE_LIMIT_BUCKETS.get(key);
+
+  if (!bucket || (now - bucket.windowStart) > RATE_LIMIT_WINDOW_MS) {
+    RATE_LIMIT_BUCKETS.set(key, { count: 1, windowStart: now });
+    return next();
+  }
+
+  if (bucket.count >= RATE_LIMIT_MAX_REQUESTS) {
+    return res.status(429).json({ success: false, error: 'Rate limit exceeded. Please retry shortly.' });
+  }
+
+  bucket.count += 1;
+  return next();
+}
+
+router.use(rateLimitAuditRoutes);
 
 router.post('/run', async (req, res) => {
   try {
@@ -81,8 +106,12 @@ router.get('/history/:store', (req, res) => {
 router.get('/:id', (req, res) => {
   try {
     const id = Number.parseInt(req.params?.id, 10);
+    const store = normalizeString(req.query?.store);
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ success: false, error: 'Invalid audit id.' });
+    }
+    if (!store) {
+      return res.status(400).json({ success: false, error: 'store is required.' });
     }
 
     const db = getDb();
@@ -90,8 +119,8 @@ router.get('/:id', (req, res) => {
       SELECT id, store, url, business_type, conversion_goal, target_customer, score, grade, result_json, created_at,
              desktop_screenshot, mobile_screenshot
       FROM landing_page_audits
-      WHERE id = ?
-    `).get(id);
+      WHERE id = ? AND store = ?
+    `).get(id, store);
 
     if (!row) {
       return res.status(404).json({ success: false, error: 'Audit not found.' });
@@ -124,12 +153,16 @@ router.get('/:id', (req, res) => {
 router.delete('/:id', (req, res) => {
   try {
     const id = Number.parseInt(req.params?.id, 10);
+    const store = normalizeString(req.query?.store);
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ success: false, error: 'Invalid audit id.' });
     }
+    if (!store) {
+      return res.status(400).json({ success: false, error: 'store is required.' });
+    }
 
     const db = getDb();
-    const result = db.prepare('DELETE FROM landing_page_audits WHERE id = ?').run(id);
+    const result = db.prepare('DELETE FROM landing_page_audits WHERE id = ? AND store = ?').run(id, store);
     if (!result.changes) {
       return res.status(404).json({ success: false, error: 'Audit not found.' });
     }
