@@ -32,6 +32,7 @@ import metaMetricsRouter from './routes/metaMetrics.js';
 import watchtowerRouter from './routes/watchtower.js';
 import croForensicsRouter from './routes/croForensics.js';
 import conversionUiFixLabRouter from './routes/conversionUiFixLab.js';
+import landingPageAuditRouter from './routes/landingPageAudit.js';
 import campaignIntelligenceRouter from './routes/campaignIntelligence.js';
 import dashboardDailyBriefRouter from './routes/dashboardDailyBrief.js';
 import blackboxRouter from './routes/blackbox.js';
@@ -46,6 +47,7 @@ import { runMigration as runCompetitorSpyMigration } from './db/competitorSpyMig
 import { runSessionIntelligenceMigration } from './db/sessionIntelligenceMigration.js';
 import { runWatchtowerMigration } from './db/watchtowerMigration.js';
 import { runConversionUiFixLabMigration } from './db/conversionUiFixLabMigration.js';
+import { runLandingPageAuditMigration } from './db/landingPageAuditMigration.js';
 import { smartSync as whatifSmartSync } from './services/whatifMetaService.js';
 import { syncMetaData, getExchangeRateForDate } from './services/metaService.js';
 import { syncShopifyOrders } from './services/shopifyService.js';
@@ -231,6 +233,7 @@ runCompetitorSpyMigration();
 runSessionIntelligenceMigration();
 runWatchtowerMigration();
 runConversionUiFixLabMigration();
+runLandingPageAuditMigration();
 
 // Schedule creative funnel summaries (daily/weekly + spend reset checks)
 scheduleCreativeFunnelSummaryJobs();
@@ -298,6 +301,7 @@ app.use('/api/fatigue', fatigueRouter);
 app.use('/api/testimonials', testimonialExtractorRouter);
 app.use('/api/cro-forensics', croForensicsRouter);
 app.use('/api/conversion-ui-fix-lab', conversionUiFixLabRouter);
+app.use('/api/landing-audit', landingPageAuditRouter);
 app.use('/api/campaign-intelligence', campaignIntelligenceRouter);
 app.use('/api/dashboard-daily-brief', dashboardDailyBriefRouter);
 app.use('/api/blackbox', blackboxRouter);
