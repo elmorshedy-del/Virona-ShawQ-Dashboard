@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 
 import { getDb } from '../db/database.js';
 
-const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
+const CLAUDE_MODEL = 'claude-sonnet-4-6';
 const CLAUDE_MAX_TOKENS = 4096;
 const GEMINI_MAX_TOKENS = 4096;
 const MAX_PROMPT_HTML_CHARS = 60_000;
@@ -13,7 +13,7 @@ const REQUIRED_DIMENSION_NAMES = ['First Impression', 'Copy & Messaging', 'Call-
 
 /* ── Model registry with estimated cost per audit ── */
 const MODEL_REGISTRY = {
-  'claude-sonnet-4-20250514': { provider: 'anthropic', model: 'claude-sonnet-4-20250514', estimatedCost: '$0.04' },
+  'claude-sonnet-4-6': { provider: 'anthropic', model: 'claude-sonnet-4-6', estimatedCost: '$0.05' },
   'gemini-2.5-flash': { provider: 'google', model: 'gemini-2.5-flash', estimatedCost: '$0.01' },
   'gemini-2.5-pro': { provider: 'google', model: 'gemini-2.5-pro', estimatedCost: '$0.02' },
   'gemini-2.0-flash': { provider: 'google', model: 'gemini-2.0-flash', estimatedCost: '$0.005' }

@@ -78,7 +78,7 @@ const DIMENSION_ICON_COMPONENT = {
 
 /* ── Model options with estimated cost per audit ── */
 const MODEL_OPTIONS = [
-  { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', provider: 'anthropic', estimatedCost: '$0.04' },
+  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', provider: 'anthropic', estimatedCost: '$0.05' },
   { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', provider: 'google', estimatedCost: '$0.01' },
   { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', provider: 'google', estimatedCost: '$0.02' },
   { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash', provider: 'google', estimatedCost: '$0.005' }
