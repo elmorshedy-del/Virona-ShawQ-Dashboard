@@ -19,6 +19,8 @@ const INTRO_PHASE_COUNT = 3;
 const INTRO_PHASE_MS = 2_000;
 const INTRO_SCAN_MS = 3_800;
 const INTRO_HOLD_MS = 1_800;
+const INTRO_DEMO_SCORE = 87;
+const INTRO_SEEN_KEY_PREFIX = 'lpa_intro_seen_';
 const BAR_ANIMATION_STAGGER_MS = 90;
 const COUNTER_ANIMATION_MS = 1_100;
 const BUSINESS_TYPES = ['SaaS', 'E-commerce', 'Agency', 'Course/Info Product', 'Newsletter/Lead Magnet', 'Startup', 'Other'];
@@ -167,7 +169,7 @@ export default function LandingPageAuditTab({ store }) {
     [audit, activeDimension]
   );
 
-  const runIntro = (score) => {
+  const runIntro = useCallback((score) => {
     introTimeoutRef.current.forEach((id) => clearTimeout(id));
     introTimeoutRef.current = [];
     setIntroVisible(true);
@@ -197,7 +199,19 @@ export default function LandingPageAuditTab({ store }) {
     };
 
     requestAnimationFrame(animate);
-  };
+  }, []);
+
+  useEffect(() => {
+    const key = `${INTRO_SEEN_KEY_PREFIX}${storeId}`;
+    try {
+      if (!sessionStorage.getItem(key)) {
+        runIntro(INTRO_DEMO_SCORE);
+        sessionStorage.setItem(key, '1');
+      }
+    } catch {
+      /* sessionStorage unavailable — skip intro guard */
+    }
+  }, [storeId, runIntro]);
 
   const runAudit = async (event) => {
     event.preventDefault();
@@ -358,7 +372,8 @@ export default function LandingPageAuditTab({ store }) {
             <div className="lpa-input-wrap">
               <Globe size={16} />
               <input
-                type="url"
+                type="text"
+                placeholder="e.g. www.shawq.co or https://shawq.co"
                 value={form.url}
                 onChange={(event) => setForm((prev) => ({ ...prev, url: event.target.value }))}
                 required
