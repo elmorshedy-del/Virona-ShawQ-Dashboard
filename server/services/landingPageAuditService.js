@@ -168,13 +168,15 @@ function sanitizeLlmJson(jsonText) {
   /*
    * Phase 3 – escape unescaped control characters inside JSON string values.
    * Literal newlines / tabs inside strings are invalid JSON; replace them with
-   * their escape sequences.
+   * their escape sequences.  We avoid negative lookbehind for broader runtime
+   * compatibility and instead use a replacement function that checks context.
    */
   sanitized = sanitized.replace(/"(?:[^"\\]|\\.)*"/g, (match) =>
-    match
-      .replace(/(?<!\\)\t/g, '\\t')
-      .replace(/(?<!\\)\n/g, '\\n')
-      .replace(/(?<!\\)\r/g, '\\r')
+    match.replace(/[\t\n\r]/g, (ctrl) => {
+      if (ctrl === '\t') return '\\t';
+      if (ctrl === '\n') return '\\n';
+      return '\\r';
+    })
   );
 
   return sanitized;
@@ -210,10 +212,9 @@ function extractJsonFromClaudeText(text) {
       return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
     } catch (braceError) {
       /* Log a snippet of the problematic text to aid debugging. */
-      const snippet = cleaned.slice(
-        Math.max(0, braceError.message.match(/position (\d+)/)?.[1] - 80 || 0),
-        (braceError.message.match(/position (\d+)/)?.[1] || 0) + 80
-      );
+      const posMatch = braceError.message.match(/position (\d+)/);
+      const errorPos = posMatch ? Number(posMatch[1]) : 0;
+      const snippet = cleaned.slice(Math.max(0, errorPos - 80), errorPos + 80);
       console.error('[sanitizeLlmJson] brace-extraction failed near:', snippet);
       throw new Error(`Failed to parse model JSON after sanitization: ${braceError.message}`);
     }
