@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
   CheckCircle2,
@@ -104,6 +104,7 @@ export default function LandingPageAuditTab({ store }) {
   });
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [history, setHistory] = useState([]);
   const [audit, setAudit] = useState(null);
   const [activeDimension, setActiveDimension] = useState('First Impression');
@@ -113,7 +114,7 @@ export default function LandingPageAuditTab({ store }) {
   const [introScore, setIntroScore] = useState(0);
   const introTimeoutRef = useRef([]);
 
-  const loadHistory = async () => {
+  const loadHistory = useCallback(async () => {
     try {
       const response = await fetch(`${API_BASE}/history/${encodeURIComponent(storeId)}`);
       const payload = await parseApiResponse(response);
@@ -124,11 +125,11 @@ export default function LandingPageAuditTab({ store }) {
     } catch (loadError) {
       setError(loadError.message || 'Failed to load history');
     }
-  };
+  }, [storeId]);
 
   useEffect(() => {
     loadHistory();
-  }, [storeId]);
+  }, [loadHistory]);
 
   useEffect(() => {
     const targetScore = Number(audit?.overall?.score || 0);
@@ -262,8 +263,13 @@ export default function LandingPageAuditTab({ store }) {
 
   const saveReport = () => {
     if (!audit) return;
-    const key = `landing_audit_saved_${storeId}`;
-    localStorage.setItem(key, JSON.stringify(audit));
+    try {
+      const key = `landing_audit_saved_${storeId}`;
+      localStorage.setItem(key, JSON.stringify(audit));
+      setNotice('Report saved to browser storage.');
+    } catch {
+      setError('Failed to save report locally.');
+    }
   };
 
   const exportJson = () => {
@@ -297,8 +303,13 @@ export default function LandingPageAuditTab({ store }) {
 
   const shareAudit = async () => {
     if (!audit?.id) return;
-    const shareUrl = `${window.location.origin}${window.location.pathname}?tab=Landing%20Page%20Audit&auditId=${audit.id}`;
-    await navigator.clipboard.writeText(shareUrl);
+    try {
+      const shareUrl = `${window.location.origin}${window.location.pathname}?tab=Landing%20Page%20Audit&auditId=${audit.id}`;
+      await navigator.clipboard.writeText(shareUrl);
+      setNotice('Share link copied to clipboard.');
+    } catch {
+      setError('Failed to copy share link.');
+    }
   };
 
   const scoreOffset = RING_CIRCUMFERENCE - ((Math.max(0, Math.min(100, displayScore)) / 100) * RING_CIRCUMFERENCE);
@@ -392,6 +403,7 @@ export default function LandingPageAuditTab({ store }) {
         </form>
 
         {error && <p className="lpa-error">{error}</p>}
+        {notice && <p className="lpa-notice">{notice}</p>}
       </section>
 
       {audit && (

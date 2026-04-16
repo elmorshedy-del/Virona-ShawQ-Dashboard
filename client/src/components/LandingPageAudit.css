@@ -94,6 +94,7 @@
 .lpa-run-btn:not(:disabled):hover { transform: translateY(-1px); }
 .lpa-spin { animation: lpa-spin 1s linear infinite; }
 .lpa-error { color: var(--red); margin: .6rem 0 0; }
+.lpa-notice { color: #0f8c65; margin: .6rem 0 0; }
 
 .lpa-results-grid {
   display: grid;

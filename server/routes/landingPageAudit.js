@@ -9,7 +9,9 @@ const VALID_BUSINESS_TYPES = new Set(['SaaS', 'E-commerce', 'Agency', 'Course/In
 const VALID_CONVERSION_GOALS = new Set(['Sign Up', 'Purchase', 'Lead Form', 'Demo Call', 'Download', 'Other']);
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 60;
+const RATE_LIMIT_CLEANUP_INTERVAL_MS = 5 * 60_000;
 const RATE_LIMIT_BUCKETS = new Map();
+let lastRateLimitCleanupAt = 0;
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -32,6 +34,14 @@ function rateLimitAuditRoutes(req, res, next) {
   }
 
   bucket.count += 1;
+  if ((now - lastRateLimitCleanupAt) > RATE_LIMIT_CLEANUP_INTERVAL_MS) {
+    for (const [bucketKey, rateBucket] of RATE_LIMIT_BUCKETS.entries()) {
+      if ((now - rateBucket.windowStart) > RATE_LIMIT_WINDOW_MS) {
+        RATE_LIMIT_BUCKETS.delete(bucketKey);
+      }
+    }
+    lastRateLimitCleanupAt = now;
+  }
   return next();
 }
 
