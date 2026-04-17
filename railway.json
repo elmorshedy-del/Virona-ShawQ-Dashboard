@@ -5,6 +5,6 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "startCommand": "cd /app/server && npm start"
+    "startCommand": "npm start"
   }
 }

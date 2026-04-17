@@ -56,8 +56,13 @@ COPY --from=build /app/server ./server
 COPY --from=build /app/client/dist ./client/dist
 COPY --from=build /app/client/public ./client/public
 
-RUN mkdir -p /app/data /app/.cache/puppeteer
+RUN mkdir -p /app/data /app/.cache/puppeteer \
+  && chown -R node:node /app
 
 EXPOSE 3000
 
-CMD ["sh", "-lc", "cd /app/server && npm start"]
+WORKDIR /app/server
+
+USER node
+
+CMD ["npm", "start"]

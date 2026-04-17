@@ -28,7 +28,7 @@ export async function scrapeAds(searchQuery, options = {}) {
   try {
     log('Starting browser...');
     
-    // Use Puppeteer's bundled Chromium
+    // Use the configured system Chromium
     log('Launching browser...');
     
     browser = await puppeteer.launch(buildPuppeteerLaunchOptions({
