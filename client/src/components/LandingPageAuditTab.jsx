@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowRight,
   CheckCircle2,
+  Code2,
   Download,
   ExternalLink,
   Globe,
   Loader2,
   Save,
   Share2,
-  Trash2
+  Trash2,
+  Upload
 } from 'lucide-react';
 import './LandingPageAudit.css';
 
@@ -156,9 +159,12 @@ export default function LandingPageAuditTab({ store }) {
     targetCustomer: '',
     model: DEFAULT_MODEL
   });
+  const [manualMode, setManualMode] = useState(false);
+  const [rawHtml, setRawHtml] = useState('');
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [fetchWarnings, setFetchWarnings] = useState([]);
   const [history, setHistory] = useState([]);
   const [audit, setAudit] = useState(null);
   const [lastCost, setLastCost] = useState(null);
@@ -314,21 +320,29 @@ export default function LandingPageAuditTab({ store }) {
   const runAudit = async (event) => {
     event.preventDefault();
     setError('');
+    setNotice('');
     setLastCost(null);
+    setFetchWarnings([]);
     setIsRunning(true);
 
     try {
+      const body = {
+        store: storeId,
+        url: form.url,
+        businessType: form.businessType,
+        conversionGoal: form.conversionGoal,
+        targetCustomer: form.targetCustomer,
+        model: form.model
+      };
+
+      if (manualMode && rawHtml.trim()) {
+        body.rawHtml = rawHtml;
+      }
+
       const response = await fetch(`${API_BASE}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          store: storeId,
-          url: form.url,
-          businessType: form.businessType,
-          conversionGoal: form.conversionGoal,
-          targetCustomer: form.targetCustomer,
-          model: form.model
-        })
+        body: JSON.stringify(body)
       });
 
       const payload = await parseApiResponse(response);
@@ -339,6 +353,10 @@ export default function LandingPageAuditTab({ store }) {
       setAudit(payload.audit);
       setActiveDimension('First Impression');
       if (payload.estimatedCost) setLastCost(payload.estimatedCost);
+      if (payload.fetchWarnings?.length) setFetchWarnings(payload.fetchWarnings);
+      if (payload.fetchStrategy && payload.fetchStrategy !== 'puppeteer') {
+        setNotice(`Fetched via ${payload.fetchStrategy} mode — some visual/performance checks may be limited.`);
+      }
       await loadHistory();
     } catch (runError) {
       setError(runError.message || 'Failed to run audit');
@@ -472,20 +490,61 @@ export default function LandingPageAuditTab({ store }) {
         <h2>Landing Page Audit</h2>
         <p className="lpa-subtitle">Claude-powered landing page scoring with roast-my-landing-page rubric fidelity.</p>
 
+        <div className="lpa-mode-toggle">
+          <button
+            type="button"
+            className={`lpa-mode-btn ${!manualMode ? 'is-active' : ''}`}
+            onClick={() => setManualMode(false)}
+          >
+            <Globe size={14} /> URL Fetch
+          </button>
+          <button
+            type="button"
+            className={`lpa-mode-btn ${manualMode ? 'is-active' : ''}`}
+            onClick={() => setManualMode(true)}
+          >
+            <Code2 size={14} /> Paste HTML
+          </button>
+        </div>
+
+        {manualMode && (
+          <div className="lpa-manual-hint">
+            <AlertTriangle size={14} />
+            <span>Paste your page&apos;s HTML source below. Use this when the site is behind auth, bot protection, or when browser-based fetching fails in your environment.</span>
+          </div>
+        )}
+
         <form className="lpa-form" onSubmit={runAudit}>
           <label>
-            <span>URL</span>
+            <span>URL {manualMode ? '(optional — for labelling)' : ''}</span>
             <div className="lpa-input-wrap">
               <Globe size={16} />
               <input
                 type="text"
-                placeholder="e.g. www.shawq.co or https://shawq.co"
+                placeholder={manualMode ? 'e.g. www.example.com (optional)' : 'e.g. www.shawq.co or https://shawq.co'}
                 value={form.url}
                 onChange={(event) => setForm((prev) => ({ ...prev, url: event.target.value }))}
-                required
+                required={!manualMode}
               />
             </div>
           </label>
+
+          {manualMode && (
+            <label>
+              <span>HTML Source <span className="lpa-required">*</span></span>
+              <textarea
+                className="lpa-html-textarea"
+                placeholder="Paste the full HTML source of the page here (Ctrl+U / Cmd+U in browser → Select All → Copy)"
+                value={rawHtml}
+                onChange={(event) => setRawHtml(event.target.value)}
+                required
+                rows={6}
+              />
+              {rawHtml.length > 0 && (
+                <small className="lpa-html-size">{Math.round(rawHtml.length / 1024)} KB</small>
+              )}
+            </label>
+          )}
 
           <label>
             <span>Business Type</span>
@@ -539,6 +598,14 @@ export default function LandingPageAuditTab({ store }) {
 
         {error && <p className="lpa-error">{error}</p>}
         {notice && <p className="lpa-notice">{notice}</p>}
+        {fetchWarnings.length > 0 && (
+          <div className="lpa-fetch-warnings">
+            <AlertTriangle size={14} />
+            <ul>
+              {fetchWarnings.map((warning, index) => <li key={`fw-${index}`}>{warning}</li>)}
+            </ul>
+          </div>
+        )}
         {lastCost && <p className="lpa-notice">Estimated cost for this audit: {lastCost}</p>}
       </section>
 

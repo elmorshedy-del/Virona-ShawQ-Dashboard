@@ -598,3 +598,110 @@
   92% { transform: scale(1.1); fill: rgba(16,185,129,.3); stroke: #10b981; }
   95% { transform: scale(1); fill: none; stroke: currentColor; }
 }
+
+/* ── Mode toggle (URL Fetch / Paste HTML) ── */
+.lpa-mode-toggle {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 3px;
+  background: rgba(255,255,255,.05);
+  border-radius: 8px;
+  width: fit-content;
+}
+.lpa-mode-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255,255,255,.5);
+  font-size: .82rem;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.lpa-mode-btn.is-active {
+  background: rgba(255,255,255,.1);
+  color: #fff;
+}
+.lpa-mode-btn:hover:not(.is-active) {
+  color: rgba(255,255,255,.75);
+}
+
+/* ── Manual mode hint ── */
+.lpa-manual-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  background: rgba(251,191,36,.08);
+  border: 1px solid rgba(251,191,36,.25);
+  border-radius: 8px;
+  color: #fbbf24;
+  font-size: .8rem;
+  line-height: 1.45;
+}
+.lpa-manual-hint svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+/* ── HTML textarea for paste mode ── */
+.lpa-html-textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 10px 12px;
+  background: rgba(0,0,0,.25);
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 8px;
+  color: rgba(255,255,255,.85);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: .78rem;
+  line-height: 1.5;
+  resize: vertical;
+  transition: border-color .15s;
+}
+.lpa-html-textarea:focus {
+  outline: none;
+  border-color: rgba(139,92,246,.5);
+}
+.lpa-html-textarea::placeholder {
+  color: rgba(255,255,255,.25);
+}
+.lpa-html-size {
+  display: block;
+  margin-top: 4px;
+  color: rgba(255,255,255,.35);
+  font-size: .72rem;
+}
+.lpa-required {
+  color: #f87171;
+}
+
+/* ── Fetch warnings ── */
+.lpa-fetch-warnings {
+  display: flex;
+  gap: 8px;
+  padding: 10px 14px;
+  margin-top: 10px;
+  background: rgba(251,191,36,.06);
+  border: 1px solid rgba(251,191,36,.18);
+  border-radius: 8px;
+  color: rgba(251,191,36,.9);
+  font-size: .78rem;
+}
+.lpa-fetch-warnings svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.lpa-fetch-warnings ul {
+  margin: 0;
+  padding: 0 0 0 16px;
+  list-style: disc;
+}
+.lpa-fetch-warnings li {
+  margin-bottom: 3px;
+}

@@ -96,7 +96,7 @@ function sanitizeForPrompt(pageData) {
   const html = String(pageData?.html || '');
   const visibleText = String(pageData?.visibleText || '');
 
-  return {
+  const sanitized = {
     ...pageData,
     html: html.length > MAX_PROMPT_HTML_CHARS ? `${html.slice(0, MAX_PROMPT_HTML_CHARS)}…` : html,
     visibleText: visibleText.length > MAX_PROMPT_TEXT_CHARS ? `${visibleText.slice(0, MAX_PROMPT_TEXT_CHARS)}…` : visibleText,
@@ -105,6 +105,19 @@ function sanitizeForPrompt(pageData) {
       mobileBase64: pageData?.screenshots?.mobileBase64 ? '[included-in-db-not-in-prompt]' : null
     }
   };
+
+  /* Include fetch strategy and warnings so the AI can adjust scoring for limited data */
+  if (pageData?.fetchStrategy) {
+    sanitized.fetchStrategy = pageData.fetchStrategy;
+  }
+  if (Array.isArray(pageData?.warnings) && pageData.warnings.length > 0) {
+    sanitized.fetchWarnings = pageData.warnings;
+  }
+
+  /* Strip tier-error diagnostics — not relevant to the AI scoring engine */
+  delete sanitized.tierErrors;
+
+  return sanitized;
 }
 
 /**
@@ -397,6 +410,15 @@ function buildSystemPrompt(referenceBundle) {
     'Use severity values only: CRITICAL, WARNING, SUGGESTION, PASS.',
     'Use effort values only: Quick Fix, Medium, Major.',
     'Use grade values only: A+, A, B+, B, C+, C, D, F.',
+    '',
+    'IMPORTANT — Fetch Strategy Awareness:',
+    'The pageData may include a "fetchStrategy" field indicating how the page was fetched:',
+    '- "puppeteer": Full browser render with screenshots, JS execution, computed styles, and Web Vitals. All checkpoints can be fully scored.',
+    '- "http": Lightweight HTTP-only fetch. No screenshots, no JS execution, no computed styles, no Web Vitals. Score based on raw HTML/CSS only. For Performance (load time, LCP), note they could not be measured and score conservatively. For Mobile & Access (font sizes, touch targets, visual checks), note limitations but still score what the HTML reveals.',
+    '- "manual": User pasted raw HTML. Same limitations as "http" plus no fetch timing at all. Score fairly based on what the HTML reveals.',
+    'When data is limited, DO NOT default every unverifiable checkpoint to 0. Instead, score verifiable checkpoints normally and note which could not be verified. Give partial credit where HTML evidence is available.',
+    'Include "fetchWarnings" from pageData in your toolsUsed field so the report consumer understands data limitations.',
+    '',
     'Required output schema:',
     JSON.stringify({
       meta: {

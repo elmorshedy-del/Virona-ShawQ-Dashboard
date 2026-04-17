@@ -1,7 +1,7 @@
 import express from 'express';
 
 import { runLandingPageAudit, VALID_MODEL_IDS } from '../services/landingPageAuditService.js';
-import { fetchLandingPageData } from '../services/landingPageFetcher.js';
+import { fetchLandingPageData, buildPageDataFromRawHtml } from '../services/landingPageFetcher.js';
 import { getDb } from '../db/database.js';
 
 const router = express.Router();
@@ -10,6 +10,8 @@ const VALID_CONVERSION_GOALS = new Set(['Sign Up', 'Purchase', 'Lead Form', 'Dem
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 60;
 const RATE_LIMIT_CLEANUP_INTERVAL_MS = 5 * 60_000;
+const MAX_RAW_HTML_LENGTH = 5_000_000; // 5 MB safety cap for user-supplied HTML
+const MAX_SCREENSHOT_BASE64_LENGTH = 10_000_000; // ~7.5 MB decoded
 const RATE_LIMIT_BUCKETS = new Map();
 let lastRateLimitCleanupAt = 0;
 
@@ -55,12 +57,15 @@ router.post('/run', async (req, res) => {
     const conversionGoal = normalizeString(req.body?.conversionGoal);
     const targetCustomer = normalizeString(req.body?.targetCustomer);
     const requestedModel = normalizeString(req.body?.model);
+    const rawHtml = req.body?.rawHtml || '';
+    const rawDesktopScreenshot = req.body?.rawDesktopScreenshot || '';
+    const rawMobileScreenshot = req.body?.rawMobileScreenshot || '';
 
     if (!store) {
       return res.status(400).json({ success: false, error: 'store is required.' });
     }
-    if (!url) {
-      return res.status(400).json({ success: false, error: 'url is required.' });
+    if (!url && !rawHtml) {
+      return res.status(400).json({ success: false, error: 'url or rawHtml is required.' });
     }
     if (!VALID_BUSINESS_TYPES.has(businessType)) {
       return res.status(400).json({ success: false, error: 'businessType is invalid.' });
@@ -72,10 +77,34 @@ router.post('/run', async (req, res) => {
       return res.status(400).json({ success: false, error: 'targetCustomer is required.' });
     }
 
-    const pageData = await fetchLandingPageData(url);
+    /* Validate user-supplied payloads against size limits */
+    if (rawHtml && rawHtml.length > MAX_RAW_HTML_LENGTH) {
+      return res.status(400).json({ success: false, error: `rawHtml exceeds ${Math.round(MAX_RAW_HTML_LENGTH / 1_000_000)} MB limit.` });
+    }
+    if (rawDesktopScreenshot && rawDesktopScreenshot.length > MAX_SCREENSHOT_BASE64_LENGTH) {
+      return res.status(400).json({ success: false, error: 'rawDesktopScreenshot exceeds size limit.' });
+    }
+    if (rawMobileScreenshot && rawMobileScreenshot.length > MAX_SCREENSHOT_BASE64_LENGTH) {
+      return res.status(400).json({ success: false, error: 'rawMobileScreenshot exceeds size limit.' });
+    }
+
+    let pageData;
+    if (rawHtml) {
+      /* Tier 3: User-supplied raw HTML — skip fetching entirely */
+      pageData = buildPageDataFromRawHtml({
+        rawHtml,
+        url: url || 'user-supplied',
+        desktopScreenshot: rawDesktopScreenshot || null,
+        mobileScreenshot: rawMobileScreenshot || null
+      });
+    } else {
+      /* Tier 1 → Tier 2 auto-fallback chain */
+      pageData = await fetchLandingPageData(url);
+    }
+
     const audit = await runLandingPageAudit({
       store,
-      url,
+      url: url || 'user-supplied',
       businessType,
       conversionGoal,
       targetCustomer,
@@ -83,7 +112,13 @@ router.post('/run', async (req, res) => {
       model: requestedModel
     });
 
-    return res.json({ success: true, audit, estimatedCost: audit.estimatedCost || null });
+    return res.json({
+      success: true,
+      audit,
+      estimatedCost: audit.estimatedCost || null,
+      fetchStrategy: pageData.fetchStrategy || null,
+      fetchWarnings: pageData.warnings || []
+    });
   } catch (error) {
     console.error('[LandingPageAudit] run error:', error);
     return res.status(500).json({
