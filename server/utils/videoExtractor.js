@@ -3,6 +3,7 @@ import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { buildPuppeteerLaunchOptions } from './puppeteerLaunchOptions.js';
 
 const execPromise = promisify(exec);
 
@@ -150,17 +151,13 @@ async function extractWithPuppeteer(embedHtml) {
     log('info', 'puppeteer', 'Starting browser', { url: embedUrl.substring(0, 100) });
 
     // Launch browser
-    browser = await puppeteer.default.launch({
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
+    browser = await puppeteer.default.launch(buildPuppeteerLaunchOptions({
+      includeNoSandboxArgs: true,
+      additionalArgs: [
         '--disable-accelerated-2d-canvas',
-        '--disable-gpu',
         '--single-process'
       ]
-    });
+    }));
 
     const page = await browser.newPage();
     

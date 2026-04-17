@@ -1,4 +1,5 @@
 import { getDb } from '../db/database.js';
+import { buildPuppeteerLaunchOptions } from '../utils/puppeteerLaunchOptions.js';
 
 const VERIFIABLE_SIGNAL_TYPES = new Set(['js_errors', 'dead_clicks', 'rage_clicks']);
 
@@ -735,16 +736,12 @@ async function loadPuppeteer() {
 
 async function launchVerifierBrowser(puppeteer) {
   try {
-    return await puppeteer.launch({
-      headless: 'new',
-      args: ['--disable-dev-shm-usage', '--disable-gpu']
-    });
+    return await puppeteer.launch(buildPuppeteerLaunchOptions());
   } catch (launchError) {
     if (!VERIFIER_ALLOW_NO_SANDBOX) throw launchError;
-    return puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-    });
+    return puppeteer.launch(buildPuppeteerLaunchOptions({
+      includeNoSandboxArgs: true
+    }));
   }
 }
 
