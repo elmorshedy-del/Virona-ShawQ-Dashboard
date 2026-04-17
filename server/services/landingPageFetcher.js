@@ -104,7 +104,8 @@ function safeMs(value) {
  * ══════════════════════════════════════════════════════════════════════════════ */
 
 async function fetchViaPuppeteer(parsedUrl) {
-  const launchArgs = [];
+  /* Always include container-critical flags; --no-sandbox is opt-in via env. */
+  const launchArgs = ['--disable-dev-shm-usage', '--disable-gpu'];
   if (PUPPETEER_NO_SANDBOX) {
     launchArgs.push('--no-sandbox', '--disable-setuid-sandbox');
   }
