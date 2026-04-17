@@ -736,13 +736,14 @@ async function loadPuppeteer() {
 async function launchVerifierBrowser(puppeteer) {
   try {
     return await puppeteer.launch({
-      headless: 'new'
+      headless: 'new',
+      args: ['--disable-dev-shm-usage', '--disable-gpu']
     });
   } catch (launchError) {
     if (!VERIFIER_ALLOW_NO_SANDBOX) throw launchError;
     return puppeteer.launch({
       headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
     });
   }
 }

@@ -1,5 +1,8 @@
 [phases.setup]
-nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake", "yt-dlp", "ffmpeg"]
+# chromium provides all system shared libraries (libnss3, libatk-bridge, libcups,
+# libdrm, libgbm, libpango, libasound, …) that Puppeteer's bundled Chrome needs
+# to launch inside the Nix container environment.
+nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake", "yt-dlp", "ffmpeg", "chromium"]
 
 [variables]
 PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "false"

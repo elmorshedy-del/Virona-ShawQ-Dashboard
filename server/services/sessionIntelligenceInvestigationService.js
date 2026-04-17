@@ -225,13 +225,14 @@ async function loadPuppeteer() {
 async function launchBrowserProbe(puppeteer) {
   try {
     return await puppeteer.launch({
-      headless: 'new'
+      headless: 'new',
+      args: ['--disable-dev-shm-usage', '--disable-gpu']
     });
   } catch (launchError) {
     if (!BROWSER_PROBE_CONFIG.allowNoSandbox) throw launchError;
     return puppeteer.launch({
       headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
     });
   }
 }
