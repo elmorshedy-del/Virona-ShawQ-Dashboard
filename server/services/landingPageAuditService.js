@@ -3,8 +3,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { getDb } from '../db/database.js';
 
 const CLAUDE_MODEL = 'claude-sonnet-4-6';
-const CLAUDE_MAX_TOKENS = 4096;
-const GEMINI_MAX_TOKENS = 4096;
+const CLAUDE_MAX_TOKENS = 16384;
+const GEMINI_MAX_TOKENS = 16384;
 const MAX_PROMPT_HTML_CHARS = 60_000;
 const MAX_PROMPT_TEXT_CHARS = 30_000;
 const MAX_FINDINGS_PER_DIMENSION = 20;
@@ -182,6 +182,70 @@ function sanitizeLlmJson(jsonText) {
   return sanitized;
 }
 
+/**
+ * Attempt to repair JSON that was truncated mid-stream (e.g. the LLM hit its
+ * max-output-token limit).  Walks the text tracking open delimiters and then
+ * appends the closing counterparts so `JSON.parse` can succeed.
+ *
+ * This is intentionally best-effort: it will produce a parseable (but
+ * potentially incomplete) object, which `validateAuditResultShape` will then
+ * normalise with safe defaults for any missing fields.
+ */
+function repairTruncatedJson(jsonText) {
+  const stack = [];          // tracks open delimiters: '"', '{', '['
+  let inString = false;
+  let escaped = false;
+  let lastSignificantChar = '';  // last non-whitespace char outside strings
+
+  for (let i = 0; i < jsonText.length; i++) {
+    const ch = jsonText[i];
+
+    if (escaped) { escaped = false; continue; }
+
+    if (inString) {
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === '"') { inString = false; stack.pop(); continue; }
+      continue;
+    }
+
+    /* Outside strings */
+    if (ch === '"') { inString = true; stack.push('"'); continue; }
+    if (ch === '{') { stack.push('{'); }
+    if (ch === '[') { stack.push('['); }
+    if (ch === '}') { if (stack.length && stack[stack.length - 1] === '{') stack.pop(); }
+    if (ch === ']') { if (stack.length && stack[stack.length - 1] === '[') stack.pop(); }
+
+    if (!/\s/.test(ch)) lastSignificantChar = ch;
+  }
+
+  /* Nothing to repair – JSON is already balanced. */
+  if (stack.length === 0) return jsonText;
+
+  let repaired = jsonText;
+
+  /* Close structures in reverse order. */
+  for (let i = stack.length - 1; i >= 0; i--) {
+    const open = stack[i];
+    if (open === '"') {
+      /* Truncated inside a string value – close the string. */
+      repaired += '"';
+    } else if (open === '{') {
+      /* If the last significant char was ':' we need a placeholder value. */
+      const trimmed = repaired.trimEnd();
+      const lastChar = trimmed[trimmed.length - 1];
+      if (lastChar === ':') repaired += '""';
+      /* Remove a dangling comma before closing. */
+      repaired = repaired.replace(/,\s*$/, '');
+      repaired += '}';
+    } else if (open === '[') {
+      repaired = repaired.replace(/,\s*$/, '');
+      repaired += ']';
+    }
+  }
+
+  return repaired;
+}
+
 function extractJsonFromClaudeText(text) {
   const raw = String(text || '').trim();
   if (!raw) {
@@ -210,17 +274,28 @@ function extractJsonFromClaudeText(text) {
   if (firstBrace >= 0 && lastBrace > firstBrace) {
     try {
       return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
-    } catch (braceError) {
-      /* Log a snippet of the problematic text to aid debugging. */
-      const posMatch = braceError.message.match(/position (\d+)/);
-      const errorPos = posMatch ? Number(posMatch[1]) : 0;
-      const snippet = cleaned.slice(Math.max(0, errorPos - 80), errorPos + 80);
-      console.error('[sanitizeLlmJson] brace-extraction failed near:', snippet);
-      throw new Error(`Failed to parse model JSON after sanitization: ${braceError.message}`);
+    } catch {
+      /* noop – try truncation repair */
     }
   }
 
-  throw new Error('Failed to extract valid JSON from model response.');
+  /*
+   * Last resort: the JSON is likely truncated (LLM hit max-output-tokens).
+   * Try to close all open delimiters so JSON.parse can succeed.  The result
+   * will be incomplete but validateAuditResultShape will fill in safe defaults.
+   */
+  const basis = firstBrace >= 0 ? cleaned.slice(firstBrace) : cleaned;
+  const repaired = repairTruncatedJson(basis);
+  try {
+    console.warn('[extractJsonFromClaudeText] used truncation repair – result may be incomplete');
+    return JSON.parse(repaired);
+  } catch (repairError) {
+    const posMatch = repairError.message.match(/position (\d+)/);
+    const errorPos = posMatch ? Number(posMatch[1]) : 0;
+    const snippet = repaired.slice(Math.max(0, errorPos - 80), errorPos + 80);
+    console.error('[sanitizeLlmJson] truncation repair failed near:', snippet);
+    throw new Error(`Failed to parse model JSON after sanitization and repair: ${repairError.message}`);
+  }
 }
 
 function normalizeDimension(rawDimension) {
