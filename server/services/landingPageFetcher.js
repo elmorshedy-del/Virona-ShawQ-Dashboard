@@ -303,126 +303,239 @@ async function fetchViaPuppeteer(parsedUrl) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
- * TIER 2 — Lightweight HTTP fetch + regex-based HTML parsing (no browser)
+ * TIER 2 — Lightweight HTTP fetch + iterative HTML parsing (no browser)
  *
  * Works in every Node.js environment (containers, CI, serverless). No Chromium
  * needed. Trades screenshot / JS-execution fidelity for guaranteed availability.
  * The AI scoring engine can still produce useful scores from raw HTML + text.
+ *
+ * All parsing uses indexOf-based tag boundary scanning to avoid polynomial
+ * ReDoS on untrusted HTML.  No `[\s\S]*?` or greedy quantifiers on user data.
  * ══════════════════════════════════════════════════════════════════════════════ */
 
-/** Minimal regex-based HTML helpers (avoids adding cheerio dependency). */
-function extractTagContent(html, tag) {
-  const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'gi');
-  const matches = [];
-  let match;
-  while ((match = regex.exec(html)) !== null) {
-    matches.push(match[1].replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim());
+/**
+ * Iteratively find all occurrences of a paired HTML tag and return the inner
+ * content between the open and close tags.  Uses indexOf instead of regex to
+ * avoid ReDoS on untrusted input.
+ */
+function findTagPairs(html, tagName) {
+  const results = [];
+  const openTag = `<${tagName}`;
+  const closeTag = `</${tagName}`;
+  const lcHtml = html.toLowerCase();
+  let cursor = 0;
+
+  while (cursor < lcHtml.length) {
+    const openStart = lcHtml.indexOf(openTag, cursor);
+    if (openStart === -1) break;
+
+    const openEnd = lcHtml.indexOf('>', openStart);
+    if (openEnd === -1) break;
+
+    const closeStart = lcHtml.indexOf(closeTag, openEnd + 1);
+    if (closeStart === -1) break;
+
+    const closeEnd = lcHtml.indexOf('>', closeStart);
+    if (closeEnd === -1) break;
+
+    results.push({
+      outerStart: openStart,
+      innerStart: openEnd + 1,
+      innerEnd: closeStart,
+      outerEnd: closeEnd + 1,
+      openTagText: html.slice(openStart, openEnd + 1),
+      inner: html.slice(openEnd + 1, closeStart)
+    });
+
+    cursor = closeEnd + 1;
   }
-  return matches;
+
+  return results;
+}
+
+/** Strip all tags from a string fragment, collapsing whitespace. */
+function stripTags(text) {
+  let result = '';
+  let inTag = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '<') { inTag = true; continue; }
+    if (ch === '>') { inTag = false; result += ' '; continue; }
+    if (!inTag) result += ch;
+  }
+  return result.replace(/\s+/g, ' ').trim();
+}
+
+/** Extract attribute value from an opening tag string. */
+function getAttr(openTag, attr) {
+  const lc = openTag.toLowerCase();
+  const idx = lc.indexOf(attr + '=');
+  if (idx === -1) return '';
+  const quote = openTag[idx + attr.length + 1];
+  if (quote === '"' || quote === "'") {
+    const end = openTag.indexOf(quote, idx + attr.length + 2);
+    return end === -1 ? '' : openTag.slice(idx + attr.length + 2, end);
+  }
+  // unquoted value — take until space or >
+  const start = idx + attr.length + 1;
+  let end = start;
+  while (end < openTag.length && openTag[end] !== ' ' && openTag[end] !== '>') end++;
+  return openTag.slice(start, end);
+}
+
+function extractTagContent(html, tag) {
+  return findTagPairs(html, tag).map((pair) => stripTags(pair.inner));
 }
 
 function extractHeadings(html) {
   const headings = [];
-  const regex = /<(h[1-6])[^>]*>([\s\S]*?)<\/\1>/gi;
-  let match;
-  while ((match = regex.exec(html)) !== null) {
-    const text = match[2].replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-    if (text) headings.push({ tag: match[1].toLowerCase(), text });
+  for (let level = 1; level <= 6; level++) {
+    for (const pair of findTagPairs(html, `h${level}`)) {
+      const text = stripTags(pair.inner);
+      if (text) headings.push({ tag: `h${level}`, text });
+    }
   }
   return headings;
 }
 
 function extractMetaContent(html, attr, value) {
-  const regex = new RegExp(`<meta[^>]+${attr}=["']${value}["'][^>]*>`, 'i');
-  const match = html.match(regex);
-  if (!match) return '';
-  const contentMatch = match[0].match(/content=["']([^"']*?)["']/i);
-  return contentMatch ? contentMatch[1] : '';
+  // Scan for <meta ...> self-closing tags using indexOf
+  const lc = html.toLowerCase();
+  const needle = `${attr}="${value}"`;
+  const needle2 = `${attr}='${value}'`;
+  let cursor = 0;
+
+  while (cursor < lc.length) {
+    const tagStart = lc.indexOf('<meta', cursor);
+    if (tagStart === -1) break;
+    const tagEnd = lc.indexOf('>', tagStart);
+    if (tagEnd === -1) break;
+
+    const tagSlice = html.slice(tagStart, tagEnd + 1);
+    const lcSlice = lc.slice(tagStart, tagEnd + 1);
+
+    if (lcSlice.includes(needle) || lcSlice.includes(needle2)) {
+      return getAttr(tagSlice, 'content');
+    }
+    cursor = tagEnd + 1;
+  }
+  return '';
 }
 
 function extractOgTags(html) {
   const tags = [];
-  const regex = /<meta[^>]+property=["'](og:[^"']+)["'][^>]*>/gi;
-  let match;
-  while ((match = regex.exec(html)) !== null) {
-    const property = match[1];
-    const contentMatch = match[0].match(/content=["']([^"']*?)["']/i);
-    if (contentMatch && contentMatch[1]) {
-      tags.push({ property, content: contentMatch[1] });
+  const lc = html.toLowerCase();
+  let cursor = 0;
+
+  while (cursor < lc.length) {
+    const tagStart = lc.indexOf('<meta', cursor);
+    if (tagStart === -1) break;
+    const tagEnd = lc.indexOf('>', tagStart);
+    if (tagEnd === -1) break;
+
+    const tagSlice = html.slice(tagStart, tagEnd + 1);
+    const lcSlice = lc.slice(tagStart, tagEnd + 1);
+
+    if (lcSlice.includes('property="og:') || lcSlice.includes("property='og:")) {
+      const property = getAttr(tagSlice, 'property');
+      const content = getAttr(tagSlice, 'content');
+      if (property && content) {
+        tags.push({ property, content });
+      }
     }
+    cursor = tagEnd + 1;
   }
   return tags;
 }
 
 function extractImages(html) {
   const images = [];
-  const regex = /<img[^>]*>/gi;
-  let match;
-  while ((match = regex.exec(html)) !== null) {
-    const srcMatch = match[0].match(/src=["']([^"']*?)["']/i);
-    const altMatch = match[0].match(/alt=["']([^"']*?)["']/i);
-    const widthMatch = match[0].match(/width=["']?(\d+)/i);
-    const heightMatch = match[0].match(/height=["']?(\d+)/i);
+  const lc = html.toLowerCase();
+  let cursor = 0;
+
+  while (cursor < lc.length) {
+    const tagStart = lc.indexOf('<img', cursor);
+    if (tagStart === -1) break;
+    const tagEnd = lc.indexOf('>', tagStart);
+    if (tagEnd === -1) break;
+
+    const tagSlice = html.slice(tagStart, tagEnd + 1);
+    const widthStr = getAttr(tagSlice, 'width');
+    const heightStr = getAttr(tagSlice, 'height');
     images.push({
-      src: srcMatch ? srcMatch[1] : '',
-      alt: altMatch ? altMatch[1] : '',
-      width: widthMatch ? Number(widthMatch[1]) : 0,
-      height: heightMatch ? Number(heightMatch[1]) : 0,
+      src: getAttr(tagSlice, 'src'),
+      alt: getAttr(tagSlice, 'alt'),
+      width: Number.parseInt(widthStr, 10) || 0,
+      height: Number.parseInt(heightStr, 10) || 0,
       renderedWidth: 0,
       renderedHeight: 0,
       isBroken: false
     });
+    cursor = tagEnd + 1;
   }
   return images;
 }
 
 function extractCtas(html) {
   const ctas = [];
-  // Match <a>, <button>, and input[type="submit"] tags
-  const linkRegex = /<a[^>]*>([\s\S]*?)<\/a>/gi;
-  const buttonRegex = /<button[^>]*>([\s\S]*?)<\/button>/gi;
-  const inputRegex = /<input[^>]+type=["'](submit|button)["'][^>]*>/gi;
 
-  let match;
-  while ((match = linkRegex.exec(html)) !== null) {
-    const text = match[1].replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-    const hrefMatch = match[0].match(/href=["']([^"']*?)["']/i);
+  // <a> tags
+  for (const pair of findTagPairs(html, 'a')) {
+    const text = stripTags(pair.inner);
     if (text && CTA_ACTION_WORDS.test(text)) {
-      ctas.push({ text, href: hrefMatch ? hrefMatch[1] : '', tag: 'a', visible: true, aboveFold: false });
+      const href = getAttr(pair.openTagText, 'href');
+      ctas.push({ text, href, tag: 'a', visible: true, aboveFold: false });
     }
   }
-  while ((match = buttonRegex.exec(html)) !== null) {
-    const text = match[1].replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+
+  // <button> tags
+  for (const pair of findTagPairs(html, 'button')) {
+    const text = stripTags(pair.inner);
     if (text && CTA_ACTION_WORDS.test(text)) {
       ctas.push({ text, href: '', tag: 'button', visible: true, aboveFold: false });
     }
   }
-  while ((match = inputRegex.exec(html)) !== null) {
-    const valueMatch = match[0].match(/value=["']([^"']*?)["']/i);
-    const text = valueMatch ? valueMatch[1] : '';
-    if (text && CTA_ACTION_WORDS.test(text)) {
-      ctas.push({ text, href: '', tag: 'input', visible: true, aboveFold: false });
+
+  // <input type="submit|button"> — self-closing, use indexOf scan
+  const lc = html.toLowerCase();
+  let cursor = 0;
+  while (cursor < lc.length) {
+    const tagStart = lc.indexOf('<input', cursor);
+    if (tagStart === -1) break;
+    const tagEnd = lc.indexOf('>', tagStart);
+    if (tagEnd === -1) break;
+
+    const tagSlice = html.slice(tagStart, tagEnd + 1);
+    const lcSlice = lc.slice(tagStart, tagEnd + 1);
+    const typeVal = getAttr(tagSlice, 'type').toLowerCase();
+
+    if (typeVal === 'submit' || typeVal === 'button') {
+      const text = getAttr(tagSlice, 'value');
+      if (text && CTA_ACTION_WORDS.test(text)) {
+        ctas.push({ text, href: '', tag: 'input', visible: true, aboveFold: false });
+      }
     }
+    cursor = tagEnd + 1;
   }
   return ctas;
 }
 
 function extractForms(html) {
   const forms = [];
-  const regex = /<form[^>]*>([\s\S]*?)<\/form>/gi;
-  let match;
-  let index = 0;
-  while ((match = regex.exec(html)) !== null) {
-    const idMatch = match[0].match(/id=["']([^"']*?)["']/i);
-    const inner = match[1];
-    const fieldCount = (inner.match(/<(input|textarea|select|button)\b/gi) || []).length;
-    const hasSubmit = /<(button[^>]*type=["']submit|input[^>]*type=["']submit)/i.test(inner);
+  for (const [index, pair] of findTagPairs(html, 'form').entries()) {
+    const id = getAttr(pair.openTagText, 'id');
+    const innerLc = pair.inner.toLowerCase();
+    let fieldCount = 0;
+    for (const tag of ['<input', '<textarea', '<select', '<button']) {
+      let pos = 0;
+      while ((pos = innerLc.indexOf(tag, pos)) !== -1) { fieldCount++; pos += tag.length; }
+    }
+    const hasSubmit = innerLc.includes('type="submit"') || innerLc.includes("type='submit'");
     forms.push({
-      id: idMatch ? idMatch[1] : `form-${index + 1}`,
+      id: id || `form-${index + 1}`,
       fieldCount,
       hasSubmitControl: hasSubmit
     });
-    index++;
   }
   return forms;
 }
@@ -431,18 +544,57 @@ function extractCssChecks(html) {
   const styleBlocks = extractTagContent(html, 'style');
   const allStyle = styleBlocks.join('\n');
   return {
-    hasOutlineNone: /outline\s*:\s*none/i.test(allStyle),
-    hasTransitionAll: /transition\s*:\s*all/i.test(allStyle)
+    hasOutlineNone: allStyle.toLowerCase().includes('outline') && /outline\s*:\s*none/i.test(allStyle),
+    hasTransitionAll: allStyle.toLowerCase().includes('transition') && /transition\s*:\s*all/i.test(allStyle)
   };
 }
 
+/**
+ * Strip HTML tags iteratively (no regex on untrusted HTML).
+ * Removes <script> and <style> blocks entirely, then strips remaining tags.
+ */
 function stripHtmlTags(html) {
-  return html
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  // Phase 1: remove <script>…</script> and <style>…</style> blocks
+  let cleaned = '';
+  const lc = html.toLowerCase();
+  let cursor = 0;
+
+  while (cursor < lc.length) {
+    const scriptStart = lc.indexOf('<script', cursor);
+    const styleStart = lc.indexOf('<style', cursor);
+
+    // Find whichever comes first
+    let blockStart = -1;
+    let blockTag = '';
+    if (scriptStart !== -1 && (styleStart === -1 || scriptStart < styleStart)) {
+      blockStart = scriptStart;
+      blockTag = 'script';
+    } else if (styleStart !== -1) {
+      blockStart = styleStart;
+      blockTag = 'style';
+    }
+
+    if (blockStart === -1) {
+      cleaned += html.slice(cursor);
+      break;
+    }
+
+    // Append everything before this block
+    cleaned += html.slice(cursor, blockStart);
+
+    // Find closing tag
+    const closeTag = `</${blockTag}`;
+    const closeStart = lc.indexOf(closeTag, blockStart);
+    if (closeStart === -1) {
+      // No closing tag — skip rest of document for safety
+      break;
+    }
+    const closeEnd = lc.indexOf('>', closeStart);
+    cursor = closeEnd === -1 ? closeStart + closeTag.length : closeEnd + 1;
+  }
+
+  // Phase 2: strip remaining tags using character scan
+  return stripTags(cleaned);
 }
 
 async function fetchViaHttp(parsedUrl) {
@@ -472,7 +624,8 @@ async function fetchViaHttp(parsedUrl) {
   const html = new TextDecoder().decode(arrayBuffer);
 
   const finalUrl = response.url || parsedUrl.toString();
-  const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1]?.trim() || '';
+  const titlePairs = findTagPairs(html, 'title');
+  const title = titlePairs.length > 0 ? stripTags(titlePairs[0].inner).trim() : '';
   const metaDescription = extractMetaContent(html, 'name', 'description')
     || extractMetaContent(html, 'property', 'og:description')
     || '';
@@ -541,7 +694,8 @@ export function buildPageDataFromRawHtml({
     throw new Error('rawHtml is required when using manual input mode.');
   }
 
-  const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1]?.trim() || '';
+  const titlePairs = findTagPairs(html, 'title');
+  const title = titlePairs.length > 0 ? stripTags(titlePairs[0].inner).trim() : '';
   const metaDescription = extractMetaContent(html, 'name', 'description')
     || extractMetaContent(html, 'property', 'og:description')
     || '';
