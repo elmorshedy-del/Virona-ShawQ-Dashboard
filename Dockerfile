@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1.7
 
 ARG NODE_IMAGE=node:20-bookworm-slim
-ARG APT_FORCE_IPV4_CONFIG_PATH=/etc/apt/apt.conf.d/99force-ipv4
 
 FROM ${NODE_IMAGE} AS build
+
+ARG APT_FORCE_IPV4_CONFIG_PATH=/etc/apt/apt.conf.d/99force-ipv4
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PUPPETEER_CACHE_DIR=/app/.cache/puppeteer \
@@ -29,6 +30,8 @@ RUN npm --prefix client run build \
   && mkdir -p /app/.cache/puppeteer
 
 FROM ${NODE_IMAGE} AS runtime
+
+ARG APT_FORCE_IPV4_CONFIG_PATH=/etc/apt/apt.conf.d/99force-ipv4
 
 ENV DEBIAN_FRONTEND=noninteractive \
     NODE_ENV=production \
