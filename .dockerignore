@@ -1,31 +1,43 @@
-# Dependencies - will be installed fresh in container
+# Dependency caches
 node_modules
 client/node_modules
 server/node_modules
 
-# Git
+# Git and local tooling
 .git
-.gitignore
-
-# IDE
+.github
 .vscode
 .idea
-*.swp
-*.swo
+.playwright-cli
+.tmp-skill-work
+.venv*
 
-# Logs
-*.log
-npm-debug.log*
-
-# Test files
-*.test.js
-*.spec.js
-__tests__
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Local database
+# Local data and generated artifacts
+data
+output
+tmp
+models
 *.db
 *.sqlite
+*.sqlite3
+full_code.txt
+full_codebase.txt
+fullcodebase.txt
+
+# Non-production subprojects and heavy local work areas
+apps
+apify-actor
+grounding_dino_service
+mockups
+photo_magic_ai_service
+photo_magic_hq_service
+product_discovery_agent
+product_radar_ai_service
+rare-disease-platform
+tests
+video_overlay_ai_service
+virona-shawq-dashboard
+
+# OS noise
+.DS_Store
+Thumbs.db

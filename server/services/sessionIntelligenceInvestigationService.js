@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { getDb } from '../db/database.js';
+import { buildPuppeteerLaunchOptions } from '../utils/puppeteerLaunchOptions.js';
 
 export const ISSUE_LIFECYCLE_STATES = Object.freeze({
   OBSERVED: 'observed',
@@ -224,16 +225,12 @@ async function loadPuppeteer() {
 
 async function launchBrowserProbe(puppeteer) {
   try {
-    return await puppeteer.launch({
-      headless: 'new',
-      args: ['--disable-dev-shm-usage', '--disable-gpu']
-    });
+    return await puppeteer.launch(buildPuppeteerLaunchOptions());
   } catch (launchError) {
     if (!BROWSER_PROBE_CONFIG.allowNoSandbox) throw launchError;
-    return puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-    });
+    return puppeteer.launch(buildPuppeteerLaunchOptions({
+      includeNoSandboxArgs: true
+    }));
   }
 }
 

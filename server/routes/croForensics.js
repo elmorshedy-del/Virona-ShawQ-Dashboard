@@ -1,5 +1,6 @@
 import express from 'express';
 import puppeteer from 'puppeteer';
+import { buildPuppeteerLaunchOptions } from '../utils/puppeteerLaunchOptions.js';
 
 const router = express.Router();
 
@@ -398,10 +399,10 @@ function buildExperiments(models) {
 }
 
 async function extractWithPuppeteer(url) {
-  const browser = await puppeteer.launch({
+  const browser = await puppeteer.launch(buildPuppeteerLaunchOptions({
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-  });
+    includeNoSandboxArgs: true
+  }));
 
   try {
     const page = await browser.newPage();

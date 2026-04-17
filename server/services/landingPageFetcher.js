@@ -3,6 +3,7 @@ import net from 'net';
 
 import puppeteerExtra from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { buildPuppeteerLaunchOptions } from '../utils/puppeteerLaunchOptions.js';
 
 /* ── Configuration constants ── */
 const NAVIGATION_TIMEOUT_MS = 30_000;
@@ -104,22 +105,15 @@ function safeMs(value) {
  * ══════════════════════════════════════════════════════════════════════════════ */
 
 async function fetchViaPuppeteer(parsedUrl) {
-  /* Always include container-critical flags; --no-sandbox is opt-in via env. */
-  const launchArgs = ['--disable-dev-shm-usage', '--disable-gpu'];
-  if (PUPPETEER_NO_SANDBOX) {
-    launchArgs.push('--no-sandbox', '--disable-setuid-sandbox');
-  }
-
   let browser;
   const consoleErrors = [];
   const jsErrors = [];
 
   try {
-    browser = await puppeteerExtra.launch({
-      headless: 'new',
-      timeout: NAVIGATION_TIMEOUT_MS,
-      args: launchArgs
-    });
+    browser = await puppeteerExtra.launch(buildPuppeteerLaunchOptions({
+      includeNoSandboxArgs: PUPPETEER_NO_SANDBOX,
+      timeoutMs: NAVIGATION_TIMEOUT_MS
+    }));
 
     const page = await browser.newPage();
     await page.setViewport(DESKTOP_VIEWPORT);

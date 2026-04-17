@@ -3,6 +3,7 @@ import path from 'path';
 import puppeteer from 'puppeteer';
 
 import { getDb } from '../db/database.js';
+import { buildPuppeteerLaunchOptions } from '../utils/puppeteerLaunchOptions.js';
 
 const TRUST_SIGNAL_KEYWORDS = [
   'review',
@@ -910,10 +911,10 @@ export async function runConversionUiFixLabAudit({
   const visited = new Set();
   const pages = [];
 
-  const browser = await puppeteer.launch({
+  const browser = await puppeteer.launch(buildPuppeteerLaunchOptions({
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-  });
+    includeNoSandboxArgs: true
+  }));
 
   try {
     while (queue.length > 0 && pages.length < crawlMaxPages) {

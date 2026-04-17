@@ -3,6 +3,7 @@
 
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { buildPuppeteerLaunchOptions } from '../utils/puppeteerLaunchOptions.js';
 
 // Add stealth plugin to avoid bot detection
 puppeteer.use(StealthPlugin());
@@ -27,22 +28,18 @@ export async function scrapeAds(searchQuery, options = {}) {
   try {
     log('Starting browser...');
     
-    // Use Puppeteer's bundled Chromium
+    // Use the configured system Chromium
     log('Launching browser...');
     
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
+    browser = await puppeteer.launch(buildPuppeteerLaunchOptions({
+      includeNoSandboxArgs: true,
+      additionalArgs: [
         '--disable-accelerated-2d-canvas',
-        '--disable-gpu',
         '--single-process',
         '--no-zygote',
         '--window-size=1920,1080'
       ]
-    });
+    }));
     
     const page = await browser.newPage();
     
@@ -252,10 +249,10 @@ export async function scrapeAds(searchQuery, options = {}) {
 export async function healthCheck() {
   let browser = null;
   try {
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--single-process', '--no-zygote']
-    });
+    browser = await puppeteer.launch(buildPuppeteerLaunchOptions({
+      includeNoSandboxArgs: true,
+      additionalArgs: ['--single-process', '--no-zygote']
+    }));
     await browser.close();
     return { ok: true, message: 'Puppeteer working' };
   } catch (error) {
