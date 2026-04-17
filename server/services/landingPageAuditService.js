@@ -288,12 +288,14 @@ function extractJsonFromClaudeText(text) {
   const repaired = repairTruncatedJson(basis);
   try {
     console.warn('[extractJsonFromClaudeText] used truncation repair – result may be incomplete');
-    return JSON.parse(repaired);
+    const parsed = JSON.parse(repaired);
+    parsed._truncated = true;
+    return parsed;
   } catch (repairError) {
     const posMatch = repairError.message.match(/position (\d+)/);
     const errorPos = posMatch ? Number(posMatch[1]) : 0;
     const snippet = repaired.slice(Math.max(0, errorPos - 80), errorPos + 80);
-    console.error('[sanitizeLlmJson] truncation repair failed near:', snippet);
+    console.error('[extractJsonFromClaudeText] truncation repair failed near:', snippet);
     throw new Error(`Failed to parse model JSON after sanitization and repair: ${repairError.message}`);
   }
 }
@@ -377,7 +379,8 @@ function validateAuditResultShape(result) {
       currentGrade: String(result?.improvementPath?.currentGrade || ''),
       projectedGrade: String(result?.improvementPath?.projectedGrade || ''),
       totalEstimatedTime: String(result?.improvementPath?.totalEstimatedTime || '')
-    }
+    },
+    truncated: Boolean(result?._truncated)
   };
 }
 
