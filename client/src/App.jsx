@@ -23,6 +23,7 @@ import MetaMetricsTab from './components/MetaMetricsTab';
 import AttributionTab from './components/AttributionTab';
 import InsightsTab from './components/InsightsTab';
 import SessionIntelligenceTab from './components/SessionIntelligenceTab';
+import LandingPageAuditTab from './components/LandingPageAuditTab';
 import NeoMetaTab from './components/NeoMetaTab';
 import ProductFinderPremium from './components/ProductFinderPremium';
 import CreativeStudio from './components/CreativeStudio';
@@ -657,7 +658,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Meta Metrics', 'Campaign Intelligence', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Product Finder', 'Customer Insights', 'Conversion/UI Fix Lab', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Watchtower', 'CRO Forensics', 'Checkout Blackbox'];
+const TABS = ['Dashboard', 'Meta Metrics', 'Campaign Intelligence', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'Landing Page Audit', 'NeoMeta', 'Product Finder', 'Customer Insights', 'Conversion/UI Fix Lab', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Watchtower', 'CRO Forensics', 'Checkout Blackbox'];
 const TAB_INDEX = Object.freeze(
   TABS.reduce((indexMap, tabLabel, index) => {
     indexMap[tabLabel] = index;
@@ -671,6 +672,7 @@ const META_METRICS_TAB_INDEX = TAB_INDEX['Meta Metrics'];
 const ATTRIBUTION_TAB_INDEX = TAB_INDEX['Attribution'];
 const INSIGHTS_TAB_INDEX = TAB_INDEX['Insights'];
 const SESSION_INTELLIGENCE_TAB_INDEX = TAB_INDEX['Session Intelligence'];
+const LANDING_PAGE_AUDIT_TAB_INDEX = TAB_INDEX['Landing Page Audit'];
 const NEO_META_TAB_INDEX = TAB_INDEX['NeoMeta'];
 const PRODUCT_FINDER_TAB_INDEX = TAB_INDEX['Product Finder'];
 const CUSTOMER_INSIGHTS_TAB_INDEX = TAB_INDEX['Customer Insights'];
@@ -2217,6 +2219,10 @@ export default function App() {
 
         {activeTab === SESSION_INTELLIGENCE_TAB_INDEX && (
           <SessionIntelligenceTab store={store} dashboardDateRange={dashboard?.dateRange} />
+        )}
+
+        {activeTab === LANDING_PAGE_AUDIT_TAB_INDEX && (
+          <LandingPageAuditTab store={store} />
         )}
 
         {activeTab === NEO_META_TAB_INDEX && (
