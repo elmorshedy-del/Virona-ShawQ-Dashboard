@@ -2,6 +2,7 @@ import { getCountryInfo, getAllCountries } from '../utils/countryData.js';
 import { getDb } from '../db/database.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 import { fetchGoogleCampaignHierarchy } from './googleAdsService.js';
+import { syncShopifyOrders } from './shopifyService.js';
 import fetch from 'node-fetch';
 import {
   extractMetaCreativeThumbnailUrl,
@@ -18,6 +19,9 @@ import {
 
 const SHOPIFY_REVENUE_SQL = '(COALESCE(subtotal, 0) + COALESCE(shipping, 0))';
 const SALLA_REVENUE_SQL = '(COALESCE(subtotal, 0) + COALESCE(shipping, 0))';
+const SHOPIFY_MISSING_DAY_SYNC_THRESHOLD = 1;
+const SHOPIFY_BACKFILL_COOLDOWN_MS = 10 * 60 * 1000;
+const shopifyBackfillLastRunAt = new Map();
 
 const PERFORMANCE_PULSE_LIMIT = 4;
 const PERFORMANCE_PULSE_SIGNAL_DELTA_THRESHOLD = 0.05;
@@ -312,6 +316,45 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
   };
 }
 
+function getDateRangeLengthDays(startDate, endDate) {
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  const diffMs = end.getTime() - start.getTime();
+  if (!Number.isFinite(diffMs) || diffMs < 0) return 1;
+  return Math.max(1, Math.floor(diffMs / (24 * 60 * 60 * 1000)) + 1);
+}
+
+function maybeBackfillMissingShopifyDays(db, store, startDate, endDate) {
+  if (store !== 'shawq') return;
+  const nowMs = Date.now();
+  const lastRunMs = shopifyBackfillLastRunAt.get(store) || 0;
+  if (nowMs - lastRunMs < SHOPIFY_BACKFILL_COOLDOWN_MS) return;
+
+  const dateRangeDays = getDateRangeLengthDays(startDate, endDate);
+  const row = db.prepare(`
+    SELECT COUNT(DISTINCT date) as coveredDays
+    FROM shopify_orders
+    WHERE store = ?
+      AND date BETWEEN ? AND ?
+      AND COALESCE(is_excluded, 0) = 0
+  `).get(store, startDate, endDate) || {};
+
+  const coveredDays = Number(row.coveredDays) || 0;
+  const missingDays = Math.max(0, dateRangeDays - coveredDays);
+  if (missingDays < SHOPIFY_MISSING_DAY_SYNC_THRESHOLD) return;
+
+  shopifyBackfillLastRunAt.set(store, nowMs);
+  syncShopifyOrders({ storeKeys: [store], rangeDays: dateRangeDays }).catch((error) => {
+    console.warn('[Analytics] Shopify backfill-on-read failed', {
+      store,
+      startDate,
+      endDate,
+      missingDays,
+      error: error?.message || String(error)
+    });
+  });
+}
+
 function getMetaTotalsForRange(db, store, startDate, endDate, params = {}) {
   const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
@@ -351,6 +394,8 @@ export function getDashboard(store, params) {
   const campaignArgs = campaignValue ? [campaignValue] : [];
   const platformArgs = platformValue ? [platformValue] : [];
   const includeInactive = shouldIncludeInactive(params);
+
+  maybeBackfillMissingShopifyDays(db, store, startDate, endDate);
 
   const current = getTotalsForRange(db, store, startDate, endDate, params);
   const previous = getTotalsForRange(db, store, prevRange.startDate, prevRange.endDate, params);
@@ -2461,12 +2506,145 @@ export function getAvailableCountries(store) {
   return rows.map(r => getCountryInfo(r.code)).filter(c => c && c.name);
 }
 
-export function getCampaignsByCountry(store, params) { return []; }
-export function getCampaignsByAge(store, params) { return []; }
-export function getCampaignsByGender(store, params) { return []; }
-export function getCampaignsByPlacement(store, params) { return []; }
-export function getCampaignsByAgeGender(store, params) { return []; }
-export function getMetaBreakdowns(store, params) { return []; }
+const META_BREAKDOWN_LIMIT = 250;
+const META_BREAKDOWN_DIMENSIONS = Object.freeze({
+  country: Object.freeze({
+    whereClause: "country IS NOT NULL AND country != '' AND country != 'ALL'",
+    selectClause: 'country as key_primary',
+    extraSelectClause: "NULL as key_secondary"
+  }),
+  age: Object.freeze({
+    whereClause: "age IS NOT NULL AND age != ''",
+    selectClause: 'age as key_primary',
+    extraSelectClause: "NULL as key_secondary"
+  }),
+  gender: Object.freeze({
+    whereClause: "gender IS NOT NULL AND gender != ''",
+    selectClause: 'gender as key_primary',
+    extraSelectClause: "NULL as key_secondary"
+  }),
+  placement: Object.freeze({
+    whereClause: "publisher_platform IS NOT NULL AND publisher_platform != ''",
+    selectClause: "publisher_platform as key_primary",
+    extraSelectClause: "COALESCE(NULLIF(platform_position, ''), 'unknown') as key_secondary"
+  }),
+  age_gender: Object.freeze({
+    whereClause: "age IS NOT NULL AND age != '' AND gender IS NOT NULL AND gender != ''",
+    selectClause: 'age as key_primary',
+    extraSelectClause: 'gender as key_secondary'
+  })
+});
+
+function normalizeBreakdownMetricRow(row) {
+  const spend = row?.spend || 0;
+  const orders = row?.orders || 0;
+  const revenue = row?.revenue || 0;
+  const impressions = row?.impressions || 0;
+  const clicks = row?.clicks || 0;
+  const lpv = row?.lpv || 0;
+  const atc = row?.atc || 0;
+  const checkout = row?.checkout || 0;
+
+  return {
+    spend,
+    impressions,
+    clicks,
+    orders,
+    conversions: orders,
+    revenue,
+    roas: spend > 0 ? revenue / spend : 0,
+    cac: orders > 0 ? spend / orders : 0,
+    cpm: impressions > 0 ? (spend / impressions) * 1000 : 0,
+    ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,
+    cpc: clicks > 0 ? spend / clicks : 0,
+    lpv,
+    atc,
+    checkout
+  };
+}
+
+function getMetaBreakdowns(store, params = {}, breakdownKey) {
+  const breakdownConfig = META_BREAKDOWN_DIMENSIONS[breakdownKey];
+  if (!breakdownConfig) return [];
+
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  const statusFilter = buildStatusFilter(params);
+  const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const { clause: platformClause, value: platformValue } = buildPublisherPlatformFilter(params);
+  const campaignArgs = campaignValue ? [campaignValue] : [];
+  const platformArgs = platformValue ? [platformValue] : [];
+
+  const rows = db.prepare(`
+    SELECT
+      ${breakdownConfig.selectClause},
+      ${breakdownConfig.extraSelectClause},
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(inline_link_clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as orders,
+      SUM(conversion_value) as revenue
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? AND ${breakdownConfig.whereClause}${statusFilter}${campaignClause}${platformClause}
+    GROUP BY key_primary, key_secondary
+    ORDER BY spend DESC
+    LIMIT ?
+  `).all(store, startDate, endDate, ...campaignArgs, ...platformArgs, META_BREAKDOWN_LIMIT);
+
+  return rows
+    .map((row) => {
+      const normalized = normalizeBreakdownMetricRow(row);
+      if (breakdownKey === 'country') {
+        const info = getCountryInfo(row.key_primary);
+        return {
+          key: row.key_primary || 'UNKNOWN',
+          country: row.key_primary || 'UNKNOWN',
+          name: info?.name || row.key_primary || 'Unknown',
+          code: info?.code || row.key_primary || 'UNKNOWN',
+          ...normalized
+        };
+      }
+
+      if (breakdownKey === 'placement') {
+        const platform = row.key_primary || 'unknown';
+        const position = row.key_secondary || 'unknown';
+        return {
+          key: `${platform}-${position}`,
+          publisher_platform: platform,
+          platform_position: position,
+          placement: `${platform} / ${position}`,
+          ...normalized
+        };
+      }
+
+      if (breakdownKey === 'age_gender') {
+        const age = row.key_primary || 'unknown';
+        const gender = row.key_secondary || 'unknown';
+        return {
+          key: `${age}-${gender}`,
+          age,
+          gender,
+          ...normalized
+        };
+      }
+
+      return {
+        key: row.key_primary || 'unknown',
+        [breakdownKey]: row.key_primary || 'unknown',
+        ...normalized
+      };
+    })
+    .filter((row) => row.spend > 0 || row.orders > 0 || row.revenue > 0);
+}
+
+export function getCampaignsByCountry(store, params) { return getMetaBreakdowns(store, params, 'country'); }
+export function getCampaignsByAge(store, params) { return getMetaBreakdowns(store, params, 'age'); }
+export function getCampaignsByGender(store, params) { return getMetaBreakdowns(store, params, 'gender'); }
+export function getCampaignsByPlacement(store, params) { return getMetaBreakdowns(store, params, 'placement'); }
+export function getCampaignsByAgeGender(store, params) { return getMetaBreakdowns(store, params, 'age_gender'); }
 
 // ============================================================================
 // HIERARCHICAL META AD MANAGER DATA
