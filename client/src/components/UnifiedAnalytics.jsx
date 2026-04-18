@@ -84,6 +84,7 @@ export default function UnifiedAnalytics({
   setShowHiddenDropdown = () => {},
   includeInactive = false,
   setIncludeInactive = () => {},
+  showIncludeInactiveToggle = true,
   expandedCampaigns = new Set(),
   setExpandedCampaigns = () => {},
   expandedAdsets = new Set(),
@@ -643,17 +644,23 @@ export default function UnifiedAnalytics({
             )}
 
             {/* Include Inactive toggle */}
-            <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={includeInactive}
-                onChange={(e) => setIncludeInactive(e.target.checked)}
-                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              />
-              <span className={includeInactive ? 'text-blue-600 font-medium' : ''}>
-                Include Inactive
+            {showIncludeInactiveToggle ? (
+              <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={includeInactive}
+                  onChange={(e) => setIncludeInactive(e.target.checked)}
+                  className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+                <span className={includeInactive ? 'text-blue-600 font-medium' : ''}>
+                  Include Inactive
+                </span>
+              </label>
+            ) : (
+              <span className="text-xs font-medium text-emerald-700 bg-emerald-50 px-2 py-1 rounded-md border border-emerald-200">
+                Active only
               </span>
-            </label>
+            )}
           </div>
         </div>
       </div>
