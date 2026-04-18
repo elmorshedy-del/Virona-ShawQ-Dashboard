@@ -6386,9 +6386,9 @@ function DashboardTab({
         setSelectedDiagnosticsCampaign={setSelectedDiagnosticsCampaign}
         showHiddenDropdown={showHiddenDropdown}
         setShowHiddenDropdown={setShowHiddenDropdown}
-              includeInactive={effectiveIncludeInactive}
-              setIncludeInactive={setIncludeInactive}
-              showIncludeInactiveToggle={!ENFORCE_ACTIVE_ONLY}
+        includeInactive={includeInactive}
+        setIncludeInactive={setIncludeInactive}
+        showIncludeInactiveToggle={!ENFORCE_ACTIVE_ONLY}
         expandedCampaigns={expandedCampaigns}
         setExpandedCampaigns={setExpandedCampaigns}
         expandedAdsets={expandedAdsets}
