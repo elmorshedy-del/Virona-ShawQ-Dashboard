@@ -227,7 +227,13 @@ const KPI_MONTH_SUMMARY_THRESHOLDS = {
   strongDirectionalDeltaPct: 15,
   minHistoryMonthsForAllTime: 2
 };
-const KPI_HEADLINE_INCLUDE_INACTIVE = true;
+const KPI_HEADLINE_INCLUDE_INACTIVE = false;
+const ENFORCE_ACTIVE_ONLY = true;
+const ANALYTICS_CHANNEL_OPTIONS = Object.freeze([
+  { value: '', label: 'All Channels' },
+  { value: 'facebook', label: 'Facebook (Meta)' },
+  { value: 'instagram', label: 'Instagram' }
+]);
 const DEFAULT_FUNNEL_BASELINE_MODE = 'month';
 const FUNNEL_BASELINE_OPTIONS = [
   {
@@ -839,6 +845,8 @@ export default function App() {
 
   // Include inactive campaigns/adsets/ads toggle (default: ACTIVE only)
   const [includeInactive, setIncludeInactive] = useState(false);
+  const [selectedAnalyticsChannel, setSelectedAnalyticsChannel] = useState('');
+  const effectiveIncludeInactive = ENFORCE_ACTIVE_ONLY ? false : includeInactive;
   // Campaign scope selector
   const [selectedCampaignId, setSelectedCampaignId] = useState('');
   const [campaignOptions, setCampaignOptions] = useState([]);
@@ -923,7 +931,7 @@ export default function App() {
         setCurrentStore(saved);
       }
       const savedIncludeInactive = localStorage.getItem('includeInactive');
-      if (savedIncludeInactive !== null) {
+      if (!ENFORCE_ACTIVE_ONLY && savedIncludeInactive !== null) {
         setIncludeInactive(savedIncludeInactive === 'true');
       }
     } catch (e) {
@@ -944,6 +952,7 @@ export default function App() {
 
   useEffect(() => {
     if (!storeLoaded) return;
+    if (ENFORCE_ACTIVE_ONLY) return;
     try {
       localStorage.setItem('includeInactive', includeInactive ? 'true' : 'false');
     } catch (e) {
@@ -1092,13 +1101,20 @@ export default function App() {
       applyDashboardRange(regionCompareParams);
       
       params.set('showArrows', shouldShowArrows);
+      if (selectedAnalyticsChannel) {
+        params.set('channel', selectedAnalyticsChannel);
+        budgetParams.set('channel', selectedAnalyticsChannel);
+        countryTrendParams.set('channel', selectedAnalyticsChannel);
+        campaignTrendParams.set('channel', selectedAnalyticsChannel);
+        regionCompareParams.set('channel', selectedAnalyticsChannel);
+      }
       const headlineDashboardParams = new URLSearchParams(params);
       if (KPI_HEADLINE_INCLUDE_INACTIVE) {
         headlineDashboardParams.set('includeInactive', 'true');
       }
 
       // Include inactive campaigns/adsets/ads if toggle is on
-      if (includeInactive) {
+      if (effectiveIncludeInactive) {
         params.set('includeInactive', 'true');
         budgetParams.set('includeInactive', 'true');
         countryTrendParams.set('includeInactive', 'true');
@@ -1115,7 +1131,7 @@ export default function App() {
         days: String(requestedTimeOfDayDays),
         region: shopifyRegion
       });
-      if (includeInactive) {
+      if (effectiveIncludeInactive) {
         timeOfDayParams.set('includeInactive', 'true');
       }
 
@@ -1147,7 +1163,7 @@ export default function App() {
         fetchJson(`${API_BASE}/budget-intelligence?${budgetParams}`, {}),
         fetchJson(`${API_BASE}/manual?${params}`, []),
         fetchJson(`${API_BASE}/manual/spend?${params}`, []),
-        fetchJson(`${API_BASE}/analytics/countries?store=${currentStore}`, MASTER_COUNTRIES_WITH_FLAGS),
+        fetchJson(`${API_BASE}/analytics/countries?${params}`, MASTER_COUNTRIES_WITH_FLAGS),
         fetchJson(`${API_BASE}/analytics/countries/trends?${countryTrendParams}`, { data: [], dataSource: '' }),
         fetchJson(`${API_BASE}/analytics/countries/trends?${regionCompareParams}`, { data: [], dataSource: '' }),
         fetchJson(`${API_BASE}/analytics/newyork/trends?${countryTrendParams}`, { data: null, dataSource: '' }),
@@ -1285,7 +1301,7 @@ export default function App() {
       console.error('Error loading data:', error);
     }
     setLoading(false);
-  }, [currentStore, dateRange, selectedShopifyRegion, selectedTimeOfDayWindowDays, daysOfWeekPeriod, includeInactive, countryTrendsRangeMode, countryTrendsQuickRange, campaignTrendsRangeMode, campaignTrendsQuickRange, selectedCampaignId]);
+  }, [currentStore, dateRange, selectedShopifyRegion, selectedTimeOfDayWindowDays, daysOfWeekPeriod, effectiveIncludeInactive, countryTrendsRangeMode, countryTrendsQuickRange, campaignTrendsRangeMode, campaignTrendsQuickRange, selectedCampaignId, selectedAnalyticsChannel]);
 
   useEffect(() => {
     if (storeLoaded) {
@@ -1354,6 +1370,12 @@ export default function App() {
         if (selectedCampaignId) {
           params.set('campaignId', selectedCampaignId);
         }
+        if (effectiveIncludeInactive) {
+          params.set('includeInactive', 'true');
+        }
+        if (selectedAnalyticsChannel) {
+          params.set('channel', selectedAnalyticsChannel);
+        }
 
         const endpoint = metaBreakdown === 'age_gender'
           ? `${API_BASE}/analytics/campaigns/by-age-gender?${params}`
@@ -1367,7 +1389,7 @@ export default function App() {
     }
 
     loadBreakdown();
-  }, [metaBreakdown, currentStore, dateRange, storeLoaded, selectedCampaignId]);
+  }, [metaBreakdown, currentStore, dateRange, storeLoaded, selectedCampaignId, effectiveIncludeInactive, selectedAnalyticsChannel]);
 
   // Load Meta Ad Manager hierarchy data
   useEffect(() => {
@@ -1400,9 +1422,12 @@ export default function App() {
       if (adManagerBreakdown !== 'none') {
         params.set('breakdown', adManagerBreakdown);
       }
+      if (selectedAnalyticsChannel) {
+        params.set('channel', selectedAnalyticsChannel);
+      }
 
       // Include inactive if toggle is on
-      if (includeInactive) {
+      if (effectiveIncludeInactive) {
         params.set('includeInactive', 'true');
       }
 
@@ -1434,51 +1459,44 @@ export default function App() {
 
     async function loadMetaAdManager() {
       setMetaAdManagerNotice('');
+      const params = buildParams(dateRange);
       try {
-        const params = buildParams(dateRange);
         const primaryResult = await fetchMetaAdManager(params);
-        const data = primaryResult.rows;
-
-        if (!data.length && isTodayRange(dateRange)) {
+        setMetaAdManagerData(primaryResult.rows);
+        setMetaAdManagerNotice(primaryResult.notice || '');
+      } catch (primaryError) {
+        if (isTodayRange(dateRange)) {
           const yesterday = getIstanbulDateString(new Date(Date.now() - 24 * 60 * 60 * 1000));
           const fallbackParams = buildParams({ type: 'custom', start: yesterday, end: yesterday });
-          const fallbackResult = await fetchMetaAdManager(fallbackParams);
-          const fallbackData = fallbackResult.rows;
-
-          if (fallbackData.length > 0) {
-            setMetaAdManagerData(fallbackData);
+          try {
+            const fallbackResult = await fetchMetaAdManager(fallbackParams);
+            setMetaAdManagerData(fallbackResult.rows);
             setMetaAdManagerNotice(
               combineNotices(
-                primaryResult.notice,
                 fallbackResult.notice,
-                `Today's data is still syncing with Meta. Showing ${yesterday} results for now; we'll update automatically once today's data is ready.`
+                `Primary API request failed, so we showed ${yesterday} as a fallback for now.`
+              )
+            );
+            return;
+          } catch (fallbackError) {
+            setMetaAdManagerData([]);
+            setMetaAdManagerNotice(
+              combineNotices(
+                `Primary request failed: ${primaryError?.message || 'unknown error'}.`,
+                `Fallback request failed: ${fallbackError?.message || 'unknown error'}.`
               )
             );
             return;
           }
-
-          setMetaAdManagerData([]);
-          setMetaAdManagerNotice(
-            combineNotices(
-              primaryResult.notice,
-              fallbackResult.notice,
-              "Today's data is still syncing with Meta, and yesterday's results aren't available yet. We'll update automatically as soon as data arrives."
-            )
-          );
-          return;
         }
-
-        setMetaAdManagerData(data);
-        setMetaAdManagerNotice(primaryResult.notice || '');
-      } catch (error) {
-        console.error('Error loading Meta Ad Manager data:', error);
+        console.error('Error loading Meta Ad Manager data:', primaryError);
         setMetaAdManagerData([]);
         setMetaAdManagerNotice('We had trouble loading campaign data just now. Please retry in a moment.');
       }
     }
 
     loadMetaAdManager();
-  }, [analyticsMode, adManagerBreakdown, currentStore, dateRange, storeLoaded, includeInactive, selectedCampaignId]);
+  }, [analyticsMode, adManagerBreakdown, currentStore, dateRange, storeLoaded, effectiveIncludeInactive, selectedCampaignId, selectedAnalyticsChannel]);
 
   // Load Google Ads hierarchy data
   useEffect(() => {
@@ -1497,7 +1515,7 @@ export default function App() {
       params.set(dateRange.type, dateRange.value);
     }
 
-    if (includeInactive) {
+    if (effectiveIncludeInactive) {
       params.set('includeInactive', 'true');
     }
 
@@ -1535,7 +1553,7 @@ export default function App() {
       cancelled = true;
       clearInterval(refreshTimer);
     };
-  }, [analyticsMode, currentStore, dateRange, storeLoaded, includeInactive, selectedCampaignId]);
+  }, [analyticsMode, currentStore, dateRange, storeLoaded, effectiveIncludeInactive, selectedCampaignId]);
 
   // Load funnel diagnostics data
   useEffect(() => {
@@ -2071,11 +2089,11 @@ export default function App() {
               <div>
                 Showing: <strong>{getDateRangeLabel()}</strong>
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-gray-700">Campaign:</span>
-                <select
-                  value={selectedCampaignId}
-                  onChange={(e) => setSelectedCampaignId(e.target.value)}
+	              <div className="flex items-center gap-2">
+	                <span className="text-sm font-medium text-gray-700">Campaign:</span>
+	                <select
+	                  value={selectedCampaignId}
+	                  onChange={(e) => setSelectedCampaignId(e.target.value)}
                   className="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white min-w-[180px]"
                 >
                   <option value="">All campaigns</option>
@@ -2083,12 +2101,26 @@ export default function App() {
                     <option key={option.campaignId} value={option.campaignId}>
                       {option.campaignName}
                     </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </div>
-        )}
+	                  ))}
+	                </select>
+	              </div>
+	              <div className="flex items-center gap-2">
+	                <span className="text-sm font-medium text-gray-700">Channel:</span>
+	                <select
+	                  value={selectedAnalyticsChannel}
+	                  onChange={(e) => setSelectedAnalyticsChannel(e.target.value)}
+	                  className="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white min-w-[160px]"
+	                >
+	                  {ANALYTICS_CHANNEL_OPTIONS.map((option) => (
+	                    <option key={option.value || 'all'} value={option.value}>
+	                      {option.label}
+	                    </option>
+	                  ))}
+	                </select>
+	              </div>
+	            </div>
+	          </div>
+	        )}
 
         {activeTab === DASHBOARD_TAB_INDEX && dashboard && (
           isMobileViewport ? (
@@ -2164,7 +2196,7 @@ export default function App() {
               setHiddenCampaigns={setHiddenCampaigns}
               showHiddenDropdown={showHiddenDropdown}
               setShowHiddenDropdown={setShowHiddenDropdown}
-              includeInactive={includeInactive}
+              includeInactive={effectiveIncludeInactive}
               selectedCampaignId={selectedCampaignId}
               setIncludeInactive={setIncludeInactive}
               selectedMonthKey={selectedMonthKey}
@@ -6354,8 +6386,9 @@ function DashboardTab({
         setSelectedDiagnosticsCampaign={setSelectedDiagnosticsCampaign}
         showHiddenDropdown={showHiddenDropdown}
         setShowHiddenDropdown={setShowHiddenDropdown}
-        includeInactive={includeInactive}
-        setIncludeInactive={setIncludeInactive}
+              includeInactive={effectiveIncludeInactive}
+              setIncludeInactive={setIncludeInactive}
+              showIncludeInactiveToggle={!ENFORCE_ACTIVE_ONLY}
         expandedCampaigns={expandedCampaigns}
         setExpandedCampaigns={setExpandedCampaigns}
         expandedAdsets={expandedAdsets}
