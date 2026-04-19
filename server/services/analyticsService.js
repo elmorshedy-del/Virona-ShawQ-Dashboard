@@ -249,11 +249,18 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
   const platformArgs = platformValue ? [platformValue] : [];
 
   const metaTotals = db.prepare(`
-    SELECT SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders
+    SELECT SUM(conversion_value) as revenue, SUM(conversions) as orders
     FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
   `).get(store, startDate, endDate, ...campaignArgs, ...platformArgs) || {};
 
-  let totalSpend = metaTotals.spend || 0;
+  // Spend should always include all persisted Meta spend in the selected range.
+  const persistedMetaSpend = db.prepare(`
+    SELECT SUM(spend) as spend
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${campaignClause}${platformClause}
+  `).get(store, startDate, endDate, ...campaignArgs, ...platformArgs) || {};
+
+  let totalSpend = persistedMetaSpend.spend || 0;
   let totalRevenue = metaTotals.revenue || 0;
   let totalOrders = metaTotals.orders || 0;
 
@@ -1309,7 +1316,12 @@ function getTrends(store, startDate, endDate, params = {}) {
     salesData = db.prepare(`SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause} GROUP BY date`).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
   }
 
-  const spendData = db.prepare(`SELECT date, SUM(spend) as spend FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause} GROUP BY date`).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
+  const spendData = db.prepare(`
+    SELECT date, SUM(spend) as spend
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${campaignClause}${platformClause}
+    GROUP BY date
+  `).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
 
   const map = new Map();
   allDates.forEach(d => map.set(d, { date: d, orders: 0, revenue: 0, spend: 0 }));
