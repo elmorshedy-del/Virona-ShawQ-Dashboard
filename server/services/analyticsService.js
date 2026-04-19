@@ -19,6 +19,12 @@ import {
 
 const SHOPIFY_REVENUE_SQL = '(COALESCE(subtotal, 0) + COALESCE(shipping, 0))';
 const SALLA_REVENUE_SQL = '(COALESCE(subtotal, 0) + COALESCE(shipping, 0))';
+const DASHBOARD_ALL_CAMPAIGNS_TOKENS = new Set([
+  'all',
+  'all-campaigns',
+  'all_campaigns',
+  '*'
+]);
 const SHOPIFY_MISSING_DAY_SYNC_THRESHOLD = 1;
 const SHOPIFY_BACKFILL_COOLDOWN_MS = 10 * 60 * 1000;
 const shopifyBackfillLastRunAt = new Map();
@@ -128,7 +134,14 @@ function buildStatusFilterForColumn(params, columnName, columnPrefix = '') {
 
 // Optional campaign filter helper (filters by campaign_id when provided)
 function buildCampaignFilter(params, columnPrefix = '') {
-  const campaignId = params?.campaignId;
+  const rawCampaignId = params?.campaignId;
+  const normalizedCampaignId = typeof rawCampaignId === 'string'
+    ? rawCampaignId.trim()
+    : (rawCampaignId == null ? '' : String(rawCampaignId).trim());
+  const campaignId = normalizedCampaignId
+    && !DASHBOARD_ALL_CAMPAIGNS_TOKENS.has(normalizedCampaignId.toLowerCase())
+    ? normalizedCampaignId
+    : null;
   if (campaignId) {
     const column = columnPrefix ? `${columnPrefix}campaign_id` : 'campaign_id';
     return { clause: ` AND ${column} = ?`, value: campaignId };
@@ -242,7 +255,6 @@ export function getCitiesByCountry(store, countryCode, params) {
 // GET TOTALS FOR RANGE
 // ============================================================================
 function getTotalsForRange(db, store, startDate, endDate, params = {}) {
-  const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
   const { clause: platformClause, value: platformValue } = buildPublisherPlatformFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
@@ -250,7 +262,7 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
 
   const metaTotals = db.prepare(`
     SELECT SUM(conversion_value) as revenue, SUM(conversions) as orders
-    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
+    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${campaignClause}${platformClause}
   `).get(store, startDate, endDate, ...campaignArgs, ...platformArgs) || {};
 
   // Spend should always include all persisted Meta spend in the selected range.
@@ -1297,7 +1309,6 @@ function getDynamicCountries(db, store, startDate, endDate, params = {}) {
 // ============================================================================
 function getTrends(store, startDate, endDate, params = {}) {
   const db = getDb();
-  const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
   const { clause: platformClause, value: platformValue } = buildPublisherPlatformFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
@@ -1313,7 +1324,7 @@ function getTrends(store, startDate, endDate, params = {}) {
   if (store === 'shawq' && !campaignValue && !platformValue) {
     salesData = db.prepare(`SELECT date, COUNT(*) as orders, SUM(${SHOPIFY_REVENUE_SQL}) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 GROUP BY date`).all(store, startDate, endDate);
   } else {
-    salesData = db.prepare(`SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause} GROUP BY date`).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
+    salesData = db.prepare(`SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${campaignClause}${platformClause} GROUP BY date`).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
   }
 
   const spendData = db.prepare(`
