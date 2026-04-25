@@ -1181,7 +1181,6 @@ export async function getPerformancePulse(store, params = {}) {
 // DYNAMIC COUNTRIES
 // ============================================================================
 function getDynamicCountries(db, store, startDate, endDate, params = {}) {
-  const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
 
@@ -1199,7 +1198,7 @@ function getDynamicCountries(db, store, startDate, endDate, params = {}) {
       SUM(conversions) as conversions,
       SUM(conversion_value) as conversionValue
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'${statusFilter}${campaignClause}
+    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'${campaignClause}
     GROUP BY country
   `).all(store, startDate, endDate, ...campaignArgs);
 
