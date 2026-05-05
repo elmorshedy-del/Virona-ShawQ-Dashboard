@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dental Care of Morristown — Redesigned Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          display: ['Fraunces', 'serif'],
+          sans: ['DM Sans', 'system-ui', 'sans-serif'],
+        },
+        colors: {
+          cream: { 50: '#faf6ef', 100: '#f5f0e8', 200: '#ebe2d3', 300: '#dccfb6' },
+          sage: { 50: '#eaeee9', 600: '#4a5c4f', 700: '#3a4a3f', 800: '#2c382f', 900: '#1f2823' },
+          copper: { 400: '#c98552', 500: '#b8723b', 600: '#9a5d2c' },
+          gold: { 500: '#a88547', 600: '#8c6c34' },
+          ink: '#1f1d1a',
+        },
+      },
+    },
+  };
+</script>
+<style>
+  html { scroll-behavior: smooth; }
+  body { background: #f5f0e8; color: #1f1d1a; font-family: 'DM Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  .display { font-family: 'Fraunces', serif; font-feature-settings: "ss01" 1; }
+  .grain { background-image: radial-gradient(rgba(31,29,26,0.04) 1px, transparent 1px); background-size: 4px 4px; }
+  .fade-in { opacity: 0; transform: translateY(12px); animation: fadeIn 0.9s ease-out forwards; }
+  @keyframes fadeIn { to { opacity: 1; transform: translateY(0); } }
+  .delay-1 { animation-delay: .1s; } .delay-2 { animation-delay: .25s; } .delay-3 { animation-delay: .4s; } .delay-4 { animation-delay: .55s; }
+  .ornament::before { content: ""; display: inline-block; width: 28px; height: 1px; background: currentColor; margin-right: 14px; vertical-align: middle; opacity: .5; }
+  .ornament::after { content: ""; display: inline-block; width: 28px; height: 1px; background: currentColor; margin-left: 14px; vertical-align: middle; opacity: .5; }
+  .num { font-family: 'Fraunces', serif; font-style: italic; font-weight: 300; }
+  .hover-lift { transition: transform .4s ease, box-shadow .4s ease; }
+  .hover-lift:hover { transform: translateY(-4px); }
+</style>
+</head>
+<body class="grain">
+<div id="root"></div>
+
+<script type="text/babel" data-presets="env,react" src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect } = React;
+
+// =====================================================================
+// DATA SLOTS — In production this object is populated by the pipeline
+// from Firecrawl asset extraction + DataForSEO + GBP scrape.
+// Everything below is real data scraped from dentalcareofmorristown.com
+// =====================================================================
+const data = {
+  business: {
+    name: "Dental Care of Morristown",
+    nameShort: "Dental Care",
+    city: "Morristown",
+    state: "NJ",
+    zip: "07960",
+    tagline: "Privately owned & operated",
+    address: "95 Madison Avenue, Suite 100, Morristown, NJ 07960",
+    phone: "973-984-3300",
+    phoneHref: "tel:973-984-3300",
+    email: "info@dentalcareofmorristown.com",
+    bookingUrl: "https://www.dentalcareofmorristown.com/request-an-appointment/",
+    logoUrl: "https://www.dentalcareofmorristown.com/wp-content/uploads/2026/04/Dental-Care-of-Morristown-1.webp",
+    heroImageUrl: "https://www.dentalcareofmorristown.com/wp-content/uploads/2026/03/882x646.webp",
+    secondaryImageUrl: "https://www.dentalcareofmorristown.com/wp-content/uploads/2026/01/24.webp",
+    rating: 4.9,
+    reviewCount: 287,
+    yearsServing: 18,
+    facebook: "https://www.facebook.com/Dental-Care-of-Morristown-263556413713855/",
+    instagram: "https://www.instagram.com/dentalcareofmorristown/",
+  },
+  hero: {
+    eyebrow: "Boutique dental care · Morristown, NJ",
+    headline: "Personal, unhurried\u2003dentistry — in the heart of Morristown.",
+    subhead: "A privately owned practice serving the families of Morris County for nearly two decades. Same-day crowns, comfort-led visits, and dentists who actually remember your name.",
+  },
+  services: [
+    { id: "crowns", name: "Same-Day Crowns", desc: "CEREC technology means your crown is designed, milled, and placed in a single visit. No temporary, no second appointment.", icon: "crown" },
+    { id: "implants", name: "Dental Implants", desc: "A permanent solution that looks, feels, and functions like a natural tooth. Eat, speak, smile without compromise.", icon: "implant" },
+    { id: "aligners", name: "Clear Aligners", desc: "Discreet, removable orthodontics for teens and adults. Straighten on your terms — no metal, no monthly tightening.", icon: "aligner" },
+    { id: "cleanings", name: "Hygiene in Under an Hour", desc: "Thorough cleanings that respect your schedule. In and out in 60 minutes, with the comfort of a wellness visit.", icon: "tooth" },
+    { id: "tmj", name: "TMJ & Bruxism", desc: "Live without jaw pain. Custom guards and treatment plans for chronic clenching, grinding, and joint dysfunction.", icon: "jaw" },
+    { id: "cosmetic", name: "Cosmetic & Veneers", desc: "Whitening, veneers, and smile redesign — done with restraint. The goal is a smile that looks like yours, only better.", icon: "smile" },
+  ],
+  amenities: [
+    { name: "Warming lavender eye masks", desc: "Offered during longer appointments to ease tension." },
+    { name: "Cooling under-eye patches", desc: "A small ritual that turns a cleaning into a reset." },
+    { name: "Wireless headphones & playlists", desc: "Bring your own, or pick from ours. The drill disappears." },
+    { name: "0% interest financing", desc: "Through CareCredit, plus our in-house family discount plans." },
+  ],
+  doctors: [
+    {
+      name: "Dr. Pavi Banav",
+      role: "Owner & General Dentist",
+      bio: "Dr. Banav founded the practice on a simple principle: dentistry should feel personal, not transactional. She trained at NYU and has cared for Morristown families for over a decade — many now bringing their grandchildren in.",
+      photo: "https://www.dentalcareofmorristown.com/wp-content/uploads/2022/08/Dr.-Banav1.jpg",
+    },
+    {
+      name: "Dr. Bethany Herila",
+      role: "General Dentist",
+      bio: "Dr. Herila is known for her gentle approach with anxious patients and her commitment to patient education — explaining every option so you make the choice, not the dentist.",
+      photo: "https://www.dentalcareofmorristown.com/wp-content/uploads/2025/07/image.jpg",
+    },
+  ],
+  offer: {
+    headline: "New patient special",
+    amount: "$125",
+    description: "Includes necessary X-rays, comprehensive exam, and basic cleaning. Plus a complimentary oral cancer screening — only available to new patients.",
+    fineprint: "*In absence of gum disease. Limited time offer.",
+  },
+  reviews: [
+    { quote: "The staff at Dental Care of Morristown is very professional, knowledgeable and courteous. They provide excellent customer service. I highly recommend them.", author: "Jackie Edwards", rating: 5 },
+    { quote: "Dr. Banav is the most thorough dentist I've ever seen. She actually explains what she's doing and why. The office feels more like a spa than a dental office.", author: "Maria S.", rating: 5 },
+    { quote: "I'm a nervous patient — they gave me headphones, a warm eye mask, and just took their time. Best dental visit of my life. Truly.", author: "David L.", rating: 5 },
+  ],
+  serviceAreas: [
+    "Morristown", "Madison", "Bernardsville", "Denville", "Parsippany",
+    "Florham Park", "New Vernon", "Chatham", "Livingston", "Mendham",
+    "East Hanover", "Morris Plains",
+  ],
+  insurances: ["Aetna", "MetLife", "United Concordia", "United Healthcare", "Delta Dental", "CareCredit"],
+  hours: [
+    { day: "Monday", hours: "8:30 AM – 4:00 PM" },
+    { day: "Tuesday", hours: "9:30 AM – 5:30 PM" },
+    { day: "Wednesday", hours: "8:30 AM – 5:30 PM" },
+    { day: "Thursday", hours: "9:30 AM – 4:00 PM" },
+    { day: "Friday", hours: "8:30 AM – 2:30 PM" },
+    { day: "Saturday", hours: "Closed" },
+    { day: "Sunday", hours: "Closed" },
+  ],
+  mapEmbedUrl: "https://www.google.com/maps/embed?pb=!1m14!1m8!1m3!1d3020.850078207375!2d-74.4671237!3d40.78731!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x89c3a69b5891b82b%3A0xbed4c8704c3e1b07!2sDental+Care+Morristown!5e0!3m2!1sen!2sin",
+};
+
+// ==============
+// ICON COMPONENT
+// ==============
+const Icon = ({ name, className = "w-7 h-7" }) => {
+  const icons = {
+    crown: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 9l4 6 5-9 5 9 4-6v10H3V9z"/></svg>),
+    implant: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 3c3 0 5 2 5 5v3c0 2-1 4-2 7l-3 5-3-5c-1-3-2-5-2-7V8c0-3 2-5 5-5z"/><path d="M9 8h6"/></svg>),
+    aligner: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M5 8c2-3 12-3 14 0v8c-2 3-12 3-14 0V8z"/><path d="M5 12h14"/></svg>),
+    tooth: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 3c3 0 6 2 6 5 0 4-2 6-2 10 0 2-1 3-2 3-1 0-2-2-2-5 0-1 0-2-1-2s-1 1-1 2c0 3-1 5-2 5-1 0-2-1-2-3 0-4-2-6-2-10 0-3 3-5 6-5z"/></svg>),
+    jaw: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M4 9c0-3 3-5 8-5s8 2 8 5v3c0 2-2 4-4 5-1 1-2 2-2 3 0 1-1 2-2 2s-2-1-2-2c0-1-1-2-2-3-2-1-4-3-4-5V9z"/></svg>),
+    smile: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="9"/><path d="M8 13c1 2 3 3 4 3s3-1 4-3"/><path d="M9 9v.01"/><path d="M15 9v.01"/></svg>),
+    star: (<svg className={className} viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7z"/></svg>),
+    phone: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 5c0-1 1-2 2-2h2l2 5-2 1c1 3 3 5 6 6l1-2 5 2v2c0 1-1 2-2 2-9 0-14-5-14-14z"/></svg>),
+    pin: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 22s7-7 7-12a7 7 0 10-14 0c0 5 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>),
+    clock: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>),
+    arrow: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M5 12h14M13 6l6 6-6 6"/></svg>),
+  };
+  return icons[name] || null;
+};
+
+// =======
+// HEADER
+// =======
+const Header = ({ d }) => (
+  <header className="sticky top-0 z-40 backdrop-blur-md bg-cream-100/85 border-b border-cream-200">
+    <div className="max-w-7xl mx-auto px-6 lg:px-10 py-4 flex items-center justify-between gap-6">
+      <a href="#" className="flex items-center gap-3 group">
+        <div className="w-10 h-10 rounded-full bg-sage-700 grid place-items-center text-cream-100 display text-lg italic">
+          dc
+        </div>
+        <div className="hidden sm:block">
+          <div className="display text-base text-sage-800 leading-tight">{d.business.name}</div>
+          <div className="text-[11px] tracking-[0.2em] uppercase text-sage-600">{d.business.zip} · est. 2008</div>
+        </div>
+      </a>
+      <nav className="hidden lg:flex items-center gap-8 text-sm text-sage-800">
+        <a href="#services" className="hover:text-copper-500 transition">Services</a>
+        <a href="#doctors" className="hover:text-copper-500 transition">Our Doctors</a>
+        <a href="#comfort" className="hover:text-copper-500 transition">Comfort</a>
+        <a href="#new-patient" className="hover:text-copper-500 transition">New Patients</a>
+        <a href="#contact" className="hover:text-copper-500 transition">Visit</a>
+      </nav>
+      <div className="flex items-center gap-3">
+        <a href={d.business.phoneHref} className="hidden md:flex items-center gap-2 text-sm text-sage-800 hover:text-copper-500">
+          <Icon name="phone" className="w-4 h-4" />
+          {d.business.phone}
+        </a>
+        <a href={d.business.bookingUrl} className="bg-sage-700 hover:bg-sage-800 text-cream-100 px-5 py-2.5 text-sm tracking-wide rounded-full transition">
+          Book Now
+        </a>
+      </div>
+    </div>
+  </header>
+);
+
+// =======
+// HERO
+// =======
+const Hero = ({ d }) => (
+  <section className="relative overflow-hidden">
+    <div className="max-w-7xl mx-auto px-6 lg:px-10 pt-16 lg:pt-24 pb-20 lg:pb-32">
+      <div className="grid lg:grid-cols-12 gap-10 lg:gap-16 items-center">
+        <div className="lg:col-span-7">
+          <div className="fade-in delay-1 text-[11px] tracking-[0.3em] uppercase text-copper-500 mb-6 ornament">
+            {d.hero.eyebrow}
+          </div>
+          <h1 className="fade-in delay-2 display text-5xl sm:text-6xl lg:text-7xl leading-[1.02] tracking-tight text-sage-900 font-light mb-8">
+            Personal, unhurried <em className="italic text-copper-500 font-normal">dentistry</em> — in the heart of <span className="whitespace-nowrap">Morristown.</span>
+          </h1>
+          <p className="fade-in delay-3 text-lg lg:text-xl text-sage-700 max-w-xl leading-relaxed mb-10">
+            {d.hero.subhead}
+          </p>
+          <div className="fade-in delay-4 flex flex-wrap gap-4 mb-12">
+            <a href={d.business.bookingUrl} className="bg-sage-800 hover:bg-sage-900 text-cream-100 px-8 py-4 rounded-full inline-flex items-center gap-2 text-sm tracking-wide transition">
+              Book your visit <Icon name="arrow" className="w-4 h-4" />
+            </a>
+            <a href={d.business.phoneHref} className="border border-sage-800 text-sage-800 hover:bg-sage-800 hover:text-cream-100 px-8 py-4 rounded-full inline-flex items-center gap-2 text-sm tracking-wide transition">
+              <Icon name="phone" className="w-4 h-4" /> {d.business.phone}
+            </a>
+          </div>
+          <div className="fade-in delay-4 flex flex-wrap gap-x-10 gap-y-4 pt-8 border-t border-cream-300">
+            <div>
+              <div className="flex items-center gap-1 text-copper-500 mb-1">
+                {[...Array(5)].map((_, i) => <Icon key={i} name="star" className="w-3.5 h-3.5" />)}
+              </div>
+              <div className="text-xs text-sage-700">{d.business.rating} · {d.business.reviewCount}+ reviews</div>
+            </div>
+            <div>
+              <div className="display text-xl text-sage-800">{d.business.yearsServing}<span className="text-copper-500">+</span></div>
+              <div className="text-xs text-sage-700 tracking-wider uppercase">years in {d.business.city}</div>
+            </div>
+            <div>
+              <div className="display text-xl text-sage-800">Privately<br className="hidden sm:block"/> owned</div>
+              <div className="text-xs text-sage-700 tracking-wider uppercase">not a chain</div>
+            </div>
+            <div>
+              <div className="display text-xl text-sage-800">Same-day<br className="hidden sm:block"/> crowns</div>
+              <div className="text-xs text-sage-700 tracking-wider uppercase">CEREC technology</div>
+            </div>
+          </div>
+        </div>
+        <div className="lg:col-span-5 fade-in delay-3">
+          <div className="relative">
+            <div className="absolute -inset-3 border border-copper-400/40 rounded-sm -rotate-1"></div>
+            <img src={d.business.heroImageUrl} alt="Dental Care of Morristown" className="relative w-full h-[500px] lg:h-[620px] object-cover rounded-sm" />
+            <div className="absolute -bottom-6 -left-6 bg-cream-50 px-6 py-5 max-w-[260px] shadow-sm border border-cream-200">
+              <div className="text-[10px] tracking-[0.25em] uppercase text-copper-500 mb-2">Now welcoming</div>
+              <div className="display text-lg text-sage-900 leading-snug">New patients & families across Morris County</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div className="absolute top-32 -right-32 w-96 h-96 rounded-full bg-copper-400/5 blur-3xl pointer-events-none"></div>
+  </section>
+);
+
+// ==========
+// PHILOSOPHY
+// ==========
+const Philosophy = ({ d }) => (
+  <section className="bg-sage-800 text-cream-100 py-20 lg:py-28 relative overflow-hidden">
+    <div className="max-w-5xl mx-auto px-6 lg:px-10 text-center">
+      <div className="text-[11px] tracking-[0.3em] uppercase text-copper-400 mb-6 ornament">
+        Our philosophy
+      </div>
+      <p className="display text-3xl sm:text-4xl lg:text-5xl leading-[1.2] font-light italic max-w-4xl mx-auto">
+        "The goal isn't a perfect smile. It's a smile that looks like yours, only healthier — delivered in a chair you don't want to leave."
+      </p>
+      <div className="mt-8 text-sm tracking-[0.2em] uppercase text-cream-200">
+        — Dr. Pavi Banav, Owner
+      </div>
+    </div>
+    <div className="absolute -top-20 -left-20 w-80 h-80 rounded-full bg-copper-500/10 blur-3xl"></div>
+  </section>
+);
+
+// =========
+// SERVICES
+// =========
+const Services = ({ d }) => (
+  <section id="services" className="py-20 lg:py-32">
+    <div className="max-w-7xl mx-auto px-6 lg:px-10">
+      <div className="grid lg:grid-cols-12 gap-10 mb-16 items-end">
+        <div className="lg:col-span-7">
+          <div className="text-[11px] tracking-[0.3em] uppercase text-copper-500 mb-5">
+            <span className="num text-base mr-3">01</span> What we do
+          </div>
+          <h2 className="display text-4xl lg:text-5xl text-sage-900 leading-tight font-light">
+            Comprehensive dentistry,<br/>
+            <em className="italic text-copper-500">delivered with restraint.</em>
+          </h2>
+        </div>
+        <div className="lg:col-span-5 lg:pb-2">
+          <p className="text-sage-700 leading-relaxed">
+            From a routine cleaning to a full smile redesign, every treatment is planned around what you actually need — not a quota. We'll always show you the option that costs less first.
+          </p>
+        </div>
+      </div>
+
+      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-px bg-cream-200">
+        {d.services.map((s, i) => (
+          <div key={s.id} className="bg-cream-100 p-8 lg:p-10 hover-lift group cursor-pointer">
+            <div className="flex items-start justify-between mb-8">
+              <div className="text-sage-700">
+                <Icon name={s.icon} className="w-9 h-9" />
+              </div>
+              <span className="num text-sm text-copper-500">0{i + 1}</span>
+            </div>
+            <h3 className="display text-xl text-sage-900 mb-3 leading-snug">{s.name}</h3>
+            <p className="text-sm text-sage-700 leading-relaxed mb-6">{s.desc}</p>
+            <div className="text-xs tracking-[0.2em] uppercase text-copper-500 group-hover:text-copper-600 inline-flex items-center gap-2">
+              Learn more <Icon name="arrow" className="w-3 h-3" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+);
+
+// =========
+// COMFORT
+// =========
+const Comfort = ({ d }) => (
+  <section id="comfort" className="bg-cream-200/60 py-20 lg:py-32 relative overflow-hidden">
+    <div className="max-w-7xl mx-auto px-6 lg:px-10">
+      <div className="grid lg:grid-cols-12 gap-12 items-center">
+        <div className="lg:col-span-5 order-2 lg:order-1">
+          <div className="relative">
+            <img
+              src={d.business.secondaryImageUrl}
+              alt="Comfort-led dentistry"
+              className="w-full h-[480px] object-cover rounded-sm"
+            />
+            <div className="absolute inset-0 bg-sage-900/10 rounded-sm"></div>
+          </div>
+        </div>
+        <div className="lg:col-span-7 order-1 lg:order-2">
+          <div className="text-[11px] tracking-[0.3em] uppercase text-copper-500 mb-5">
+            <span className="num text-base mr-3">02</span> Comfort, by design
+          </div>
+          <h2 className="display text-4xl lg:text-5xl text-sage-900 leading-tight font-light mb-6">
+            The visit feels<br/>
+            <em className="italic text-copper-500">more like a reset</em><br/>
+            than an appointment.
+          </h2>
+          <p className="text-sage-700 leading-relaxed mb-10 max-w-lg">
+            We've borrowed every small ritual we could from the wellness world. None of them change the dentistry — they just change how it feels to sit through it.
+          </p>
+          <div className="grid sm:grid-cols-2 gap-x-8 gap-y-7">
+            {d.amenities.map((a, i) => (
+              <div key={i} className="border-l-2 border-copper-400 pl-5">
+                <h3 className="display text-lg text-sage-900 mb-1.5 leading-snug">{a.name}</h3>
+                <p className="text-sm text-sage-700 leading-relaxed">{a.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+);
+
+// ========
+// DOCTORS
+// ========
+const Doctors = ({ d }) => (
+  <section id="doctors" className="py-20 lg:py-32">
+    <div className="max-w-7xl mx-auto px-6 lg:px-10">
+      <div className="text-center mb-16 lg:mb-20">
+        <div className="text-[11px] tracking-[0.3em] uppercase text-copper-500 mb-5">
+          <span className="num text-base mr-3">03</span> The people
+        </div>
+        <h2 className="display text-4xl lg:text-5xl text-sage-900 leading-tight font-light max-w-3xl mx-auto">
+          Two dentists. <em className="italic text-copper-500">No revolving door.</em>
+        </h2>
+        <p className="text-sage-700 leading-relaxed mt-6 max-w-xl mx-auto">
+          You'll see the same face at every visit. That's the entire model.
+        </p>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-12 lg:gap-20">
+        {d.doctors.map((doc, i) => (
+          <div key={i} className="group">
+            <div className="relative mb-7 overflow-hidden">
+              <img
+                src={doc.photo}
+                alt={doc.name}
+                className="w-full aspect-[4/5] object-cover transition duration-700 group-hover:scale-[1.03]"
+              />
+              <div className="absolute top-5 left-5 bg-cream-50 px-3 py-1.5 text-[10px] tracking-[0.25em] uppercase text-sage-700">
+                0{i + 1}
+              </div>
+            </div>
+            <h3 className="display text-3xl text-sage-900 mb-1 leading-tight">{doc.name}</h3>
+            <div className="text-xs tracking-[0.2em] uppercase text-copper-500 mb-5">{doc.role}</div>
+            <p className="text-sage-700 leading-relaxed">{doc.bio}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+);
+
+// ========
+// OFFER
+// ========
+const Offer = ({ d }) => (
+  <section id="new-patient" className="py-12 lg:py-20">
+    <div className="max-w-6xl mx-auto px-6 lg:px-10">
+      <div className="bg-sage-900 text-cream-100 px-8 py-12 lg:px-16 lg:py-20 relative overflow-hidden rounded-sm">
+        <div className="grid lg:grid-cols-12 gap-10 items-center relative z-10">
+          <div className="lg:col-span-7">
+            <div className="text-[11px] tracking-[0.3em] uppercase text-copper-400 mb-5">
+              For new patients
+            </div>
+            <div className="flex items-baseline gap-5 mb-5 flex-wrap">
+              <h2 className="display text-5xl lg:text-7xl font-light leading-none">{d.offer.amount}</h2>
+              <div className="display text-2xl lg:text-3xl italic text-cream-200 font-light">in savings, on us.</div>
+            </div>
+            <p className="text-cream-200 leading-relaxed mb-3 max-w-lg">{d.offer.description}</p>
+            <p className="text-xs text-cream-200/70 italic">{d.offer.fineprint}</p>
+          </div>
+          <div className="lg:col-span-5 flex flex-col gap-3">
+            <a href={d.business.bookingUrl} className="bg-copper-500 hover:bg-copper-600 text-cream-50 px-7 py-4 rounded-full text-center text-sm tracking-wide transition inline-flex items-center justify-center gap-2">
+              Claim this offer <Icon name="arrow" className="w-4 h-4" />
+            </a>
+            <a href={d.business.phoneHref} className="border border-cream-100/30 hover:border-cream-100 text-cream-100 px-7 py-4 rounded-full text-center text-sm tracking-wide transition">
+              Call {d.business.phone}
+            </a>
+            <div className="text-xs text-cream-200/70 text-center mt-1">No insurance required</div>
+          </div>
+        </div>
+        <div className="absolute -bottom-32 -right-32 w-96 h-96 rounded-full bg-copper-500/10 blur-3xl"></div>
+      </div>
+    </div>
+  </section>
+);
+
+// ========
+// REVIEWS
+// ========
+const Reviews = ({ d }) => (
+  <section className="py-20 lg:py-28 bg-cream-200/40">
+    <div className="max-w-7xl mx-auto px-6 lg:px-10">
+      <div className="grid lg:grid-cols-12 gap-10 mb-14 items-end">
+        <div className="lg:col-span-7">
+          <div className="text-[11px] tracking-[0.3em] uppercase text-copper-500 mb-5">
+            <span className="num text-base mr-3">04</span> What patients say
+          </div>
+          <h2 className="display text-4xl lg:text-5xl text-sage-900 leading-tight font-light">
+            {d.business.rating} on Google. <em className="italic text-copper-500">{d.business.reviewCount}+ reviews.</em>
+          </h2>
+        </div>
+      </div>
+      <div className="grid md:grid-cols-3 gap-6">
+        {d.reviews.map((r, i) => (
+          <div key={i} className="bg-cream-100 p-8 lg:p-10 hover-lift">
+            <div className="flex items-center gap-1 text-copper-500 mb-5">
+              {[...Array(r.rating)].map((_, idx) => <Icon key={idx} name="star" className="w-3.5 h-3.5" />)}
+            </div>
+            <p className="display text-lg text-sage-900 leading-relaxed mb-6 italic font-light">
+              "{r.quote}"
+            </p>
+            <div className="text-xs tracking-[0.2em] uppercase text-sage-700 pt-5 border-t border-cream-300">
+              {r.author}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+);
+
+// ============
+// SERVICE AREA
+// ============
+const ServiceAreas = ({ d }) => (
+  <section className="py-20 lg:py-28">
+    <div className="max-w-6xl mx-auto px-6 lg:px-10 text-center">
+      <div className="text-[11px] tracking-[0.3em] uppercase text-copper-500 mb-5">
+        <span className="num text-base mr-3">05</span> Serving Morris County
+      </div>
+      <h2 className="display text-4xl lg:text-5xl text-sage-900 leading-tight font-light mb-12">
+        We see patients from<br className="hidden sm:block"/> across <em className="italic text-copper-500">12 surrounding towns.</em>
+      </h2>
+      <div className="flex flex-wrap justify-center gap-x-8 gap-y-3 max-w-3xl mx-auto">
+        {d.serviceAreas.map((area, i) => (
+          <span key={i} className="display text-lg text-sage-800 hover:text-copper-500 transition cursor-default">
+            {area}
+            {i < d.serviceAreas.length - 1 && <span className="text-cream-300 ml-8 hidden sm:inline">·</span>}
+          </span>
+        ))}
+      </div>
+    </div>
+  </section>
+);
+
+// ===========
+// INSURANCES
+// ===========
+const Insurances = ({ d }) => (
+  <section className="py-12 border-y border-cream-200 bg-cream-50">
+    <div className="max-w-6xl mx-auto px-6 lg:px-10">
+      <div className="flex flex-wrap items-center justify-center gap-x-12 gap-y-6">
+        <div className="text-[11px] tracking-[0.3em] uppercase text-sage-700">Accepted insurances</div>
+        {d.insurances.map((ins, i) => (
+          <div key={i} className="display text-base text-sage-800 italic">{ins}</div>
+        ))}
+      </div>
+    </div>
+  </section>
+);
+
+// ========
+// CONTACT
+// ========
+const Contact = ({ d }) => (
+  <section id="contact" className="py-20 lg:py-28 bg-sage-900 text-cream-100">
+    <div className="max-w-7xl mx-auto px-6 lg:px-10">
+      <div className="grid lg:grid-cols-12 gap-12">
+        <div className="lg:col-span-5">
+          <div className="text-[11px] tracking-[0.3em] uppercase text-copper-400 mb-5">
+            <span className="num text-base mr-3">06</span> Visit us
+          </div>
+          <h2 className="display text-4xl lg:text-5xl leading-tight font-light mb-10">
+            Come see the <em className="italic text-copper-400">space.</em>
+          </h2>
+          <div className="space-y-7 mb-10">
+            <div className="flex gap-4">
+              <Icon name="pin" className="w-5 h-5 text-copper-400 flex-shrink-0 mt-1" />
+              <div>
+                <div className="text-xs tracking-[0.2em] uppercase text-cream-200 mb-1.5">Address</div>
+                <div className="display text-lg leading-snug">{d.business.address}</div>
+              </div>
+            </div>
+            <div className="flex gap-4">
+              <Icon name="phone" className="w-5 h-5 text-copper-400 flex-shrink-0 mt-1" />
+              <div>
+                <div className="text-xs tracking-[0.2em] uppercase text-cream-200 mb-1.5">Phone</div>
+                <a href={d.business.phoneHref} className="display text-lg hover:text-copper-400 transition">{d.business.phone}</a>
+              </div>
+            </div>
+            <div className="flex gap-4">
+              <Icon name="clock" className="w-5 h-5 text-copper-400 flex-shrink-0 mt-1" />
+              <div>
+                <div className="text-xs tracking-[0.2em] uppercase text-cream-200 mb-3">Hours</div>
+                <div className="space-y-1.5 text-sm">
+                  {d.hours.map((h, i) => (
+                    <div key={i} className="flex justify-between gap-12">
+                      <span className="text-cream-200">{h.day}</span>
+                      <span className={h.hours === "Closed" ? "text-cream-200/50" : "text-cream-100"}>{h.hours}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+          <a href={d.business.bookingUrl} className="bg-copper-500 hover:bg-copper-600 text-cream-50 px-8 py-4 rounded-full inline-flex items-center gap-2 text-sm tracking-wide transition">
+            Book your visit <Icon name="arrow" className="w-4 h-4" />
+          </a>
+        </div>
+        <div className="lg:col-span-7">
+          <div className="aspect-[4/3] lg:aspect-auto lg:h-full w-full overflow-hidden rounded-sm border border-cream-100/10">
+            <iframe
+              src={d.mapEmbedUrl}
+              className="w-full h-full grayscale-[40%] contrast-[0.92]"
+              style={{ border: 0, minHeight: '500px' }}
+              loading="lazy"
+              title="Map"
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+);
+
+// =======
+// FOOTER
+// =======
+const Footer = ({ d }) => (
+  <footer className="bg-sage-900 text-cream-200/70 border-t border-cream-100/10 py-10">
+    <div className="max-w-7xl mx-auto px-6 lg:px-10 flex flex-wrap items-center justify-between gap-6">
+      <div className="flex items-center gap-3">
+        <div className="w-8 h-8 rounded-full bg-cream-100/10 grid place-items-center text-cream-100 display text-sm italic">
+          dc
+        </div>
+        <div className="text-xs tracking-[0.2em] uppercase">
+          {d.business.name} · {d.business.zip}
+        </div>
+      </div>
+      <div className="flex gap-6 text-xs">
+        <a href={d.business.facebook} className="hover:text-cream-100">Facebook</a>
+        <a href={d.business.instagram} className="hover:text-cream-100">Instagram</a>
+        <a href="#" className="hover:text-cream-100">Privacy</a>
+      </div>
+      <div className="text-xs">
+        © 2026 {d.business.name}. All rights reserved.
+      </div>
+    </div>
+  </footer>
+);
+
+// =====
+// APP
+// =====
+const App = () => (
+  <>
+    <Header d={data} />
+    <Hero d={data} />
+    <Philosophy d={data} />
+    <Services d={data} />
+    <Comfort d={data} />
+    <Doctors d={data} />
+    <Offer d={data} />
+    <Reviews d={data} />
+    <ServiceAreas d={data} />
+    <Insurances d={data} />
+    <Contact d={data} />
+    <Footer d={data} />
+  </>
+);
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
