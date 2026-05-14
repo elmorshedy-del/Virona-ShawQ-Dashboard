@@ -151,6 +151,50 @@ async function runTests() {
   }]);
   console.log(`✓ VironaX Meta orders created notifications: ${vironaxMeta} (should be > 0 if Salla not active)\n`);
 
+  // Test 11: Late attribution update should create a new Meta notification once
+  console.log('Test 11: Testing late attribution updates for VironaX Meta...');
+  const lateDate = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const lateCampaignId = 'late_campaign_001';
+  const lateCountry = 'SA';
+
+  const lateFirst = createOrderNotifications('vironax', 'meta', [{
+    date: lateDate,
+    country: lateCountry,
+    campaign_id: lateCampaignId,
+    campaign_name: 'Late Campaign',
+    order_count: 1,
+    order_total: 100,
+    currency: 'SAR',
+    timestamp: new Date().toISOString()
+  }]);
+
+  const lateSecond = createOrderNotifications('vironax', 'meta', [{
+    date: lateDate,
+    country: lateCountry,
+    campaign_id: lateCampaignId,
+    campaign_name: 'Late Campaign',
+    order_count: 2,
+    order_total: 150,
+    currency: 'SAR',
+    timestamp: new Date().toISOString()
+  }]);
+
+  const lateThirdDuplicate = createOrderNotifications('vironax', 'meta', [{
+    date: lateDate,
+    country: lateCountry,
+    campaign_id: lateCampaignId,
+    campaign_name: 'Late Campaign',
+    order_count: 2,
+    order_total: 150,
+    currency: 'SAR',
+    timestamp: new Date().toISOString()
+  }]);
+
+  if (lateFirst < 1 || lateSecond < 1 || lateThirdDuplicate !== 0) {
+    throw new Error(`Late attribution notification behavior mismatch: first=${lateFirst}, second=${lateSecond}, duplicate=${lateThirdDuplicate}`);
+  }
+  console.log(`✓ Late attribution notifications: first=${lateFirst}, update=${lateSecond}, duplicate=${lateThirdDuplicate}\n`);
+
   console.log('✅ All tests completed!\n');
 
   // Final summary
