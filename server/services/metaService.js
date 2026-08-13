@@ -16,7 +16,43 @@ const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
 
 // Historical backfill configuration
 const BACKFILL_CHUNK_DAYS = 30; // Fetch in 30-day chunks
-const MAX_HISTORICAL_DAYS = 730; // Attempt up to 2 years of history (Meta typically allows 37 months)
+// Meta typically allows 37 months of history; default to 2 years, overridable per account.
+const MAX_HISTORICAL_DAYS = Math.max(
+  BACKFILL_CHUNK_DAYS,
+  parseInt(process.env.META_BACKFILL_MAX_DAYS || '730', 10) || 730
+);
+// A paused stretch is not the end of history: only stop after this many genuinely empty
+// chunks in a row (default 6 chunks = ~180 days).
+const MAX_EMPTY_BACKFILL_CHUNKS = Math.max(
+  1,
+  parseInt(process.env.META_BACKFILL_MAX_EMPTY_CHUNKS || '6', 10) || 6
+);
+const MAX_BACKFILL_CHUNK_RETRIES = Math.max(
+  1,
+  parseInt(process.env.META_BACKFILL_CHUNK_RETRIES || '4', 10) || 4
+);
+// An 'in_progress' flag older than this is treated as a crashed run, not a live one.
+const BACKFILL_STALE_MINUTES = 120;
+// Spacing between automatic retries of a partial backfill (manual triggers bypass it).
+const BACKFILL_RETRY_COOLDOWN_MINUTES = Math.max(
+  1,
+  parseInt(process.env.META_BACKFILL_RETRY_COOLDOWN_MINUTES || '60', 10) || 60
+);
+
+// Meta signals throttling by error code far more reliably than by message text.
+// 4 = app request limit, 17 = user request limit, 32 = page request limit,
+// 613 = calls-per-second limit, 80000-series = business-use-case rate limits.
+const META_THROTTLE_CODES = new Set([4, 17, 32, 613, 80000, 80003, 80004, 80005, 80006, 80008]);
+
+function buildMetaApiError(apiError) {
+  const error = new Error(apiError?.message || 'Meta API error');
+  error.metaCode = apiError?.code;
+  error.metaSubcode = apiError?.error_subcode;
+  error.isThrottle =
+    META_THROTTLE_CODES.has(Number(apiError?.code)) ||
+    /request limit|rate limit|too many|reduce the amount of data/i.test(apiError?.message || '');
+  return error;
+}
 
 // Cache for exchange rate (refresh every hour)
 import metaToAIBridge from './metaToAIBridge.js';
@@ -522,7 +558,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
       const response = await fetch(currentUrl);
       const json = await response.json();
 
-      if (json.error) throw new Error(json.error.message);
+      if (json.error) throw buildMetaApiError(json.error);
 
       const pageData = json.data || [];
       allRows = [...allRows, ...pageData];
@@ -781,10 +817,34 @@ async function performHistoricalBackfill(store, accountId, accessToken, statusMa
     backfillMeta = { earliest_successful_date: null, latest_successful_date: null };
   }
 
-  // If already completed or in progress, skip
+  // If already completed, skip
   if (backfillMeta.backfill_status === 'completed') {
     console.log(`[Meta] Historical backfill already completed for ${store}`);
     return { skipped: true, reason: 'Already completed' };
+  }
+
+  // Minutes since the last attempt, computed in SQL so it matches datetime('now') above.
+  const minutesSinceAttempt = db.prepare(`
+    SELECT CAST((julianday('now') - julianday(COALESCE(last_backfill_attempt, '1970-01-01'))) * 1440 AS INTEGER) AS minutes
+    FROM meta_backfill_metadata WHERE store = ?
+  `).get(store)?.minutes ?? Number.MAX_SAFE_INTEGER;
+
+  // A run already owns this store. Ignore a stale flag so a crashed run cannot lock
+  // the backfill out forever.
+  if (backfillMeta.backfill_status === 'in_progress' && minutesSinceAttempt < BACKFILL_STALE_MINUTES) {
+    console.log(`[Meta] Historical backfill already in progress for ${store} (${minutesSinceAttempt}m)`);
+    return { skipped: true, reason: 'Already in progress' };
+  }
+
+  // A partial run retries on its own, but the sync loop runs every 15 minutes and a deep
+  // backfill is expensive, so space the automatic retries out. A manual trigger sets the
+  // status back to 'pending' and bypasses this.
+  if (backfillMeta.backfill_status === 'partial' && minutesSinceAttempt < BACKFILL_RETRY_COOLDOWN_MINUTES) {
+    console.log(
+      `[Meta] Partial backfill for ${store} retried ${minutesSinceAttempt}m ago; ` +
+        `waiting ${BACKFILL_RETRY_COOLDOWN_MINUTES}m between automatic retries`
+    );
+    return { skipped: true, reason: 'Partial backfill cooling down' };
   }
 
   console.log(`[Meta] Starting historical backfill for ${store}...`);
@@ -802,17 +862,7 @@ async function performHistoricalBackfill(store, accountId, accessToken, statusMa
     ? new Date(backfillMeta.earliest_successful_date)
     : new Date(today);
   let consecutiveEmptyChunks = 0;
-
-  // Start from 31 days ago (skip the last 30 days since regular sync handles that)
-  const startFromDate = new Date(today);
-  startFromDate.setDate(startFromDate.getDate() - 31);
-
-  // If we have a previous earliest date, start from just before that
-  if (backfillMeta.earliest_successful_date) {
-    const prevEarliest = new Date(backfillMeta.earliest_successful_date);
-    prevEarliest.setDate(prevEarliest.getDate() - 1);
-    startFromDate.setTime(Math.min(startFromDate.getTime(), prevEarliest.getTime()));
-  }
+  const erroredChunks = [];
 
   // Go back in BACKFILL_CHUNK_DAYS chunks
   for (let daysBack = 31; daysBack < MAX_HISTORICAL_DAYS; daysBack += BACKFILL_CHUNK_DAYS) {
@@ -827,72 +877,101 @@ async function performHistoricalBackfill(store, accountId, accessToken, statusMa
 
     console.log(`[Meta] Backfill chunk: ${startStr} to ${endStr}`);
 
-    try {
-      // Fetch all three levels for this chunk
-      const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startStr, endStr, statusMaps);
-      const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startStr, endStr, statusMaps);
-      const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startStr, endStr, statusMaps);
+    // A throttled chunk is not missing history — retry it with backoff instead of
+    // letting it count towards the end-of-history check.
+    let chunkTotal = null;
+    let chunkError = null;
 
-      const chunkTotal = campaignRows + adsetRows + adRows;
-      totalRecords += chunkTotal;
+    for (let attempt = 1; attempt <= MAX_BACKFILL_CHUNK_RETRIES; attempt++) {
+      try {
+        // Fetch all three levels for this chunk
+        const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startStr, endStr, statusMaps);
+        const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startStr, endStr, statusMaps);
+        const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startStr, endStr, statusMaps);
 
-      console.log(`[Meta] Backfill chunk result: ${chunkTotal} records (${campaignRows}C/${adsetRows}AS/${adRows}A)`);
-
-      if (chunkTotal === 0) {
-        consecutiveEmptyChunks++;
-        // If we get 3 consecutive empty chunks, assume we've reached the end of history
-        if (consecutiveEmptyChunks >= 3) {
-          console.log(`[Meta] No more historical data found after ${consecutiveEmptyChunks} empty chunks`);
+        chunkTotal = campaignRows + adsetRows + adRows;
+        chunkError = null;
+        console.log(`[Meta] Backfill chunk result: ${chunkTotal} records (${campaignRows}C/${adsetRows}AS/${adRows}A)`);
+        break;
+      } catch (error) {
+        chunkError = error;
+        if (!error.isThrottle || attempt === MAX_BACKFILL_CHUNK_RETRIES) {
+          console.warn(`[Meta] Backfill chunk error (${startStr}..${endStr}): ${error.message}`);
           break;
         }
-      } else {
-        consecutiveEmptyChunks = 0;
-        if (chunkStart < earliestDate) {
-          earliestDate = new Date(chunkStart);
-        }
-      }
-
-      // Update progress
-      db.prepare(`
-        UPDATE meta_backfill_metadata
-        SET earliest_successful_date = ?, updated_at = datetime('now')
-        WHERE store = ?
-      `).run(formatDate(earliestDate), store);
-
-    } catch (error) {
-      console.warn(`[Meta] Backfill chunk error: ${error.message}`);
-      // If we get an error (likely API limit reached), mark it and stop
-      if (error.message.includes('rate limit') || error.message.includes('too many')) {
-        console.log(`[Meta] Rate limit reached, stopping backfill`);
-        break;
-      }
-      // For other errors, continue to next chunk
-      consecutiveEmptyChunks++;
-      if (consecutiveEmptyChunks >= 3) {
-        break;
+        const waitMs = 30_000 * attempt;
+        console.warn(
+          `[Meta] Throttled on ${startStr}..${endStr} (code ${error.metaCode}); ` +
+            `retry ${attempt}/${MAX_BACKFILL_CHUNK_RETRIES - 1} in ${Math.round(waitMs / 1000)}s`
+        );
+        await new Promise(resolve => setTimeout(resolve, waitMs));
       }
     }
+
+    if (chunkError) {
+      // Errors say nothing about whether history exists, so never let them end the run
+      // early or mark it complete; record it and move on so one bad window is not fatal.
+      erroredChunks.push({ startDate: startStr, endDate: endStr, message: chunkError.message });
+      continue;
+    }
+
+    totalRecords += chunkTotal;
+
+    if (chunkTotal === 0) {
+      consecutiveEmptyChunks++;
+      if (consecutiveEmptyChunks >= MAX_EMPTY_BACKFILL_CHUNKS) {
+        console.log(`[Meta] No more historical data found after ${consecutiveEmptyChunks} empty chunks`);
+        break;
+      }
+    } else {
+      consecutiveEmptyChunks = 0;
+      if (chunkStart < earliestDate) {
+        earliestDate = new Date(chunkStart);
+      }
+    }
+
+    // Update progress
+    db.prepare(`
+      UPDATE meta_backfill_metadata
+      SET earliest_successful_date = ?, updated_at = datetime('now')
+      WHERE store = ?
+    `).run(formatDate(earliestDate), store);
 
     // Small delay to avoid rate limiting
     await new Promise(resolve => setTimeout(resolve, 500));
   }
 
-  // Mark backfill as completed
+  // Only a clean run may be marked completed. A run that hit errors left gaps, and
+  // 'completed' is permanent — it would lock those months out of every future sync.
+  const finalStatus = erroredChunks.length ? 'partial' : 'completed';
+
   db.prepare(`
     UPDATE meta_backfill_metadata
-    SET backfill_status = 'completed',
+    SET backfill_status = ?,
         earliest_successful_date = ?,
         latest_successful_date = ?,
         updated_at = datetime('now')
     WHERE store = ?
-  `).run(formatDate(earliestDate), formatDate(today), store);
+  `).run(finalStatus, formatDate(earliestDate), formatDate(today), store);
 
-  console.log(`[Meta] Historical backfill completed for ${store}: ${totalRecords} total records, earliest date: ${formatDate(earliestDate)}`);
+  if (erroredChunks.length) {
+    console.warn(
+      `[Meta] Historical backfill PARTIAL for ${store}: ${totalRecords} records, earliest ${formatDate(earliestDate)}, ` +
+        `${erroredChunks.length} chunk(s) failed — re-run the backfill to fill them:`
+    );
+    for (const chunk of erroredChunks) {
+      console.warn(`[Meta]   gap ${chunk.startDate}..${chunk.endDate}: ${chunk.message}`);
+    }
+  } else {
+    console.log(`[Meta] Historical backfill completed for ${store}: ${totalRecords} total records, earliest date: ${formatDate(earliestDate)}`);
+  }
 
   return {
     success: true,
+    status: finalStatus,
     totalRecords,
-    earliestDate: formatDate(earliestDate)
+    earliestDate: formatDate(earliestDate),
+    failedChunks: erroredChunks
   };
 }
 
