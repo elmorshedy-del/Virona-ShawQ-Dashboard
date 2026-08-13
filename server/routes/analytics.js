@@ -28,7 +28,7 @@ import {
 import { getGoogleAdManagerHierarchy } from '../services/googleAdsService.js';
 import { importMetaDailyRows } from '../services/metaImportService.js';
 import { syncMetaData, getBackfillStatus, triggerBackfill } from '../services/metaService.js';
-import { getShopifyConnectionStatus } from '../services/shopifyService.js';
+import { getShopifyConnectionStatus, syncShopifyOrders } from '../services/shopifyService.js';
 
 const router = express.Router();
 
@@ -308,6 +308,47 @@ router.post('/meta/backfill', async (req, res) => {
     console.error('[Analytics] Backfill trigger error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
+});
+
+// ============================================================================
+// TRIGGER SHOPIFY BACKFILL
+// Pulls a wider order history than the rolling sync window without a redeploy.
+// Shopify is Shawq's storefront (Vironax sells through Salla), so it defaults to shawq.
+// ============================================================================
+const DEFAULT_SHOPIFY_BACKFILL_DAYS = 730;
+
+router.post('/shopify/backfill', (req, res) => {
+  const store = String(req.query.store || req.body?.store || 'shawq').trim().toLowerCase();
+  const requestedDays = req.query.days ?? req.query.rangeDays ?? req.body?.days ?? req.body?.rangeDays;
+  const parsedDays = Number.parseInt(String(requestedDays ?? DEFAULT_SHOPIFY_BACKFILL_DAYS), 10);
+  const rangeDays = Number.isFinite(parsedDays) && parsedDays > 0
+    ? parsedDays
+    : DEFAULT_SHOPIFY_BACKFILL_DAYS;
+
+  // A long range paginates through the Shopify API for minutes, well past a gateway
+  // timeout, so kick it off and report progress to the logs like the Meta backfill does.
+  syncShopifyOrders({ storeKeys: [store], rangeDays })
+    .then((result) => {
+      if (result?.success) {
+        console.log(
+          `[Shopify] Backfill ${store}: ${result.records} order(s) over ${result.rangeDays} day(s) ` +
+            `(${result.startDate}..${result.endDate})`
+        );
+      } else {
+        console.warn(`[Shopify] Backfill ${store} failed: ${result?.message || 'unknown error'}`);
+      }
+    })
+    .catch((error) => {
+      console.error(`[Shopify] Backfill ${store} error:`, error?.message || error);
+    });
+
+  res.status(202).json({
+    success: true,
+    started: true,
+    store,
+    rangeDays,
+    message: 'Shopify backfill started; it runs in the background. Watch the logs for [Shopify] Backfill.'
+  });
 });
 
 export default router;
