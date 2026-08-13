@@ -61,11 +61,14 @@ import { runCampaignIntelligenceDailyBriefs } from './services/campaignIntellige
 import { runDashboardDailyBriefs } from './services/dashboardDailyBrief/scheduler.js';
 import { formatDateAsGmt3 } from './utils/dateUtils.js';
 import { resolveExchangeRateProviders } from './services/exchangeRateConfig.js';
+import { applyExchangeRatesToMetaMetrics } from './services/exchangeRateApply.js';
 import {
+  CARRY_FORWARD_SOURCE_SUFFIX,
   fetchApilayerHistoricalTryToUsdRate,
   fetchCurrencyFreaksTimeseriesTryToUsdRates,
   fetchFrankfurterTimeseriesTryToUsdRates,
-  fetchOXRHistoricalTryToUsdRate
+  fetchOXRHistoricalTryToUsdRate,
+  resolveRatesWithCarryForward
 } from './services/exchangeRateProviders.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -493,11 +496,16 @@ async function backfillMissingExchangeRates(daysBack = DEFAULT_EXCHANGE_BOOTSTRA
 
   const missingDates = [];
   const yesterday = formatDateAsGmt3(new Date(Date.now() - ONE_DAY_MS));
+  let windowStart = yesterday;
 
   for (let i = 1; i <= daysBack; i++) {
     const date = new Date();
     date.setDate(date.getDate() - i);
     const dateStr = formatDateAsGmt3(date);
+
+    if (dateStr < windowStart) {
+      windowStart = dateStr;
+    }
 
     // Daily sync owns yesterday; do not backfill it with a historical source.
     if (dateStr === yesterday) {
@@ -516,6 +524,7 @@ async function backfillMissingExchangeRates(daysBack = DEFAULT_EXCHANGE_BOOTSTRA
 
   if (!missingDates.length) {
     console.log('[Exchange] No missing exchange rates found for backfill');
+    applyRatesToShawqSpend(windowStart, yesterday);
     return;
   }
 
@@ -532,6 +541,7 @@ async function backfillMissingExchangeRates(daysBack = DEFAULT_EXCHANGE_BOOTSTRA
 
   if (maxCalls < 1) {
     console.log('[Exchange] Backfill disabled by EXCHANGE_RATE_BACKFILL_MAX_CALLS');
+    applyRatesToShawqSpend(windowStart, yesterday);
     return;
   }
 
@@ -539,15 +549,24 @@ async function backfillMissingExchangeRates(daysBack = DEFAULT_EXCHANGE_BOOTSTRA
   let fetched = 0;
   let failed = 0;
 
-  const insertRate = (rate, dateStr, source) => {
+  const insertRate = (rate, dateStr, source, rateDate = null) => {
     db.prepare(`
       INSERT OR REPLACE INTO exchange_rates (from_currency, to_currency, rate, date, source)
       VALUES ('TRY', 'USD', ?, ?, ?)
     `).run(rate, dateStr, source);
 
     fetched += 1;
-    console.log(`[Exchange] Backfilled ${dateStr}: TRY→USD = ${rate.toFixed(6)} (${source})`);
+    const origin = rateDate && rateDate !== dateStr ? ` carried forward from ${rateDate}` : '';
+    console.log(`[Exchange] Backfilled ${dateStr}: TRY→USD = ${rate.toFixed(6)} (${source}${origin})`);
   };
+
+  // Latest rate published strictly before a date, used to carry forward into a leading gap.
+  const getRateBefore = (dateStr) => db.prepare(`
+    SELECT date, rate FROM exchange_rates
+    WHERE from_currency = 'TRY' AND to_currency = 'USD' AND date < ?
+    ORDER BY date DESC
+    LIMIT 1
+  `).get(dateStr) || null;
 
   const fillWithTimeseriesProvider = async (provider, dateList, unresolved) => {
     if (!dateList.length) return;
@@ -581,14 +600,25 @@ async function backfillMissingExchangeRates(daysBack = DEFAULT_EXCHANGE_BOOTSTRA
       return;
     }
 
+    // The series only carries published (business) days. Weekends and holidays inherit the
+    // previous published day's rate so every calendar day converts.
+    const prior = getRateBefore(startDate);
+    const { resolved, unresolved: missing } = resolveRatesWithCarryForward({
+      dates: dateList,
+      ratesByDate: series.ratesByDate,
+      priorRate: prior?.rate ?? null,
+      priorRateDate: prior?.date ?? null
+    });
+
+    const baseSource = series.source || provider;
     for (const dateStr of dateList) {
-      const rate = series.ratesByDate.get(dateStr);
-      if (!Number.isFinite(rate) || rate <= 0) {
-        unresolved.push(dateStr);
-        continue;
-      }
-      insertRate(rate, dateStr, series.source || provider);
+      const entry = resolved.get(dateStr);
+      if (!entry) continue;
+      const source = entry.carriedForward ? `${baseSource}${CARRY_FORWARD_SOURCE_SUFFIX}` : baseSource;
+      insertRate(entry.rate, dateStr, source, entry.rateDate);
     }
+
+    unresolved.push(...missing);
   };
 
   const remainingDates = [];
@@ -671,6 +701,32 @@ async function backfillMissingExchangeRates(daysBack = DEFAULT_EXCHANGE_BOOTSTRA
   failed = unresolvedAfterFallback.length;
 
   console.log(`[Exchange] Backfill complete: fetched=${fetched}, failed=${failed}`);
+
+  // Rows imported before their rate existed were stored with spend = NULL. Now that the
+  // rates are here, recompute the USD values from the original TRY amounts.
+  applyRatesToShawqSpend(windowStart, yesterday);
+}
+
+// Recompute Shawq's USD spend/revenue from the stored TRY originals. Local SQL only
+// (no API calls) and idempotent, so it is safe to run on every backfill pass.
+function applyRatesToShawqSpend(startDate, endDate) {
+  if (!startDate || !endDate) return;
+
+  try {
+    const stats = applyExchangeRatesToMetaMetrics({
+      db: getDb(),
+      store: 'shawq',
+      startDate,
+      endDate
+    });
+
+    console.log(
+      `[Exchange] Applied TRY→USD to Meta metrics ${startDate}..${endDate}: ` +
+        `converted=${stats.totals.updated}/${stats.totals.candidates} row(s)`
+    );
+  } catch (error) {
+    console.warn('[Exchange] Failed to apply rates to Meta metrics:', error?.message || error);
+  }
 }
 
 // Daily exchange rate sync - fetch yesterday's final rate
@@ -685,6 +741,7 @@ async function syncDailyExchangeRate() {
 
   if (existing) {
     console.log(`[Exchange] Already have rate for ${yesterday}: ${existing.rate.toFixed(6)}`);
+    applyRatesToShawqSpend(yesterday, yesterday);
     return;
   }
 
@@ -695,6 +752,7 @@ async function syncDailyExchangeRate() {
   }
 
   console.log(`[Exchange] Daily sync stored ${yesterday}: TRY→USD = ${rate.toFixed(6)}`);
+  applyRatesToShawqSpend(yesterday, yesterday);
 }
 
 // Populate Checkout Blackbox from existing Shopify pixel DB stream (non-PII mirror).

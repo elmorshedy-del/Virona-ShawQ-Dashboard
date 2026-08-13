@@ -53,7 +53,8 @@ async function fetchTryToUsdRate() {
 
   const { dailyProvider } = resolveExchangeRateProviders();
   if (dailyProvider !== 'currencyfreaks') {
-    console.warn(`[Exchange] Unsupported daily exchange provider "${dailyProvider}". Falling back to no conversion.`);
+    // Any other daily provider (Frankfurter by default) is served by the historical chain,
+    // which resolves a rate for every calendar day including ECB holidays.
     return null;
   }
 
@@ -89,6 +90,12 @@ function resolveHistoricalProviders() {
   }
   if (secondaryBackfillProvider && secondaryBackfillProvider !== primaryBackfillProvider) {
     providers.push(secondaryBackfillProvider);
+  }
+
+  // Frankfurter (ECB) is always the last resort: no key, no quota, and it carries the
+  // previous published day forward on weekends/holidays.
+  if (!providers.includes('frankfurter')) {
+    providers.push('frankfurter');
   }
 
   return providers;
@@ -169,7 +176,8 @@ export async function getExchangeRateForDate(dateStr) {
     return null;
   }
 
-  // Use CurrencyFreaks for the latest finalized day (yesterday in GMT+3)
+  // Use CurrencyFreaks for the latest finalized day (yesterday in GMT+3) when it is the
+  // configured daily provider; otherwise fall through to the historical chain below.
   if (lookupDate === yesterday) {
     const latestRate = await fetchTryToUsdRate();
     if (latestRate) {
@@ -182,10 +190,6 @@ export async function getExchangeRateForDate(dateStr) {
       console.log(`[Exchange] Stored ${lookupDate}: TRY→USD = ${latestRate.toFixed(6)} (CurrencyFreaks)`);
       return latestRate;
     }
-
-    console.warn(`[Exchange] CurrencyFreaks rate unavailable for ${lookupDate}`);
-    setCachedDateRate(lookupDate, null);
-    return null;
   }
 
   // Fetch from the configured historical provider(s)

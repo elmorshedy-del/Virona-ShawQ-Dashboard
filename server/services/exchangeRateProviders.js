@@ -1,6 +1,14 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
 
+// api.frankfurter.app now 301s to this host; call it directly to avoid the redirect hop.
+const FRANKFURTER_BASE_URL = process.env.FRANKFURTER_BASE_URL || 'https://api.frankfurter.dev/v1';
+
+// Source suffix for days the source did not publish (weekends / ECB holidays), which we
+// carry forward from the previous published day.
+export const CARRY_FORWARD_SOURCE_SUFFIX = '-carryforward';
+export const FRANKFURTER_CARRY_FORWARD_SOURCE = `frankfurter${CARRY_FORWARD_SOURCE_SUFFIX}`;
+
 function parsePositiveNumber(value) {
   const parsed = Number.parseFloat(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -325,7 +333,7 @@ export async function fetchApilayerHistoricalTryToUsdRate(dateStr) {
 }
 
 export async function fetchFrankfurterTryToUsdRate(dateStr) {
-  const url = `https://api.frankfurter.app/${dateStr}?from=TRY&to=USD`;
+  const url = `${FRANKFURTER_BASE_URL}/${dateStr}?from=TRY&to=USD`;
 
   try {
     const { res, json } = await fetchJson(url);
@@ -333,15 +341,24 @@ export async function fetchFrankfurterTryToUsdRate(dateStr) {
     let result;
     if (!res.ok) {
       result = err('frankfurter', 'historical', res.status, 'http_error', `Frankfurter request failed (HTTP ${res.status}).`);
-    } else if (json?.date !== dateStr) {
-      // Frankfurter (ECB) returns closest business day when date has no published rate.
-      result = err('frankfurter', 'historical', res.status, 'rate_unavailable', 'No published rate for this date (market closed or unavailable).');
     } else {
       const rate = parsePositiveNumber(json?.rates?.USD);
-      if (!rate) {
+      const publishedDate = typeof json?.date === 'string' ? json.date : null;
+
+      if (!rate || !publishedDate) {
         result = err('frankfurter', 'historical', res.status, 'invalid_response', 'Frankfurter response was missing USD rate.');
+      } else if (publishedDate > dateStr) {
+        // Guard against a later publication leaking backwards into an earlier day.
+        result = err('frankfurter', 'historical', res.status, 'rate_unavailable', 'No published rate on or before this date.');
       } else {
-        result = ok('frankfurter', 'historical', rate, { source: 'frankfurter' });
+        // ECB publishes on business days only. Frankfurter answers weekends/holidays with the
+        // previous published day, which is exactly the carry-forward we want.
+        const carriedForward = publishedDate !== dateStr;
+        result = ok('frankfurter', 'historical', rate, {
+          source: carriedForward ? FRANKFURTER_CARRY_FORWARD_SOURCE : 'frankfurter',
+          rateDate: publishedDate,
+          carriedForward
+        });
       }
     }
 
@@ -371,8 +388,55 @@ export async function fetchFrankfurterTryToUsdRate(dateStr) {
   }
 }
 
+/**
+ * Expand a sparse (business-day only) rate series across every requested calendar day.
+ * Days the source did not publish (weekends / ECB holidays) inherit the most recent
+ * published rate at or before that day.
+ *
+ * @param {Object} params
+ * @param {string[]} params.dates - Calendar days to resolve (YYYY-MM-DD).
+ * @param {Map<string, number>} params.ratesByDate - Published rates keyed by date.
+ * @param {number|null} [params.priorRate] - Last known rate before the range, if any.
+ * @param {string|null} [params.priorRateDate] - Date that priorRate was published on.
+ * @returns {{ resolved: Map<string, {rate: number, rateDate: string|null, carriedForward: boolean}>, unresolved: string[] }}
+ */
+export function resolveRatesWithCarryForward({ dates, ratesByDate, priorRate = null, priorRateDate = null }) {
+  const published = [...(ratesByDate?.entries() || [])]
+    .filter(([, rate]) => Number.isFinite(rate) && rate > 0)
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1));
+
+  const resolved = new Map();
+  const unresolved = [];
+
+  let lastRate = Number.isFinite(priorRate) && priorRate > 0 ? priorRate : null;
+  let lastDate = lastRate ? priorRateDate : null;
+  let cursor = 0;
+
+  for (const dateStr of [...dates].sort()) {
+    while (cursor < published.length && published[cursor][0] <= dateStr) {
+      lastDate = published[cursor][0];
+      lastRate = published[cursor][1];
+      cursor += 1;
+    }
+
+    if (lastRate === null) {
+      // Nothing published on or before this day yet (start of history).
+      unresolved.push(dateStr);
+      continue;
+    }
+
+    resolved.set(dateStr, {
+      rate: lastRate,
+      rateDate: lastDate,
+      carriedForward: lastDate !== dateStr
+    });
+  }
+
+  return { resolved, unresolved };
+}
+
 export async function fetchFrankfurterTimeseriesTryToUsdRates(startDate, endDate) {
-  const url = `https://api.frankfurter.app/${startDate}..${endDate}?from=TRY&to=USD`;
+  const url = `${FRANKFURTER_BASE_URL}/${startDate}..${endDate}?from=TRY&to=USD`;
 
   try {
     const { res, json } = await fetchJson(url);

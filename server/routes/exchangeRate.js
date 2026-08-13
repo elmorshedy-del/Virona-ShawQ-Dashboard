@@ -2,6 +2,7 @@ import express from 'express';
 import { getDb } from '../db/database.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 import { resolveExchangeRateProviders } from '../services/exchangeRateConfig.js';
+import { applyExchangeRatesToMetaMetrics } from '../services/exchangeRateApply.js';
 import {
   fetchApilayerHistoricalTryToUsdRate,
   fetchCurrencyFreaksHistoricalTryToUsdRate,
@@ -400,7 +401,6 @@ router.post('/backfill-single', async (req, res) => {
 
 
 const MAX_MANUAL_DAYS_RANGE = 370;
-const EXCHANGE_APPLY_TABLES = ['meta_daily_metrics', 'meta_adset_metrics', 'meta_ad_metrics'];
 
 function parsePositiveNumber(value) {
   const parsed = typeof value === 'number' ? value : Number(String(value ?? '').trim());
@@ -432,106 +432,6 @@ function buildDateRange(startDate, endDate) {
   }
 
   return { dates };
-}
-
-function applyExchangeRatesToMetaMetrics({ db, store, startDate, endDate }) {
-  const perTable = {};
-  let totalCandidates = 0;
-  let totalConvertible = 0;
-  let totalUpdated = 0;
-
-  const tx = db.transaction(() => {
-    for (const table of EXCHANGE_APPLY_TABLES) {
-      const candidateRows = db.prepare(`
-        SELECT COUNT(*) as count
-        FROM ${table}
-        WHERE store = ?
-          AND date BETWEEN ? AND ?
-          AND COALESCE(original_currency, 'TRY') = 'TRY'
-      `).get(store, startDate, endDate)?.count || 0;
-
-      const convertibleRows = db.prepare(`
-        SELECT COUNT(*) as count
-        FROM ${table}
-        WHERE store = ?
-          AND date BETWEEN ? AND ?
-          AND COALESCE(original_currency, 'TRY') = 'TRY'
-          AND EXISTS (
-            SELECT 1
-            FROM exchange_rates er
-            WHERE er.from_currency = 'TRY'
-              AND er.to_currency = 'USD'
-              AND er.date = ${table}.date
-          )
-      `).get(store, startDate, endDate)?.count || 0;
-
-      const updateResult = db.prepare(`
-        UPDATE ${table}
-        SET
-          spend = CASE
-            WHEN spend_original IS NOT NULL THEN spend_original * (
-              SELECT er.rate
-              FROM exchange_rates er
-              WHERE er.from_currency = 'TRY'
-                AND er.to_currency = 'USD'
-                AND er.date = ${table}.date
-            )
-            ELSE spend
-          END,
-          conversion_value = CASE
-            WHEN conversion_value_original IS NOT NULL THEN conversion_value_original * (
-              SELECT er.rate
-              FROM exchange_rates er
-              WHERE er.from_currency = 'TRY'
-                AND er.to_currency = 'USD'
-                AND er.date = ${table}.date
-            )
-            ELSE conversion_value
-          END,
-          cost_per_inline_link_click = CASE
-            WHEN cost_per_inline_link_click_original IS NOT NULL THEN cost_per_inline_link_click_original * (
-              SELECT er.rate
-              FROM exchange_rates er
-              WHERE er.from_currency = 'TRY'
-                AND er.to_currency = 'USD'
-                AND er.date = ${table}.date
-            )
-            ELSE cost_per_inline_link_click
-          END
-        WHERE store = ?
-          AND date BETWEEN ? AND ?
-          AND COALESCE(original_currency, 'TRY') = 'TRY'
-          AND EXISTS (
-            SELECT 1
-            FROM exchange_rates er
-            WHERE er.from_currency = 'TRY'
-              AND er.to_currency = 'USD'
-              AND er.date = ${table}.date
-          )
-      `).run(store, startDate, endDate);
-
-      totalCandidates += candidateRows;
-      totalConvertible += convertibleRows;
-      totalUpdated += updateResult.changes;
-
-      perTable[table] = {
-        candidates: candidateRows,
-        convertible: convertibleRows,
-        updated: updateResult.changes
-      };
-    }
-  });
-
-  tx();
-
-  return {
-    perTable,
-    totals: {
-      candidates: totalCandidates,
-      convertible: totalConvertible,
-      updated: totalUpdated
-    }
-  };
 }
 
 // POST /api/exchange-rates/apply - Reapply stored TRY->USD rates to historical Meta spend rows

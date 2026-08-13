@@ -8,6 +8,7 @@ function providerLabel(provider) {
   if (provider === 'oxr') return 'Open Exchange Rates (OXR)';
   if (provider === 'apilayer') return 'APILayer';
   if (provider === 'frankfurter') return 'Frankfurter (ECB)';
+  if (provider === 'frankfurter-carryforward') return 'Frankfurter (ECB) — previous day';
   if (provider === 'manual') return 'Manual';
   return provider;
 }

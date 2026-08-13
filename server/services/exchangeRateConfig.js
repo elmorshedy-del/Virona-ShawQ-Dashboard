@@ -37,7 +37,8 @@ export function isExchangeRateProviderConfigured(provider) {
 
 export function resolveExchangeRateProviders() {
   const dailyEnv = normalizeProvider(process.env.EXCHANGE_RATE_DAILY_PROVIDER);
-  let dailyProvider = 'currencyfreaks';
+  // Frankfurter (ECB) is the default everywhere: it needs no API key and has no quota.
+  let dailyProvider = 'frankfurter';
   let dailySource = dailyEnv ? 'env' : 'default';
 
   const coercedDaily = coerceProvider(dailyEnv, 'daily');
@@ -62,17 +63,21 @@ export function resolveExchangeRateProviders() {
     null;
 
   const primaryBackfillProviderRaw = primaryConfigured || inferredPrimary;
-  const primaryBackfillProvider = coerceProvider(primaryBackfillProviderRaw, 'primary backfill');
-  let primarySource = primaryConfigured ? 'env' : (inferredPrimary ? 'inferred' : 'none');
-  if (primaryConfigured && !primaryBackfillProvider) primarySource = 'env_invalid';
+  const coercedPrimary = coerceProvider(primaryBackfillProviderRaw, 'primary backfill');
+  const primaryBackfillProvider = coercedPrimary || 'frankfurter';
+  let primarySource = 'default';
+  if (coercedPrimary) {
+    primarySource = primaryConfigured ? 'env' : 'inferred';
+  } else if (primaryConfigured) {
+    primarySource = 'env_invalid';
+  }
 
   const secondaryConfigured = normalizeProvider(process.env.EXCHANGE_RATE_BACKFILL_SECONDARY_PROVIDER);
 
-  // If no explicit secondary is set, prefer OXR when available and not already primary.
+  // If no explicit secondary is set, fall back to Frankfurter so a keyed primary that runs
+  // out of quota still leaves every day covered.
   const inferredSecondary =
-    !secondaryConfigured && process.env.OXR_APP_ID && primaryBackfillProvider !== 'oxr'
-      ? 'oxr'
-      : null;
+    !secondaryConfigured && primaryBackfillProvider !== 'frankfurter' ? 'frankfurter' : null;
 
   const secondaryBackfillProviderRaw = secondaryConfigured || inferredSecondary;
   const secondaryBackfillProvider = coerceProvider(secondaryBackfillProviderRaw, 'secondary backfill');
