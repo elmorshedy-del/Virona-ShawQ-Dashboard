@@ -4,6 +4,7 @@ import net from 'net';
 import puppeteerExtra from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { buildPuppeteerLaunchOptions } from '../utils/puppeteerLaunchOptions.js';
+import { isCloakBrowserEnabled, launchCloakBrowser } from '../utils/cloakBrowserLauncher.js';
 
 /* ── Configuration constants ── */
 const NAVIGATION_TIMEOUT_MS = 30_000;
@@ -100,20 +101,33 @@ function safeMs(value) {
   return Number.isFinite(value) && value >= 0 ? Math.round(value) : null;
 }
 
+/**
+ * Portable delay. Puppeteer removed `page.waitForTimeout()` in v22, so calling it
+ * against the pinned v24 line throws a TypeError mid-capture.
+ */
+function delay(ms) {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
 /* ══════════════════════════════════════════════════════════════════════════════
  * TIER 1 — Puppeteer (full browser, screenshots, JS execution, performance)
  * ══════════════════════════════════════════════════════════════════════════════ */
 
-async function fetchViaPuppeteer(parsedUrl) {
+async function fetchViaPuppeteer(parsedUrl, options = {}) {
+  const {
+    launchBrowser = () => puppeteerExtra.launch(buildPuppeteerLaunchOptions({
+      includeNoSandboxArgs: PUPPETEER_NO_SANDBOX,
+      timeoutMs: NAVIGATION_TIMEOUT_MS
+    })),
+    strategy = 'puppeteer'
+  } = options;
+
   let browser;
   const consoleErrors = [];
   const jsErrors = [];
 
   try {
-    browser = await puppeteerExtra.launch(buildPuppeteerLaunchOptions({
-      includeNoSandboxArgs: PUPPETEER_NO_SANDBOX,
-      timeoutMs: NAVIGATION_TIMEOUT_MS
-    }));
+    browser = await launchBrowser();
 
     const page = await browser.newPage();
     await page.setViewport(DESKTOP_VIEWPORT);
@@ -145,7 +159,7 @@ async function fetchViaPuppeteer(parsedUrl) {
 
     const desktopScreenshot = await page.screenshot({ fullPage: true, encoding: 'base64', type: 'png' });
     await page.setViewport(MOBILE_VIEWPORT);
-    await page.waitForTimeout(400);
+    await delay(400);
     const mobileScreenshot = await page.screenshot({ fullPage: true, encoding: 'base64', type: 'png' });
     await page.setViewport(DESKTOP_VIEWPORT);
 
@@ -258,7 +272,7 @@ async function fetchViaPuppeteer(parsedUrl) {
       finalUrl,
       statusCode: responseStatus,
       fetchedAt: new Date().toISOString(),
-      fetchStrategy: 'puppeteer',
+      fetchStrategy: strategy,
       protocol: new URL(finalUrl).protocol.replace(':', ''),
       https: new URL(finalUrl).protocol === 'https:',
       html: pageSnapshot.html,
@@ -742,6 +756,8 @@ export function buildPageDataFromRawHtml({
 /* ══════════════════════════════════════════════════════════════════════════════
  * ORCHESTRATOR — multi-tier fallback chain
  *
+ * Tier 0: CloakBrowser (opt-in via LPA_CLOAKBROWSER=1; stealth Chromium)
+ *   ↓ fails / not enabled
  * Tier 1: Puppeteer (full fidelity)
  *   ↓ fails
  * Tier 2: Lightweight HTTP fetch (no browser)
@@ -754,6 +770,27 @@ export async function fetchLandingPageData(targetUrl) {
   await assertNoPrivateNetworkTarget(parsedUrl);
 
   const tierErrors = [];
+
+  /* ── Tier 0: CloakBrowser (opt-in) ──
+   * Shares the whole Tier 1 capture path; only the launcher differs. */
+  if (isCloakBrowserEnabled()) {
+    try {
+      console.log('[LandingPageFetcher] Tier 0: attempting CloakBrowser fetch…');
+      const result = await fetchViaPuppeteer(parsedUrl, {
+        launchBrowser: () => launchCloakBrowser({
+          timeoutMs: NAVIGATION_TIMEOUT_MS,
+          args: PUPPETEER_NO_SANDBOX ? ['--no-sandbox', '--disable-setuid-sandbox'] : []
+        }),
+        strategy: 'cloakbrowser'
+      });
+      console.log('[LandingPageFetcher] Tier 0 succeeded (CloakBrowser).');
+      return result;
+    } catch (cloakError) {
+      const msg = cloakError?.message || 'Unknown CloakBrowser error';
+      console.warn('[LandingPageFetcher] Tier 0 failed (CloakBrowser):', msg);
+      tierErrors.push({ tier: 'cloakbrowser', error: msg });
+    }
+  }
 
   /* ── Tier 1: Puppeteer ── */
   try {

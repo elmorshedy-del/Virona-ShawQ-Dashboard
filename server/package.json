@@ -27,5 +27,9 @@
     "satori": "^0.26.0",
     "sharp": "^0.34.5",
     "twemoji": "^14.0.2"
+  },
+  "optionalDependencies": {
+    "cloakbrowser": "^0.5.7",
+    "puppeteer-core": "^24.35.0"
   }
 }
