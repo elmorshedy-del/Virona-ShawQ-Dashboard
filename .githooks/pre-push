@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${SKIP_MERGED_PR_GUARD:-0}" == "1" ]]; then
+  exit 0
+fi
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+
+if [[ -z "${branch}" || "${branch}" == "HEAD" ]]; then
+  exit 0
+fi
+
+if [[ "${branch}" != codex/* ]]; then
+  exit 0
+fi
+
+if ! command -v gh >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+Blocked push: merged-PR guard requires GitHub CLI (`gh`) to validate PR state.
+Install/authenticate gh, or bypass once with SKIP_MERGED_PR_GUARD=1.
+EOF
+  exit 1
+fi
+
+if ! gh auth status >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+Blocked push: gh is not authenticated, cannot validate merged PR state.
+Run `gh auth login`, or bypass once with SKIP_MERGED_PR_GUARD=1.
+EOF
+  exit 1
+fi
+
+merged_pr_url="$(gh pr list --head "${branch}" --state merged --json url --jq 'if length > 0 then .[0].url else "" end')"
+
+if [[ -n "${merged_pr_url}" ]]; then
+  cat >&2 <<EOF
+Blocked push: branch '${branch}' already has a merged PR.
+Merged PR: ${merged_pr_url}
+Create a fresh branch from main (for example: codex/<task>-<timestamp>) and open a new PR.
+EOF
+  exit 1
+fi
+
+exit 0

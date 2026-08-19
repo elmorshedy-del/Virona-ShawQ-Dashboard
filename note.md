@@ -3,6 +3,8 @@
 ## Engineering rules
 - Always implement on a clean dedicated `codex/*` branch containing only this task's changes.
 - If any meaningful time has elapsed since the previous coding batch (or prior PR may already be merged), start a fresh `codex/*` branch and open a new PR by default. Do not stack new work on an older PR unless explicitly requested.
+- Hard stop: never push to a branch whose PR is already merged.
+- Enforce the hard stop with the repo pre-push guard in `.githooks/pre-push` (configured via `core.hooksPath=.githooks`).
 - After each coding batch commit, always provide the current PR link in the update.
 - After pushing a coding branch, immediately create the GitHub PR when tooling/auth is available. Then inspect Gemini feedback directly through the available GitHub tooling/API path, patch every valid finding, rerun the relevant tests/checks, and merge once the PR is clean. Only fall back to sharing a PR-creation URL when direct PR creation/review access is blocked.
 - Avoid **magic numbers** (especially thresholds/guardrails used for insights). Extract them into named constants or a config object close to the logic, and name them with units/meaning.

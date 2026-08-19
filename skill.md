@@ -11,6 +11,8 @@
 ## Rules
 - Critical: always avoid magic numbers in touched code. Any limit, TTL, retry count, weight, threshold, interval, or heuristic must use a named constant or config entry.
 - PR freshness is mandatory: if there is a gap since the last implementation cycle and the previous PR may have been merged, create a new `codex/*` branch and open a new PR. Do not continue on an old PR by default.
+- Hard prohibition: never push commits to a branch whose PR is already merged.
+- Enforcement: keep `core.hooksPath=.githooks` enabled so `.githooks/pre-push` blocks pushes on merged-PR branches.
 - Always share the active PR link after each commit/update.
 - After every commit, include the PR link in the status update to the user.
 - After pushing a coding branch, immediately create the GitHub PR when tooling/auth is available. Then inspect Gemini feedback directly through the available GitHub tooling/API path, patch every valid finding, rerun the relevant tests/checks, and merge once the PR is clean. Only fall back to sharing a PR-creation URL when direct PR creation/review access is blocked.
