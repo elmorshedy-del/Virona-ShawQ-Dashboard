@@ -1,14 +1,26 @@
 [phases.setup]
-nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake", "yt-dlp", "ffmpeg"]
+# chromium provides all system shared libraries (libnss3, libatk-bridge, libcups,
+# libdrm, libgbm, libpango, libasound, …) that Puppeteer's bundled Chrome needs
+# to launch inside the Nix container environment.
+nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake", "yt-dlp", "ffmpeg", "chromium"]
+
+[variables]
+PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "false"
+PUPPETEER_CACHE_DIR = "/app/.cache/puppeteer"
 
 [phases.install]
-cmds = ["npm install"]
+cmds = ["echo 'Root install skipped – client and server install separately in build phase'"]
 
 [phases.install.env]
 PYTHON = "python3"
 
 [phases.build]
-cmds = []
+cmds = [
+  "npm --prefix client install",
+  "npm --prefix client run build",
+  "PUPPETEER_CACHE_DIR=/app/.cache/puppeteer npm --prefix server install",
+  "mkdir -p /app/.cache/puppeteer"
+]
 
 [start]
 cmd = "node server/server.js"

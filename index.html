@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Perihelion — Landing Page Intelligence</title>
+  <meta name="description" content="Conversion intelligence for your landing pages." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ══════════════ INTRO SPLASH ══════════════ -->
+<div id="intro" class="intro" aria-hidden="true">
+
+  <!-- Ambient orbs -->
+  <div class="intro-orb intro-orb-1"></div>
+  <div class="intro-orb intro-orb-2"></div>
+
+  <!-- HEADLINE CARD -->
+  <div class="intro-headline" id="intro-headline">
+    <div class="hl-words-wrap">
+      <span class="hl-word" style="--i:0">Know</span>
+      <span class="hl-word" style="--i:1">why</span>
+      <span class="hl-word" style="--i:2">visitors</span>
+      <span class="hl-word" style="--i:3">leave.</span>
+    </div>
+    <div class="hl-subhead">Landing Page Audit</div>
+  </div>
+
+  <!-- PHASE 1: Scanner -->
+  <div class="intro-phase" id="intro-phase-1">
+    <div class="intro-label" id="intro-scanning-label">Scanning page&hellip;</div>
+    <div class="intro-browser" id="intro-browser">
+      <!-- Browser chrome -->
+      <div class="browser-chrome">
+        <div class="browser-dots">
+          <span class="bdot bdot-r"></span>
+          <span class="bdot bdot-y"></span>
+          <span class="bdot bdot-g"></span>
+        </div>
+        <div class="browser-bar">acme.co/summer-campaign</div>
+      </div>
+      <!-- Fake landing page -->
+      <div class="fake-page" id="fake-page">
+        <!-- Nav -->
+        <div class="fp-nav">
+          <div class="fp-line fp-line-sm" style="width:60px"></div>
+          <div class="fp-nav-links">
+            <div class="fp-line fp-line-xs" style="width:30px"></div>
+            <div class="fp-line fp-line-xs" style="width:30px"></div>
+            <div class="fp-line fp-line-xs" style="width:30px"></div>
+          </div>
+          <div class="fp-btn-ghost"></div>
+        </div>
+        <!-- Hero -->
+        <div class="fp-hero">
+          <div class="fp-line" style="width:75%"></div>
+          <div class="fp-line" style="width:55%; margin-top:6px"></div>
+          <div class="fp-line fp-line-sm" style="width:80%; margin-top:8px"></div>
+          <div class="fp-line fp-line-sm" style="width:65%; margin-top:4px"></div>
+          <div class="fp-cta"></div>
+        </div>
+        <!-- Logos row -->
+        <div class="fp-logos">
+          <div class="fp-logo-item"></div>
+          <div class="fp-logo-item"></div>
+          <div class="fp-logo-item"></div>
+          <div class="fp-logo-item"></div>
+        </div>
+        <!-- Features -->
+        <div class="fp-features">
+          <div class="fp-feat">
+            <div class="fp-feat-icon"></div>
+            <div class="fp-line fp-line-sm" style="width:70%"></div>
+            <div class="fp-line fp-line-xs" style="width:85%; margin-top:4px"></div>
+            <div class="fp-line fp-line-xs" style="width:60%; margin-top:3px"></div>
+          </div>
+          <div class="fp-feat">
+            <div class="fp-feat-icon"></div>
+            <div class="fp-line fp-line-sm" style="width:65%"></div>
+            <div class="fp-line fp-line-xs" style="width:80%; margin-top:4px"></div>
+            <div class="fp-line fp-line-xs" style="width:55%; margin-top:3px"></div>
+          </div>
+          <div class="fp-feat">
+            <div class="fp-feat-icon"></div>
+            <div class="fp-line fp-line-sm" style="width:72%"></div>
+            <div class="fp-line fp-line-xs" style="width:75%; margin-top:4px"></div>
+            <div class="fp-line fp-line-xs" style="width:50%; margin-top:3px"></div>
+          </div>
+        </div>
+
+        <!-- Scan line -->
+        <div class="scan-line" id="scan-line"></div>
+
+        <!-- Diagnostic markers -->
+        <div class="diag-marker diag-red" id="diag-1" style="top:38%; left:62%">
+          <div class="diag-dot"></div>
+          <div class="diag-label">No social proof</div>
+        </div>
+        <div class="diag-marker diag-amber" id="diag-2" style="top:22%; left:38%">
+          <div class="diag-dot"></div>
+          <div class="diag-label">CTA low contrast</div>
+        </div>
+        <div class="diag-marker diag-green" id="diag-3" style="top:14%; left:70%">
+          <div class="diag-dot"></div>
+          <div class="diag-label">Fast load time</div>
+        </div>
+        <div class="diag-marker diag-red" id="diag-4" style="top:60%; left:20%">
+          <div class="diag-dot"></div>
+          <div class="diag-label">Mobile font small</div>
+        </div>
+        <div class="diag-marker diag-amber" id="diag-5" style="top:74%; left:55%">
+          <div class="diag-dot"></div>
+          <div class="diag-label">Hero image generic</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PHASE 2: Score Reveal -->
+  <div class="intro-phase" id="intro-phase-2">
+    <div class="score-reveal-wrap">
+      <div class="sr-category" id="sr-category">Initializing...</div>
+      <div class="sr-score" id="sr-score">0</div>
+      <div class="sr-denom">/100</div>
+      <div class="sr-grade" id="sr-grade">Grade C+</div>
+      <div class="sr-verdict">Visitors are leaving before they convert.</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Option A: Hero gradient wash -->
+<div class="hero-gradient" aria-hidden="true"></div>
+
+<!-- NAV -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="#" class="nav-brand">
+      <span class="brand-mark"></span>
+      <span class="brand-name">Perihelion</span>
+    </a>
+    <div class="nav-links">
+      <a href="#" class="nav-link active">Audit</a>
+      <a href="#" class="nav-link">Reports</a>
+      <a href="#" class="nav-link">History</a>
+    </div>
+    <div class="nav-right">
+      <button class="nav-history-btn">
+        <svg viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.5"/><path d="M10 6v4l2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        History
+      </button>
+      <div class="avatar">AM</div>
+    </div>
+  </div>
+</nav>
+
+<main class="main">
+
+  <!-- INPUT SECTION -->
+  <section class="input-section">
+    <div class="input-header">
+      <span class="eyebrow">Conversion Intelligence</span>
+      <h1 class="page-title">Landing Page Audit</h1>
+      <p class="page-subtitle">Drop a URL. Get a complete, actionable breakdown in seconds.</p>
+    </div>
+
+    <div class="input-card">
+      <div class="input-row">
+        <div class="url-field-wrap">
+          <svg class="url-icon" viewBox="0 0 20 20" fill="none">
+            <circle cx="10" cy="10" r="8.25" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M1.75 10h16.5M10 1.75A12.5 12.5 0 0 1 12.5 10 12.5 12.5 0 0 1 10 18.25M10 1.75A12.5 12.5 0 0 0 7.5 10 12.5 12.5 0 0 0 10 18.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input type="text" id="url-input" class="url-input" placeholder="https://your-landing-page.com" value="https://acme.co/summer-campaign" />
+        </div>
+
+        <div class="selects-row">
+          <div class="select-wrap">
+            <label class="select-label" for="business-type">Business Type</label>
+            <select class="select-field" id="business-type">
+              <option>SaaS</option><option>E-commerce</option><option>Agency</option><option>Startup</option>
+            </select>
+          </div>
+          <div class="select-wrap">
+            <label class="select-label" for="conversion-goal">Conversion Goal</label>
+            <select class="select-field" id="conversion-goal">
+              <option>Sign Up</option><option>Purchase</option><option>Lead Form</option><option>Demo Call</option>
+            </select>
+          </div>
+          <div class="select-wrap">
+            <label class="select-label" for="target-customer">Target Customer</label>
+            <input type="text" class="select-field" id="target-customer" placeholder="e.g. SMB founders" />
+          </div>
+
+          <div class="input-bottom-row">
+            <button class="run-btn" id="run-btn" onclick="runAudit()">
+              <span class="run-btn-text">Run Audit</span>
+              <svg class="run-btn-icon" viewBox="0 0 20 20" fill="none">
+                <path d="M4 10h12M11 5l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- RESULTS GRID -->
+  <section class="results-section" id="results-section">
+
+    <!-- SVG DEFS for ring gradient -->
+    <svg width="0" height="0" style="position:absolute">
+      <defs>
+        <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%"   stop-color="#6366f1"/>
+          <stop offset="100%" stop-color="#a78bfa"/>
+        </linearGradient>
+      </defs>
+    </svg>
+
+    <!-- SCORE CARD -->
+    <div class="card card-l3 score-card">
+      <div class="card-header">
+        <div>
+          <div class="card-eyebrow">Overall Score</div>
+          <div class="card-label">Audit Results</div>
+        </div>
+        <span class="grade-badge grade-c" id="grade-badge">C+</span>
+      </div>
+
+      <div class="score-display">
+        <div class="score-ring-wrap">
+          <svg class="score-ring" viewBox="0 0 140 140">
+            <circle class="ring-track" cx="70" cy="70" r="58"/>
+            <circle class="ring-fill" cx="70" cy="70" r="58" id="ring-fill"/>
+          </svg>
+          <div class="score-number-wrap">
+            <span class="score-number" id="score-number">0</span>
+            <span class="score-denom">/100</span>
+          </div>
+        </div>
+
+        <div class="score-grade-line">
+          <span class="score-grade-label">Grade C+ &nbsp;·&nbsp; High Potential</span>
+        </div>
+
+        <p class="score-verdict">"Visitors are leaving before they convert."</p>
+      </div>
+
+      <div class="metrics-list">
+        <div class="metric-row">
+          <div class="metric-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/>
+              <circle cx="12" cy="12" r="3" class="m-eye-pupil"/>
+            </svg>
+          </div>
+          <span class="metric-name">First Impression</span>
+          <div class="metric-bar-wrap"><div class="metric-bar" id="bar-0" style="--color:#6366f1" data-val="78"></div></div>
+          <span class="metric-val" id="val-0">0</span>
+        </div>
+        <div class="metric-row">
+          <div class="metric-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              <path d="M8 10h8" class="m-msg-line1"/>
+              <path d="M8 14h4" class="m-msg-line2"/>
+            </svg>
+          </div>
+          <span class="metric-name">Copy & Messaging</span>
+          <div class="metric-bar-wrap"><div class="metric-bar" id="bar-1" style="--color:#f59e0b" data-val="62"></div></div>
+          <span class="metric-val" id="val-1">0</span>
+        </div>
+        <div class="metric-row">
+          <div class="metric-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <circle cx="12" cy="12" r="3" class="m-cta-pulse"/>
+            </svg>
+          </div>
+          <span class="metric-name">Call-to-Action</span>
+          <div class="metric-bar-wrap"><div class="metric-bar" id="bar-2" style="--color:#10b981" data-val="85"></div></div>
+          <span class="metric-val" id="val-2">0</span>
+        </div>
+        <div class="metric-row">
+          <div class="metric-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              <path d="m9 12 2 2 4-4" class="m-shield-check"/>
+            </svg>
+          </div>
+          <span class="metric-name">Trust & Proof</span>
+          <div class="metric-bar-wrap"><div class="metric-bar" id="bar-3" style="--color:#ef4444" data-val="51"></div></div>
+          <span class="metric-val" id="val-3">0</span>
+        </div>
+        <div class="metric-row">
+          <div class="metric-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-mobile-device">
+              <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
+              <line x1="12" y1="18" x2="12.01" y2="18"/>
+            </svg>
+          </div>
+          <span class="metric-name">Mobile & Access</span>
+          <div class="metric-bar-wrap"><div class="metric-bar" id="bar-4" style="--color:#6366f1" data-val="74"></div></div>
+          <span class="metric-val" id="val-4">0</span>
+        </div>
+        <div class="metric-row">
+          <div class="metric-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-bolt-zap">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+            </svg>
+          </div>
+          <span class="metric-name">Performance</span>
+          <div class="metric-bar-wrap"><div class="metric-bar" id="bar-5" style="--color:#10b981" data-val="80"></div></div>
+          <span class="metric-val" id="val-5">0</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT COLUMN -->
+    <div class="right-col">
+
+      <!-- CRITICAL FINDINGS -->
+      <div class="card card-l2 findings-card">
+        <div class="card-header">
+          <div>
+            <div class="card-eyebrow">Analysis</div>
+            <div class="card-label">Critical Findings</div>
+          </div>
+          <span class="findings-count">3 issues</span>
+        </div>
+        <div class="findings-list">
+          <div class="finding-item finding-critical">
+            <div class="finding-accent"></div>
+            <div class="finding-body">
+              <div class="finding-title">No social proof above the fold</div>
+              <div class="finding-fix">Add 3 customer logos or a testimonial directly beneath the headline to immediately establish credibility.</div>
+              <span class="finding-tag tag-quick">Quick Fix · 2 hrs</span>
+            </div>
+          </div>
+          <div class="finding-item finding-warning">
+            <div class="finding-accent"></div>
+            <div class="finding-body">
+              <div class="finding-title">CTA blends into background</div>
+              <div class="finding-fix">Increase button contrast ratio and add directional micro-copy below it to reduce hesitation.</div>
+              <span class="finding-tag tag-medium">Medium · 30 min</span>
+            </div>
+          </div>
+          <div class="finding-item finding-info">
+            <div class="finding-accent"></div>
+            <div class="finding-body">
+              <div class="finding-title">Mobile font size too small</div>
+              <div class="finding-fix">Set body text to minimum 16px on mobile viewports per WCAG 2.1 AA guidelines.</div>
+              <span class="finding-tag tag-quick">Quick Fix · 1 hr</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- KEY STRENGTHS -->
+      <div class="card card-l1 strengths-card">
+        <div class="card-header">
+          <div>
+            <div class="card-eyebrow">What's Working</div>
+            <div class="card-label">Key Strengths</div>
+          </div>
+        </div>
+        <div class="strengths-list">
+          <div class="strength-item">
+            <div class="strength-icon-wrap">
+              <svg viewBox="0 0 20 20" fill="none"><path d="M4 10l4 4 8-8" stroke="#10b981" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <span>Clean visual hierarchy throughout the page</span>
+          </div>
+          <div class="strength-item">
+            <div class="strength-icon-wrap">
+              <svg viewBox="0 0 20 20" fill="none"><path d="M4 10l4 4 8-8" stroke="#10b981" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <span>Excellent load time — 1.2s on mobile</span>
+          </div>
+          <div class="strength-item">
+            <div class="strength-icon-wrap">
+              <svg viewBox="0 0 20 20" fill="none"><path d="M4 10l4 4 8-8" stroke="#10b981" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <span>Headline clearly communicates the value prop</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PATH TO GRADE -->
+    <div class="card card-l2 path-card">
+      <div class="card-header">
+        <div>
+          <div class="card-eyebrow">Improvement Roadmap</div>
+          <div class="card-label">Path to B+</div>
+        </div>
+        <div class="path-projection">
+          <span class="proj-from">72</span>
+          <svg viewBox="0 0 24 12" fill="none" width="24"><path d="M2 6h18M16 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="proj-to">83</span>
+          <span class="proj-label">~4 hours</span>
+        </div>
+      </div>
+      <div class="path-steps">
+        <div class="path-step">
+          <div class="step-number">01</div>
+          <div class="step-body">
+            <div class="step-title">Add testimonials or logo wall</div>
+            <div class="step-meta">Trust & Proof: 51 → 72 &nbsp;·&nbsp; Est. 2 hrs</div>
+          </div>
+          <div class="step-delta">+21</div>
+        </div>
+        <div class="path-step">
+          <div class="step-number">02</div>
+          <div class="step-body">
+            <div class="step-title">Simplify and contrast your CTA</div>
+            <div class="step-meta">Call-to-Action: 85 → 92 &nbsp;·&nbsp; Est. 30 min</div>
+          </div>
+          <div class="step-delta">+7</div>
+        </div>
+        <div class="path-step">
+          <div class="step-number">03</div>
+          <div class="step-body">
+            <div class="step-title">Fix mobile typography scale</div>
+            <div class="step-meta">Mobile & Access: 74 → 84 &nbsp;·&nbsp; Est. 1 hr</div>
+          </div>
+          <div class="step-delta">+10</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DETAILED FINDINGS TABS -->
+    <div class="card card-l2 detail-card">
+      <div class="card-header">
+        <div>
+          <div class="card-eyebrow">Deep Dive</div>
+          <div class="card-label">Detailed Findings</div>
+        </div>
+      </div>
+      <div class="tabs">
+        <button class="tab active" onclick="setTab(this,'tab-impression')">First Impression</button>
+        <button class="tab" onclick="setTab(this,'tab-copy')">Copy</button>
+        <button class="tab" onclick="setTab(this,'tab-cta')">CTA</button>
+        <button class="tab" onclick="setTab(this,'tab-trust')">Trust</button>
+        <button class="tab" onclick="setTab(this,'tab-mobile')">Mobile</button>
+        <button class="tab" onclick="setTab(this,'tab-perf')">Performance</button>
+      </div>
+      <div class="tab-content active" id="tab-impression">
+        <div class="finding-row"><div class="sev-pip pip-red"></div><div><div class="fr-title">Critical — Signup button blends into background</div><div class="fr-desc">The primary CTA uses near-identical colors to the page background, reducing click-through significantly. Aim for a contrast ratio of at least 4.5:1.</div></div></div>
+        <div class="finding-row"><div class="sev-pip pip-amber"></div><div><div class="fr-title">Warning — Hero image lacks relevance</div><div class="fr-desc">Stock photography disconnects visitors from your product's promise. Replace with a product screenshot or demo GIF.</div></div></div>
+        <div class="finding-row"><div class="sev-pip pip-green"></div><div><div class="fr-title">Suggestion — Add a sticky announcement bar</div><div class="fr-desc">A contextual offer bar at the top increases engagement for time-sensitive promotions by up to 22%.</div></div></div>
+      </div>
+      <div class="tab-content" id="tab-copy">
+        <div class="finding-row"><div class="sev-pip pip-amber"></div><div><div class="fr-title">Warning — Headline is feature-centric, not outcome-centric</div><div class="fr-desc">Reframe to describe the end result the user achieves, not the tool itself. "Ship faster" beats "Advanced CI/CD pipeline."</div></div></div>
+      </div>
+      <div class="tab-content" id="tab-cta">
+        <div class="finding-row"><div class="sev-pip pip-green"></div><div><div class="fr-title">Suggestion — Add sub-copy beneath the main CTA</div><div class="fr-desc">Short reassurance text like "No credit card required" or "Cancel anytime" can increase conversions by up to 14%.</div></div></div>
+      </div>
+      <div class="tab-content" id="tab-trust">
+        <div class="finding-row"><div class="sev-pip pip-red"></div><div><div class="fr-title">Critical — No testimonials anywhere on the page</div><div class="fr-desc">Social proof is the highest-ROI element to add. Three real testimonials with photos is the minimum threshold for meaningful trust transfer.</div></div></div>
+      </div>
+      <div class="tab-content" id="tab-mobile">
+        <div class="finding-row"><div class="sev-pip pip-amber"></div><div><div class="fr-title">Warning — Body text renders below 14px on small viewports</div><div class="fr-desc">WCAG 2.1 recommends 16px minimum for body copy. Adjust the responsive stylesheet to fix this across all breakpoints.</div></div></div>
+      </div>
+      <div class="tab-content" id="tab-perf">
+        <div class="finding-row"><div class="sev-pip pip-green"></div><div><div class="fr-title">Suggestion — Lazy-load below-the-fold images</div><div class="fr-desc">Adding loading="lazy" to secondary images can shave ~200ms from Time to Interactive on slower connections.</div></div></div>
+      </div>
+    </div>
+
+    <!-- ACTIONS ROW -->
+    <div class="actions-row">
+      <button class="action-btn">
+        <svg viewBox="0 0 20 20" fill="none"><path d="M10 3v10m-4-4 4 4 4-4M4 17h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Save Report
+      </button>
+      <button class="action-btn">
+        <svg viewBox="0 0 20 20" fill="none"><path d="M6 2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm0 4h8M6 9h8M6 13h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        Export PDF
+      </button>
+      <button class="action-btn">
+        <svg viewBox="0 0 20 20" fill="none"><path d="M14 8a4 4 0 1 1-4-4M3 17a6 6 0 0 1 11.33-2M17 14v4m0 0-2-2m2 2 2-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Share Link
+      </button>
+    </div>
+
+    <!-- HISTORY TABLE -->
+    <div class="card card-l1 history-card">
+      <div class="card-header">
+        <div>
+          <div class="card-eyebrow">Previous Runs</div>
+          <div class="card-label">Audit History</div>
+        </div>
+      </div>
+      <table class="history-table">
+        <thead>
+          <tr>
+            <th>URL</th><th>Score</th><th>Grade</th><th>Date</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="url-cell">acme.co/summer-campaign</td>
+            <td><span class="score-pill pill-c">72</span></td>
+            <td>C+</td>
+            <td class="date-cell">Apr 16, 2026</td>
+            <td class="actions-cell">
+              <button class="icon-btn" title="View"><svg viewBox="0 0 20 20" fill="none"><path d="M2 10s3-6 8-6 8 6 8 6-3 6-8 6-8-6-8-6z" stroke="currentColor" stroke-width="1.4"/><circle cx="10" cy="10" r="2.5" stroke="currentColor" stroke-width="1.4"/></svg></button>
+              <button class="icon-btn" title="Export"><svg viewBox="0 0 20 20" fill="none"><path d="M6 2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" stroke="currentColor" stroke-width="1.4"/><path d="M7 9h6M7 12h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+              <button class="icon-btn icon-btn-danger" title="Delete"><svg viewBox="0 0 20 20" fill="none"><path d="M4 6h12l-1.2 10.4A1 1 0 0 1 13.8 17H6.2a1 1 0 0 1-1-.9L4 6zM8 6V4h4v2M2 6h16" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+            </td>
+          </tr>
+          <tr>
+            <td class="url-cell">acme.co/v2</td>
+            <td><span class="score-pill pill-b">84</span></td>
+            <td>B</td>
+            <td class="date-cell">Apr 14, 2026</td>
+            <td class="actions-cell">
+              <button class="icon-btn" title="View"><svg viewBox="0 0 20 20" fill="none"><path d="M2 10s3-6 8-6 8 6 8 6-3 6-8 6-8-6-8-6z" stroke="currentColor" stroke-width="1.4"/><circle cx="10" cy="10" r="2.5" stroke="currentColor" stroke-width="1.4"/></svg></button>
+              <button class="icon-btn" title="Export"><svg viewBox="0 0 20 20" fill="none"><path d="M6 2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" stroke="currentColor" stroke-width="1.4"/><path d="M7 9h6M7 12h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+              <button class="icon-btn icon-btn-danger" title="Delete"><svg viewBox="0 0 20 20" fill="none"><path d="M4 6h12l-1.2 10.4A1 1 0 0 1 13.8 17H6.2a1 1 0 0 1-1-.9L4 6zM8 6V4h4v2M2 6h16" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+            </td>
+          </tr>
+          <tr>
+            <td class="url-cell">acme.co/pricing</td>
+            <td><span class="score-pill pill-a">91</span></td>
+            <td>A−</td>
+            <td class="date-cell">Apr 10, 2026</td>
+            <td class="actions-cell">
+              <button class="icon-btn" title="View"><svg viewBox="0 0 20 20" fill="none"><path d="M2 10s3-6 8-6 8 6 8 6-3 6-8 6-8-6-8-6z" stroke="currentColor" stroke-width="1.4"/><circle cx="10" cy="10" r="2.5" stroke="currentColor" stroke-width="1.4"/></svg></button>
+              <button class="icon-btn" title="Export"><svg viewBox="0 0 20 20" fill="none"><path d="M6 2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" stroke="currentColor" stroke-width="1.4"/><path d="M7 9h6M7 12h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+              <button class="icon-btn icon-btn-danger" title="Delete"><svg viewBox="0 0 20 20" fill="none"><path d="M4 6h12l-1.2 10.4A1 1 0 0 1 13.8 17H6.2a1 1 0 0 1-1-.9L4 6zM8 6V4h4v2M2 6h16" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+  </section>
+</main>
+
+<script src="script.js"></script>
+</body>
+</html>

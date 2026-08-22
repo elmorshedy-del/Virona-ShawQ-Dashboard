@@ -13,6 +13,7 @@ import {
   getCountryTrends,
   getNewYorkTrends,
   getCampaignTrends,
+  getCtrTrends,
   getCampaignsByAgeGender,
   getShopifyTimeOfDay,
   getTimeOfDay,
@@ -20,12 +21,14 @@ import {
   getCitiesByCountry,
   getMetaAdManagerHierarchy,
   getFunnelDiagnostics,
+  getPerformancePulse,
   getReactivationCandidates,
   getAllMetaObjects
 } from '../services/analyticsService.js';
+import { getGoogleAdManagerHierarchy } from '../services/googleAdsService.js';
 import { importMetaDailyRows } from '../services/metaImportService.js';
 import { syncMetaData, getBackfillStatus, triggerBackfill } from '../services/metaService.js';
-import { getShopifyConnectionStatus } from '../services/shopifyService.js';
+import { getShopifyConnectionStatus, syncShopifyOrders } from '../services/shopifyService.js';
 
 const router = express.Router();
 
@@ -39,6 +42,18 @@ router.get('/dashboard', (req, res) => {
   } catch (error) {
     console.error('Dashboard error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Performance pulse cards (compact second hierarchy under KPI cards)
+router.get('/performance-pulse', async (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const data = await getPerformancePulse(store, req.query);
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[Analytics] Performance pulse error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -135,6 +150,11 @@ router.get('/countries', (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+router.get('/ctr-trends', (req, res) => {
+  try { res.json(getCtrTrends(req.query.store || 'vironax', req.query)); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.get('/countries/trends', (req, res) => {
   try { res.json(getCountryTrends(req.query.store, req.query)); }
   catch (e) { res.status(500).json({ error: e.message }); }
@@ -194,10 +214,20 @@ router.get('/cities/:countryCode', (req, res) => {
 
 // Meta Ad Manager hierarchy endpoint
 // Supports ?includeInactive=true to show inactive campaigns/adsets/ads
-router.get('/meta-ad-manager', (req, res) => {
+router.get('/meta-ad-manager', async (req, res) => {
   try {
     const store = req.query.store || 'vironax';
-    res.json(getMetaAdManagerHierarchy(store, req.query));
+    const data = await getMetaAdManagerHierarchy(store, req.query);
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Google Ads hierarchy endpoint
+router.get('/google-ad-manager', async (req, res) => {
+  try {
+    res.json(await getGoogleAdManagerHierarchy(req.query));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -207,8 +237,8 @@ router.get('/meta-ad-manager', (req, res) => {
 // Supports ?includeInactive=true
 router.get('/funnel-diagnostics', (req, res) => {
   try {
-    const { store, startDate, endDate, campaignId, includeInactive } = req.query;
-    const data = getFunnelDiagnostics(store || 'vironax', { startDate, endDate, campaignId, includeInactive });
+    const { store, startDate, endDate, campaignId, includeInactive, baselineMode } = req.query;
+    const data = getFunnelDiagnostics(store || 'vironax', { startDate, endDate, campaignId, includeInactive, baselineMode });
     res.json({ success: true, data });
   } catch (error) {
     console.error('[Analytics] Funnel diagnostics error:', error);
@@ -278,6 +308,47 @@ router.post('/meta/backfill', async (req, res) => {
     console.error('[Analytics] Backfill trigger error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
+});
+
+// ============================================================================
+// TRIGGER SHOPIFY BACKFILL
+// Pulls a wider order history than the rolling sync window without a redeploy.
+// Shopify is Shawq's storefront (Vironax sells through Salla), so it defaults to shawq.
+// ============================================================================
+const DEFAULT_SHOPIFY_BACKFILL_DAYS = 730;
+
+router.post('/shopify/backfill', (req, res) => {
+  const store = String(req.query.store || req.body?.store || 'shawq').trim().toLowerCase();
+  const requestedDays = req.query.days ?? req.query.rangeDays ?? req.body?.days ?? req.body?.rangeDays;
+  const parsedDays = Number.parseInt(String(requestedDays ?? DEFAULT_SHOPIFY_BACKFILL_DAYS), 10);
+  const rangeDays = Number.isFinite(parsedDays) && parsedDays > 0
+    ? parsedDays
+    : DEFAULT_SHOPIFY_BACKFILL_DAYS;
+
+  // A long range paginates through the Shopify API for minutes, well past a gateway
+  // timeout, so kick it off and report progress to the logs like the Meta backfill does.
+  syncShopifyOrders({ storeKeys: [store], rangeDays })
+    .then((result) => {
+      if (result?.success) {
+        console.log(
+          `[Shopify] Backfill ${store}: ${result.records} order(s) over ${result.rangeDays} day(s) ` +
+            `(${result.startDate}..${result.endDate})`
+        );
+      } else {
+        console.warn(`[Shopify] Backfill ${store} failed: ${result?.message || 'unknown error'}`);
+      }
+    })
+    .catch((error) => {
+      console.error(`[Shopify] Backfill ${store} error:`, error?.message || error);
+    });
+
+  res.status(202).json({
+    success: true,
+    started: true,
+    store,
+    rangeDays,
+    message: 'Shopify backfill started; it runs in the background. Watch the logs for [Shopify] Backfill.'
+  });
 });
 
 export default router;

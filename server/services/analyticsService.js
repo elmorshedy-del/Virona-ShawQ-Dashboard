@@ -1,6 +1,14 @@
 import { getCountryInfo, getAllCountries } from '../utils/countryData.js';
 import { getDb } from '../db/database.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
+import { fetchGoogleCampaignHierarchy } from './googleAdsService.js';
+import { syncShopifyOrders } from './shopifyService.js';
+import fetch from 'node-fetch';
+import {
+  extractMetaCreativeThumbnailUrl,
+  extractMetaCreativeVideoId,
+  extractBestMetaVideoThumbnailUrl
+} from '../utils/metaCreativeMedia.js';
 
 // Import Meta Awareness feature module for consistent status filtering
 import {
@@ -8,6 +16,46 @@ import {
   shouldIncludeInactive as featureShouldIncludeInactive,
   getReactivationCandidates as featureGetReactivationCandidates
 } from '../features/meta-awareness/index.js';
+
+const SHOPIFY_REVENUE_SQL = '(COALESCE(subtotal, 0) + COALESCE(shipping, 0))';
+const SALLA_REVENUE_SQL = '(COALESCE(subtotal, 0) + COALESCE(shipping, 0))';
+const DASHBOARD_ALL_CAMPAIGNS_TOKENS = new Set([
+  'all',
+  'all-campaigns',
+  'all_campaigns',
+  '*'
+]);
+const SHOPIFY_MISSING_DAY_SYNC_THRESHOLD = 1;
+const SHOPIFY_BACKFILL_COOLDOWN_MS = 10 * 60 * 1000;
+const shopifyBackfillLastRunAt = new Map();
+
+const PERFORMANCE_PULSE_LIMIT = 4;
+const PERFORMANCE_PULSE_SIGNAL_DELTA_THRESHOLD = 0.05;
+const PERFORMANCE_PULSE_DAY_COMPARISON_OFFSETS = Object.freeze({
+  previousDay: -1,
+  previousWeek: -7
+});
+const PERFORMANCE_PULSE_SIGNAL_WEIGHTS = {
+  roas: 0.7,
+  orders: 0.3
+};
+const PERFORMANCE_PULSE_PRODUCT_SIGNAL_WEIGHTS = {
+  orders: 0.75,
+  revenue: 0.25
+};
+const PERFORMANCE_PULSE_MISSING_BASELINE_DELTA = 1;
+const PERFORMANCE_PULSE_LOW_ORDER_THRESHOLD = 3;
+const PERFORMANCE_PULSE_LOW_ORDER_WEIGHT = 3;
+const PERFORMANCE_PULSE_LOW_ORDER_SPEND_WEIGHT = 0.2;
+const PERFORMANCE_PULSE_LOW_ROAS_TARGET = 1.0;
+const PERFORMANCE_PULSE_LOW_ROAS_WEIGHT = 6;
+const PERFORMANCE_PULSE_ZERO_ORDER_DRAGGER_BONUS = 30;
+const PERFORMANCE_PULSE_ZERO_ORDER_SPEND_WEIGHT = 1;
+const PERFORMANCE_PULSE_SIGNAL_DOWN_BONUS = 4;
+const PERFORMANCE_PULSE_META_THUMBNAIL_FETCH_LIMIT = 12;
+const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v19.0';
+const META_GRAPH_BASE_URL = `https://graph.facebook.com/${META_GRAPH_VERSION}`;
+const META_GRAPH_NODE_ID_PATTERN = /^[0-9]{5,32}$/;
 
 // ============================================================================
 // DATE HELPERS
@@ -74,14 +122,48 @@ function buildStatusFilter(params, columnPrefix = '') {
   return featureBuildStatusFilter(params, columnPrefix);
 }
 
+// Build status filter for a specific status column (e.g., ad_effective_status)
+function buildStatusFilterForColumn(params, columnName, columnPrefix = '') {
+  if (shouldIncludeInactive(params)) {
+    return '';
+  }
+
+  const col = columnPrefix ? `${columnPrefix}.${columnName}` : columnName;
+  return ` AND (${col} = 'ACTIVE' OR ${col} = 'UNKNOWN' OR ${col} IS NULL)`;
+}
+
 // Optional campaign filter helper (filters by campaign_id when provided)
 function buildCampaignFilter(params, columnPrefix = '') {
-  const campaignId = params?.campaignId;
+  const rawCampaignId = params?.campaignId;
+  const normalizedCampaignId = typeof rawCampaignId === 'string'
+    ? rawCampaignId.trim()
+    : (rawCampaignId == null ? '' : String(rawCampaignId).trim());
+  const campaignId = normalizedCampaignId
+    && !DASHBOARD_ALL_CAMPAIGNS_TOKENS.has(normalizedCampaignId.toLowerCase())
+    ? normalizedCampaignId
+    : null;
   if (campaignId) {
     const column = columnPrefix ? `${columnPrefix}campaign_id` : 'campaign_id';
     return { clause: ` AND ${column} = ?`, value: campaignId };
   }
   return { clause: '', value: null };
+}
+
+function normalizeChannel(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'facebook' || normalized === 'instagram') return normalized;
+  return '';
+}
+
+function buildPublisherPlatformFilter(params, columnPrefix = '') {
+  const channel = normalizeChannel(params?.channel);
+  if (!channel) return { clause: '', value: null };
+
+  const column = columnPrefix ? `${columnPrefix}publisher_platform` : 'publisher_platform';
+  return {
+    clause: ` AND LOWER(COALESCE(${column}, '')) = ?`,
+    value: channel
+  };
 }
 
 // ============================================================================
@@ -109,9 +191,9 @@ export function getCitiesByCountry(store, countryCode, params) {
           city,
           state,
           COUNT(*) as orders,
-          SUM(subtotal) as revenue
+          SUM(${SHOPIFY_REVENUE_SQL}) as revenue
         FROM shopify_orders
-        WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ?
+        WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
         AND city IS NOT NULL AND city != ''
         GROUP BY city, state
         ORDER BY orders DESC
@@ -126,7 +208,7 @@ export function getCitiesByCountry(store, countryCode, params) {
           COUNT(*) as orders,
           SUM(subtotal) as revenue
         FROM salla_orders
-        WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ?
+        WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
         AND city IS NOT NULL AND city != ''
         GROUP BY city, state
         ORDER BY orders DESC
@@ -173,23 +255,31 @@ export function getCitiesByCountry(store, countryCode, params) {
 // GET TOTALS FOR RANGE
 // ============================================================================
 function getTotalsForRange(db, store, startDate, endDate, params = {}) {
-  const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const { clause: platformClause, value: platformValue } = buildPublisherPlatformFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
+  const platformArgs = platformValue ? [platformValue] : [];
 
   const metaTotals = db.prepare(`
-    SELECT SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders
-    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
-  `).get(store, startDate, endDate, ...campaignArgs) || {};
+    SELECT SUM(conversion_value) as revenue, SUM(conversions) as orders
+    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${campaignClause}${platformClause}
+  `).get(store, startDate, endDate, ...campaignArgs, ...platformArgs) || {};
 
-  let totalSpend = metaTotals.spend || 0;
+  // Spend should always include all persisted Meta spend in the selected range.
+  const persistedMetaSpend = db.prepare(`
+    SELECT SUM(spend) as spend
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${campaignClause}${platformClause}
+  `).get(store, startDate, endDate, ...campaignArgs, ...platformArgs) || {};
+
+  let totalSpend = persistedMetaSpend.spend || 0;
   let totalRevenue = metaTotals.revenue || 0;
   let totalOrders = metaTotals.orders || 0;
 
-  if (store === 'shawq' && !campaignValue) {
+  if (store === 'shawq' && !campaignValue && !platformValue) {
     const ecomData = db.prepare(`
-      SELECT COUNT(*) as orders, SUM(subtotal) as revenue
-      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ?
+      SELECT COUNT(*) as orders, SUM(${SHOPIFY_REVENUE_SQL}) as revenue
+      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
     `).get(store, startDate, endDate) || {};
     totalOrders = ecomData.orders || 0;
     totalRevenue = ecomData.revenue || 0;
@@ -219,14 +309,16 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
     }
   }
 
-  const manualData = db.prepare(`
-    SELECT SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
-    FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?${manualCampaignClause}
-  `).get(store, startDate, endDate, ...manualCampaignArgs) || {};
+  if (!platformValue) {
+    const manualData = db.prepare(`
+      SELECT SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
+      FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?${manualCampaignClause}
+    `).get(store, startDate, endDate, ...manualCampaignArgs) || {};
 
-  totalSpend += manualData.spend || 0;
-  totalRevenue += manualData.revenue || 0;
-  totalOrders += manualData.orders || 0;
+    totalSpend += manualData.spend || 0;
+    totalRevenue += manualData.revenue || 0;
+    totalOrders += manualData.orders || 0;
+  }
 
   const override = db.prepare(`
     SELECT SUM(amount) as amount FROM manual_spend_overrides WHERE store = ? AND date BETWEEN ? AND ?
@@ -243,15 +335,56 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
   };
 }
 
+function getDateRangeLengthDays(startDate, endDate) {
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  const diffMs = end.getTime() - start.getTime();
+  if (!Number.isFinite(diffMs) || diffMs < 0) return 1;
+  return Math.max(1, Math.floor(diffMs / (24 * 60 * 60 * 1000)) + 1);
+}
+
+function maybeBackfillMissingShopifyDays(db, store, startDate, endDate) {
+  if (store !== 'shawq') return;
+  const nowMs = Date.now();
+  const lastRunMs = shopifyBackfillLastRunAt.get(store) || 0;
+  if (nowMs - lastRunMs < SHOPIFY_BACKFILL_COOLDOWN_MS) return;
+
+  const dateRangeDays = getDateRangeLengthDays(startDate, endDate);
+  const row = db.prepare(`
+    SELECT COUNT(DISTINCT date) as coveredDays
+    FROM shopify_orders
+    WHERE store = ?
+      AND date BETWEEN ? AND ?
+      AND COALESCE(is_excluded, 0) = 0
+  `).get(store, startDate, endDate) || {};
+
+  const coveredDays = Number(row.coveredDays) || 0;
+  const missingDays = Math.max(0, dateRangeDays - coveredDays);
+  if (missingDays < SHOPIFY_MISSING_DAY_SYNC_THRESHOLD) return;
+
+  shopifyBackfillLastRunAt.set(store, nowMs);
+  syncShopifyOrders({ storeKeys: [store], rangeDays: dateRangeDays }).catch((error) => {
+    console.warn('[Analytics] Shopify backfill-on-read failed', {
+      store,
+      startDate,
+      endDate,
+      missingDays,
+      error: error?.message || String(error)
+    });
+  });
+}
+
 function getMetaTotalsForRange(db, store, startDate, endDate, params = {}) {
   const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const { clause: platformClause, value: platformValue } = buildPublisherPlatformFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
+  const platformArgs = platformValue ? [platformValue] : [];
 
   const metaTotals = db.prepare(`
     SELECT SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders
-    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
-  `).get(store, startDate, endDate, ...campaignArgs) || {};
+    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
+  `).get(store, startDate, endDate, ...campaignArgs, ...platformArgs) || {};
 
   const totalSpend = metaTotals.spend || 0;
   const totalRevenue = metaTotals.revenue || 0;
@@ -276,8 +409,12 @@ export function getDashboard(store, params) {
   const prevRange = getPreviousDateRange(startDate, endDate);
   const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const { clause: platformClause, value: platformValue } = buildPublisherPlatformFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
+  const platformArgs = platformValue ? [platformValue] : [];
   const includeInactive = shouldIncludeInactive(params);
+
+  maybeBackfillMissingShopifyDays(db, store, startDate, endDate);
 
   const current = getTotalsForRange(db, store, startDate, endDate, params);
   const previous = getTotalsForRange(db, store, prevRange.startDate, prevRange.endDate, params);
@@ -305,10 +442,10 @@ export function getDashboard(store, params) {
       SUM(clicks) as clicks, SUM(conversions) as conversions, SUM(conversion_value) as conversionValue,
       SUM(landing_page_views) as lpv, SUM(add_to_cart) as atc, SUM(checkouts_initiated) as checkout
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
     GROUP BY campaign_name
     ORDER BY spend DESC
-  `).all(store, startDate, endDate, ...campaignArgs);
+  `).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
 
   const campaigns = campaignData.map(c => ({
     ...c,
@@ -333,8 +470,8 @@ export function getDashboard(store, params) {
       SUM(add_to_cart) as atc_total, SUM(checkouts_initiated) as checkout_total,
       COUNT(DISTINCT campaign_name) as campaign_count
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
-  `).get(store, startDate, endDate, ...campaignArgs) || {};
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
+  `).get(store, startDate, endDate, ...campaignArgs, ...platformArgs) || {};
 
   const metaCampaignCount = metaTotals.campaign_count || 0;
   const metaImpressionsTotal = metaTotals.impressions_total || 0;
@@ -368,11 +505,682 @@ export function getDashboard(store, params) {
   };
 }
 
+function shiftDateKey(dateKey, offsetDays) {
+  if (!dateKey || !Number.isFinite(offsetDays)) return null;
+  const [year, month, day] = String(dateKey).split('-').map(Number);
+  if (!year || !month || !day) return null;
+  const shifted = new Date(Date.UTC(year, month - 1, day + offsetDays));
+  return shifted.toISOString().slice(0, 10);
+}
+
+function toRelativeDelta(currentValue, baselineValue) {
+  const current = Number(currentValue) || 0;
+  const baseline = Number(baselineValue) || 0;
+  if (baseline > 0) {
+    return (current - baseline) / baseline;
+  }
+  if (current > 0) {
+    return PERFORMANCE_PULSE_MISSING_BASELINE_DELTA;
+  }
+  return 0;
+}
+
+function toSignal(weightedDelta) {
+  if (!Number.isFinite(weightedDelta)) return 'flat';
+  if (weightedDelta >= PERFORMANCE_PULSE_SIGNAL_DELTA_THRESHOLD) return 'up';
+  if (weightedDelta <= -PERFORMANCE_PULSE_SIGNAL_DELTA_THRESHOLD) return 'down';
+  return 'flat';
+}
+
+function resolvePulseSignal(currentSnapshot, baselineSnapshot, options = {}) {
+  const {
+    weights = PERFORMANCE_PULSE_SIGNAL_WEIGHTS,
+    includeRoas = true,
+    includeRevenue = false
+  } = options;
+
+  let weightedTotal = 0;
+  let totalWeight = 0;
+
+  if (includeRoas) {
+    const roasDelta = toRelativeDelta(currentSnapshot.roas, baselineSnapshot.roas);
+    weightedTotal += roasDelta * weights.roas;
+    totalWeight += weights.roas;
+  }
+
+  const ordersDelta = toRelativeDelta(currentSnapshot.orders, baselineSnapshot.orders);
+  weightedTotal += ordersDelta * weights.orders;
+  totalWeight += weights.orders;
+
+  if (includeRevenue && Number.isFinite(weights.revenue)) {
+    const revenueDelta = toRelativeDelta(currentSnapshot.revenue, baselineSnapshot.revenue);
+    weightedTotal += revenueDelta * weights.revenue;
+    totalWeight += weights.revenue;
+  }
+
+  if (totalWeight <= 0) {
+    return { direction: 'flat', deltaPct: 0 };
+  }
+
+  const weightedDelta = weightedTotal / totalWeight;
+  return {
+    direction: toSignal(weightedDelta),
+    deltaPct: weightedDelta * 100
+  };
+}
+
+function resolvePulseSignals(currentSnapshot, previousDaySnapshot, previousWeekSnapshot, options = {}) {
+  const daySignal = resolvePulseSignal(currentSnapshot, previousDaySnapshot, options);
+  const weekSignal = resolvePulseSignal(currentSnapshot, previousWeekSnapshot, options);
+
+  return {
+    day: daySignal.direction,
+    week: weekSignal.direction,
+    dayDeltaPct: daySignal.deltaPct,
+    weekDeltaPct: weekSignal.deltaPct
+  };
+}
+
+function calculateUnderperformingRisk(entity) {
+  const orders = Number(entity.orders) || 0;
+  const spend = Number(entity.spend) || 0;
+  const roas = Number.isFinite(entity.roas) ? Number(entity.roas) : 0;
+  const isZeroOrderDragger = orders <= 0 && spend > 0;
+  const lowOrderDeficit = orders <= PERFORMANCE_PULSE_LOW_ORDER_THRESHOLD
+    ? (PERFORMANCE_PULSE_LOW_ORDER_THRESHOLD - orders + 1)
+    : 0;
+  const lowOrderPenalty = lowOrderDeficit * PERFORMANCE_PULSE_LOW_ORDER_WEIGHT;
+  const lowOrderSpendPenalty = lowOrderDeficit > 0 ? spend * PERFORMANCE_PULSE_LOW_ORDER_SPEND_WEIGHT : 0;
+  const lowRoasPenalty = spend > 0 ? Math.max(0, PERFORMANCE_PULSE_LOW_ROAS_TARGET - roas) * PERFORMANCE_PULSE_LOW_ROAS_WEIGHT : 0;
+  const signalPenalty = (entity.signals?.day === 'down' ? PERFORMANCE_PULSE_SIGNAL_DOWN_BONUS : 0)
+    + (entity.signals?.week === 'down' ? PERFORMANCE_PULSE_SIGNAL_DOWN_BONUS : 0);
+  const zeroOrderDraggerPenalty = isZeroOrderDragger
+    ? PERFORMANCE_PULSE_ZERO_ORDER_DRAGGER_BONUS + (spend * PERFORMANCE_PULSE_ZERO_ORDER_SPEND_WEIGHT)
+    : 0;
+
+  return zeroOrderDraggerPenalty
+    + lowOrderPenalty
+    + lowOrderSpendPenalty
+    + lowRoasPenalty
+    + signalPenalty;
+}
+
+function sortByUnderperformingRisk(a, b) {
+  const riskDelta = (b.riskScore || 0) - (a.riskScore || 0);
+  if (riskDelta !== 0) return riskDelta;
+  if ((a.orders || 0) !== (b.orders || 0)) return (a.orders || 0) - (b.orders || 0);
+  if ((b.spend || 0) !== (a.spend || 0)) return (b.spend || 0) - (a.spend || 0);
+  return (b.revenue || 0) - (a.revenue || 0);
+}
+
+function sortByDailyTopPerformance(a, b) {
+  const ordersDelta = (b.orders || 0) - (a.orders || 0);
+  if (ordersDelta !== 0) return ordersDelta;
+
+  const roasA = Number.isFinite(a.roas) ? a.roas : -1;
+  const roasB = Number.isFinite(b.roas) ? b.roas : -1;
+  if (roasB !== roasA) return roasB - roasA;
+
+  return (b.spend || 0) - (a.spend || 0);
+}
+
+function tableExists(db, tableName) {
+  if (!tableName) return false;
+  const row = db.prepare(`
+    SELECT 1
+    FROM sqlite_master
+    WHERE type = 'table' AND name = ?
+    LIMIT 1
+  `).get(tableName);
+  return !!row;
+}
+
+function getCountryOrdersSourceConfig(store) {
+  if (store === 'shawq') {
+    return {
+      table: 'shopify_orders',
+      countryColumn: 'country_code',
+      revenueSql: SHOPIFY_REVENUE_SQL,
+      source: 'Shopify'
+    };
+  }
+
+  if (store === 'vironax' && isSallaActive()) {
+    return {
+      table: 'salla_orders',
+      countryColumn: 'country_code',
+      revenueSql: SALLA_REVENUE_SQL,
+      source: 'Salla'
+    };
+  }
+
+  return null;
+}
+
+function getMetaAccessTokenForStore(store) {
+  if (store === 'shawq') {
+    return String(process.env.SHAWQ_META_ACCESS_TOKEN || '').trim();
+  }
+  return String(process.env.META_ACCESS_TOKEN || process.env.VIRONAX_META_ACCESS_TOKEN || '').trim();
+}
+
+function normalizeMetaGraphNodeId(rawId) {
+  const normalized = String(rawId || '').trim().replace(/^act_/, '');
+  return META_GRAPH_NODE_ID_PATTERN.test(normalized) ? normalized : '';
+}
+
+async function fetchMetaCreativeThumbnailUrlByAdId(adId, accessToken) {
+  const fields = 'creative{thumbnail_url,image_url,object_story_spec{video_data,link_data,photo_data},asset_feed_spec{videos,images}}';
+  const params = new URLSearchParams({
+    fields,
+    access_token: accessToken
+  });
+  const url = `${META_GRAPH_BASE_URL}/${encodeURIComponent(adId)}?${params.toString()}`;
+
+  try {
+    const response = await fetch(url, { method: 'GET' });
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = await response.json();
+    const creative = payload?.creative || payload?.data?.creative || null;
+    const creativeThumbnailUrl = extractMetaCreativeThumbnailUrl(creative);
+    const videoId = normalizeMetaGraphNodeId(extractMetaCreativeVideoId(creative));
+
+    if (!videoId) {
+      return creativeThumbnailUrl;
+    }
+
+    const videoThumbnailUrl = await fetchMetaVideoBestThumbnailUrlByVideoId(videoId, accessToken);
+    return videoThumbnailUrl || creativeThumbnailUrl;
+  } catch (error) {
+    console.warn('[Analytics] Failed to fetch Meta creative thumbnail', {
+      adId,
+      error: error?.message || String(error)
+    });
+    return null;
+  }
+}
+
+async function fetchMetaVideoBestThumbnailUrlByVideoId(videoId, accessToken) {
+  const normalizedVideoId = normalizeMetaGraphNodeId(videoId);
+  if (!normalizedVideoId) return null;
+
+  const params = new URLSearchParams({
+    fields: 'picture,thumbnails{uri,height,width}',
+    access_token: accessToken
+  });
+  const url = `${META_GRAPH_BASE_URL}/${encodeURIComponent(normalizedVideoId)}?${params.toString()}`;
+
+  try {
+    const response = await fetch(url, { method: 'GET' });
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = await response.json();
+    return extractBestMetaVideoThumbnailUrl(payload);
+  } catch (error) {
+    console.warn('[Analytics] Failed to fetch Meta video thumbnails', {
+      videoId: normalizedVideoId,
+      error: error?.message || String(error)
+    });
+    return null;
+  }
+}
+
+async function getMetaCreativeThumbnailMap(store, adIds = []) {
+  const accessToken = getMetaAccessTokenForStore(store);
+  if (!accessToken || !Array.isArray(adIds) || adIds.length === 0) {
+    return new Map();
+  }
+
+  const uniqueAdIds = Array.from(new Set(
+    adIds
+      .map((id) => normalizeMetaGraphNodeId(id))
+      .filter(Boolean)
+  )).slice(0, PERFORMANCE_PULSE_META_THUMBNAIL_FETCH_LIMIT);
+
+  if (uniqueAdIds.length === 0) {
+    return new Map();
+  }
+
+  const thumbnailEntries = await Promise.all(
+    uniqueAdIds.map(async (adId) => {
+      const thumbnailUrl = await fetchMetaCreativeThumbnailUrlByAdId(adId, accessToken);
+      return [adId, thumbnailUrl];
+    })
+  );
+
+  const thumbnailMap = new Map();
+  thumbnailEntries.forEach(([adId, thumbnailUrl]) => {
+    if (thumbnailUrl) {
+      thumbnailMap.set(adId, thumbnailUrl);
+    }
+  });
+
+  return thumbnailMap;
+}
+
+function getSafeCountryLabel(countryCode) {
+  const info = getCountryInfo(countryCode);
+  return {
+    name: info?.name || countryCode || 'Unknown Country',
+    flag: info?.flag || '🏳️'
+  };
+}
+
+export async function getPerformancePulse(store, params = {}) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  const previousDayDate = shiftDateKey(endDate, PERFORMANCE_PULSE_DAY_COMPARISON_OFFSETS.previousDay);
+  const previousWeekDate = shiftDateKey(endDate, PERFORMANCE_PULSE_DAY_COMPARISON_OFFSETS.previousWeek);
+  const comparisonDates = [endDate, previousDayDate, previousWeekDate].filter(Boolean);
+  const comparisonDatePlaceholders = comparisonDates.map(() => '?').join(', ');
+
+  const statusFilter = buildStatusFilter(params);
+  const adStatusFilter = buildStatusFilterForColumn(params, 'ad_effective_status');
+  const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const campaignArgs = campaignValue ? [campaignValue] : [];
+
+  const defaultSnapshot = { orders: 0, revenue: 0, spend: 0, roas: 0 };
+
+  const countryOrdersSource = getCountryOrdersSourceConfig(store);
+  let currentCountryOrderRows = [];
+  let dailyCountryOrderRows = [];
+
+  if (countryOrdersSource) {
+    currentCountryOrderRows = db.prepare(`
+      SELECT
+        ${countryOrdersSource.countryColumn} AS countryCode,
+        COUNT(*) AS orders,
+        SUM(${countryOrdersSource.revenueSql}) AS revenue
+      FROM ${countryOrdersSource.table}
+      WHERE store = ?
+        AND date = ?
+        AND COALESCE(is_excluded, 0) = 0
+        AND ${countryOrdersSource.countryColumn} IS NOT NULL
+        AND ${countryOrdersSource.countryColumn} != ''
+      GROUP BY ${countryOrdersSource.countryColumn}
+    `).all(store, endDate);
+
+    if (comparisonDates.length > 0) {
+      dailyCountryOrderRows = db.prepare(`
+        SELECT
+          ${countryOrdersSource.countryColumn} AS countryCode,
+          date,
+          COUNT(*) AS orders,
+          SUM(${countryOrdersSource.revenueSql}) AS revenue
+        FROM ${countryOrdersSource.table}
+        WHERE store = ?
+          AND date IN (${comparisonDatePlaceholders})
+          AND COALESCE(is_excluded, 0) = 0
+          AND ${countryOrdersSource.countryColumn} IS NOT NULL
+          AND ${countryOrdersSource.countryColumn} != ''
+        GROUP BY ${countryOrdersSource.countryColumn}, date
+      `).all(store, ...comparisonDates);
+    }
+  }
+
+  const currentCountrySpendRows = db.prepare(`
+    SELECT
+      country AS countryCode,
+      SUM(spend) AS spend
+    FROM meta_daily_metrics
+    WHERE store = ?
+      AND date = ?
+      AND country IS NOT NULL
+      AND country != ''
+      AND country != 'ALL'${statusFilter}${campaignClause}
+    GROUP BY country
+  `).all(store, endDate, ...campaignArgs);
+
+  const dailyCountrySpendRows = comparisonDates.length > 0 ? db.prepare(`
+    SELECT
+      country AS countryCode,
+      date,
+      SUM(spend) AS spend
+    FROM meta_daily_metrics
+    WHERE store = ?
+      AND date IN (${comparisonDatePlaceholders})
+      AND country IS NOT NULL
+      AND country != ''
+      AND country != 'ALL'${statusFilter}${campaignClause}
+    GROUP BY country, date
+  `).all(store, ...comparisonDates, ...campaignArgs) : [];
+
+  const countryTotalsMap = new Map();
+  currentCountryOrderRows.forEach((row) => {
+    const countryCode = row.countryCode;
+    if (!countryCode) return;
+    const labels = getSafeCountryLabel(countryCode);
+    countryTotalsMap.set(countryCode, {
+      id: countryCode,
+      code: countryCode,
+      name: labels.name,
+      flag: labels.flag,
+      orders: Number(row.orders) || 0,
+      revenue: Number(row.revenue) || 0,
+      spend: 0
+    });
+  });
+
+  currentCountrySpendRows.forEach((row) => {
+    const countryCode = row.countryCode;
+    if (!countryCode) return;
+    if (!countryTotalsMap.has(countryCode)) {
+      const labels = getSafeCountryLabel(countryCode);
+      countryTotalsMap.set(countryCode, {
+        id: countryCode,
+        code: countryCode,
+        name: labels.name,
+        flag: labels.flag,
+        orders: 0,
+        revenue: 0,
+        spend: 0
+      });
+    }
+    const entry = countryTotalsMap.get(countryCode);
+    entry.spend = Number(row.spend) || 0;
+  });
+
+  const countryDailyMap = new Map();
+  dailyCountryOrderRows.forEach((row) => {
+    const key = `${row.countryCode}|${row.date}`;
+    const existing = countryDailyMap.get(key) || { orders: 0, revenue: 0, spend: 0 };
+    existing.orders = Number(row.orders) || 0;
+    existing.revenue = Number(row.revenue) || 0;
+    countryDailyMap.set(key, existing);
+  });
+
+  dailyCountrySpendRows.forEach((row) => {
+    const key = `${row.countryCode}|${row.date}`;
+    const existing = countryDailyMap.get(key) || { orders: 0, revenue: 0, spend: 0 };
+    existing.spend = Number(row.spend) || 0;
+    countryDailyMap.set(key, existing);
+  });
+
+  const getCountrySnapshot = (countryCode, date) => {
+    if (!countryCode || !date) return defaultSnapshot;
+    const base = countryDailyMap.get(`${countryCode}|${date}`) || defaultSnapshot;
+    const roas = base.spend > 0 ? base.revenue / base.spend : 0;
+    return {
+      orders: base.orders || 0,
+      revenue: base.revenue || 0,
+      spend: base.spend || 0,
+      roas
+    };
+  };
+
+  const countryEntities = Array.from(countryTotalsMap.values())
+    .map((entity) => {
+      const roas = entity.spend > 0 ? entity.revenue / entity.spend : null;
+      const currentDaySnapshot = getCountrySnapshot(entity.code, endDate);
+      const previousDaySnapshot = getCountrySnapshot(entity.code, previousDayDate);
+      const previousWeekSnapshot = getCountrySnapshot(entity.code, previousWeekDate);
+      const signals = resolvePulseSignals(
+        currentDaySnapshot,
+        previousDaySnapshot,
+        previousWeekSnapshot,
+        { weights: PERFORMANCE_PULSE_SIGNAL_WEIGHTS, includeRoas: true }
+      );
+      return {
+        ...entity,
+        roas,
+        signals
+      };
+    })
+    .filter((entity) => entity.orders > 0 || entity.spend > 0);
+
+  const topCountries = [...countryEntities]
+    .sort(sortByDailyTopPerformance)
+    .slice(0, PERFORMANCE_PULSE_LIMIT);
+
+  const underperformingCountries = [...countryEntities]
+    .map((entity) => ({
+      ...entity,
+      riskScore: calculateUnderperformingRisk(entity)
+    }))
+    .sort(sortByUnderperformingRisk)
+    .slice(0, PERFORMANCE_PULSE_LIMIT);
+
+  const currentAds = db.prepare(`
+    SELECT
+      ad_id AS adId,
+      MAX(ad_name) AS adName,
+      SUM(spend) AS spend,
+      SUM(conversions) AS orders,
+      SUM(conversion_value) AS revenue
+    FROM meta_ad_metrics
+    WHERE store = ?
+      AND date = ?${adStatusFilter}${campaignClause}
+    GROUP BY ad_id
+  `).all(store, endDate, ...campaignArgs);
+
+  const dailyAds = comparisonDates.length > 0 ? db.prepare(`
+    SELECT
+      ad_id AS adId,
+      date,
+      SUM(spend) AS spend,
+      SUM(conversions) AS orders,
+      SUM(conversion_value) AS revenue
+    FROM meta_ad_metrics
+    WHERE store = ?
+      AND date IN (${comparisonDatePlaceholders})${adStatusFilter}${campaignClause}
+    GROUP BY ad_id, date
+  `).all(store, ...comparisonDates, ...campaignArgs) : [];
+
+  const adDailyMap = new Map();
+  dailyAds.forEach((row) => {
+    const key = `${row.adId}|${row.date}`;
+    adDailyMap.set(key, {
+      spend: Number(row.spend) || 0,
+      orders: Number(row.orders) || 0,
+      revenue: Number(row.revenue) || 0
+    });
+  });
+
+  const getAdSnapshot = (adId, date) => {
+    if (!adId || !date) return defaultSnapshot;
+    const base = adDailyMap.get(`${adId}|${date}`) || defaultSnapshot;
+    const roas = base.spend > 0 ? base.revenue / base.spend : 0;
+    return {
+      orders: base.orders || 0,
+      revenue: base.revenue || 0,
+      spend: base.spend || 0,
+      roas
+    };
+  };
+
+  const adIds = currentAds.map((row) => row.adId).filter(Boolean);
+  const adThumbnailMap = new Map();
+  if (adIds.length > 0 && tableExists(db, 'creative_scripts')) {
+    const adIdPlaceholders = adIds.map(() => '?').join(', ');
+    const thumbnailRows = db.prepare(`
+      SELECT ad_id AS adId, thumbnail_url AS thumbnailUrl
+      FROM creative_scripts
+      WHERE store = ?
+        AND ad_id IN (${adIdPlaceholders})
+        AND thumbnail_url IS NOT NULL
+        AND thumbnail_url != ''
+    `).all(store, ...adIds);
+
+    thumbnailRows.forEach((row) => {
+      if (!adThumbnailMap.has(row.adId)) {
+        adThumbnailMap.set(row.adId, row.thumbnailUrl);
+      }
+    });
+  }
+
+  const adEntities = currentAds
+    .map((row) => {
+      const adId = row.adId;
+      const spend = Number(row.spend) || 0;
+      const orders = Number(row.orders) || 0;
+      const revenue = Number(row.revenue) || 0;
+      const roas = spend > 0 ? revenue / spend : null;
+      const currentDaySnapshot = getAdSnapshot(adId, endDate);
+      const previousDaySnapshot = getAdSnapshot(adId, previousDayDate);
+      const previousWeekSnapshot = getAdSnapshot(adId, previousWeekDate);
+      const signals = resolvePulseSignals(
+        currentDaySnapshot,
+        previousDaySnapshot,
+        previousWeekSnapshot,
+        { weights: PERFORMANCE_PULSE_SIGNAL_WEIGHTS, includeRoas: true }
+      );
+
+      return {
+        id: adId,
+        name: row.adName || 'Ad',
+        orders,
+        revenue,
+        spend,
+        roas,
+        thumbnailUrl: adThumbnailMap.get(adId) || null,
+        signals
+      };
+    })
+    .filter((entity) => entity.orders > 0 || entity.spend > 0);
+
+  let topAds = [...adEntities]
+    .sort(sortByDailyTopPerformance)
+    .slice(0, PERFORMANCE_PULSE_LIMIT);
+
+  let underperformingAds = [...adEntities]
+    .map((entity) => ({
+      ...entity,
+      riskScore: calculateUnderperformingRisk(entity)
+    }))
+    .sort(sortByUnderperformingRisk)
+    .slice(0, PERFORMANCE_PULSE_LIMIT);
+
+  const prioritizedAdIds = Array.from(new Set([
+    ...topAds.map((ad) => ad.id),
+    ...underperformingAds.map((ad) => ad.id)
+  ].filter(Boolean)));
+
+  if (prioritizedAdIds.length > 0) {
+    const metaThumbnailMap = await getMetaCreativeThumbnailMap(store, prioritizedAdIds);
+    const withHqThumbnails = (rows) => rows.map((row) => ({
+      ...row,
+      thumbnailUrl: metaThumbnailMap.get(row.id) || row.thumbnailUrl || null
+    }));
+
+    topAds = withHqThumbnails(topAds);
+    underperformingAds = withHqThumbnails(underperformingAds);
+  }
+
+  const productEntities = [];
+  if (store === 'shawq') {
+    const productKeySql = `COALESCE(NULLIF(i.product_id, ''), NULLIF(i.sku, ''), NULLIF(i.title, ''), NULLIF(i.line_item_id, ''))`;
+    const currentProducts = db.prepare(`
+      SELECT
+        ${productKeySql} AS productKey,
+        MAX(COALESCE(NULLIF(i.title, ''), 'Untitled product')) AS title,
+        SUM(COALESCE(i.quantity, 1)) AS orders,
+        SUM(COALESCE(i.net_price, i.price, 0) * COALESCE(i.quantity, 1)) AS revenue,
+        MAX(COALESCE(NULLIF(i.image_url, ''), NULLIF(p.image_url, ''))) AS thumbnailUrl
+      FROM shopify_order_items i
+      JOIN shopify_orders o
+        ON o.store = i.store
+       AND o.order_id = i.order_id
+      LEFT JOIN shopify_products_cache p
+        ON p.store = i.store
+       AND p.product_id = i.product_id
+      WHERE i.store = ?
+        AND o.date = ?
+        AND COALESCE(o.is_excluded, 0) = 0
+        AND COALESCE(i.is_excluded, 0) = 0
+      GROUP BY ${productKeySql}
+      HAVING orders > 0
+      ORDER BY orders DESC, revenue DESC
+      LIMIT ?
+    `).all(store, endDate, PERFORMANCE_PULSE_LIMIT);
+
+    const dailyProducts = comparisonDates.length > 0 ? db.prepare(`
+      SELECT
+        ${productKeySql} AS productKey,
+        o.date AS date,
+        SUM(COALESCE(i.quantity, 1)) AS orders,
+        SUM(COALESCE(i.net_price, i.price, 0) * COALESCE(i.quantity, 1)) AS revenue
+      FROM shopify_order_items i
+      JOIN shopify_orders o
+        ON o.store = i.store
+       AND o.order_id = i.order_id
+      WHERE i.store = ?
+        AND o.date IN (${comparisonDatePlaceholders})
+        AND COALESCE(o.is_excluded, 0) = 0
+        AND COALESCE(i.is_excluded, 0) = 0
+      GROUP BY ${productKeySql}, o.date
+    `).all(store, ...comparisonDates) : [];
+
+    const productDailyMap = new Map();
+    dailyProducts.forEach((row) => {
+      const key = `${row.productKey}|${row.date}`;
+      productDailyMap.set(key, {
+        orders: Number(row.orders) || 0,
+        revenue: Number(row.revenue) || 0,
+        spend: 0,
+        roas: 0
+      });
+    });
+
+    const getProductSnapshot = (productKey, date) => {
+      if (!productKey || !date) return defaultSnapshot;
+      return productDailyMap.get(`${productKey}|${date}`) || defaultSnapshot;
+    };
+
+    currentProducts.forEach((row) => {
+      const currentDaySnapshot = getProductSnapshot(row.productKey, endDate);
+      const previousDaySnapshot = getProductSnapshot(row.productKey, previousDayDate);
+      const previousWeekSnapshot = getProductSnapshot(row.productKey, previousWeekDate);
+      const signals = resolvePulseSignals(
+        currentDaySnapshot,
+        previousDaySnapshot,
+        previousWeekSnapshot,
+        { weights: PERFORMANCE_PULSE_PRODUCT_SIGNAL_WEIGHTS, includeRoas: false, includeRevenue: true }
+      );
+
+      productEntities.push({
+        id: row.productKey,
+        name: row.title || 'Untitled product',
+        orders: Number(row.orders) || 0,
+        revenue: Number(row.revenue) || 0,
+        thumbnailUrl: row.thumbnailUrl || null,
+        signals
+      });
+    });
+  }
+
+  const watchlist = [
+    ...underperformingCountries.map((item) => ({ ...item, entityType: 'country' })),
+    ...underperformingAds.map((item) => ({ ...item, entityType: 'ad' }))
+  ]
+    .sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0))
+    .slice(0, PERFORMANCE_PULSE_LIMIT);
+
+  return {
+    window: {
+      startDate,
+      endDate,
+      previousDayDate,
+      previousWeekDate
+    },
+    countryOrdersSource: countryOrdersSource?.source || 'Unavailable',
+    topCountries,
+    underperformingCountries,
+    topAds,
+    underperformingAds,
+    bestSellerProducts: productEntities,
+    watchlist
+  };
+}
+
 // ============================================================================
 // DYNAMIC COUNTRIES
 // ============================================================================
 function getDynamicCountries(db, store, startDate, endDate, params = {}) {
-  const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
 
@@ -390,7 +1198,7 @@ function getDynamicCountries(db, store, startDate, endDate, params = {}) {
       SUM(conversions) as conversions,
       SUM(conversion_value) as conversionValue
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'${statusFilter}${campaignClause}
+    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'${campaignClause}
     GROUP BY country
   `).all(store, startDate, endDate, ...campaignArgs);
 
@@ -399,8 +1207,8 @@ function getDynamicCountries(db, store, startDate, endDate, params = {}) {
 
   if (store === 'shawq') {
     ecomData = db.prepare(`
-      SELECT country_code as countryCode, COUNT(*) as orders, SUM(subtotal) as revenue
-      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL GROUP BY country_code
+      SELECT country_code as countryCode, COUNT(*) as orders, SUM(${SHOPIFY_REVENUE_SQL}) as revenue
+      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL GROUP BY country_code
     `).all(store, startDate, endDate);
     dataSource = 'Shopify';
   } else if (store === 'vironax') {
@@ -408,7 +1216,7 @@ function getDynamicCountries(db, store, startDate, endDate, params = {}) {
     if (isSallaActive()) {
       ecomData = db.prepare(`
         SELECT country_code as countryCode, COUNT(*) as orders, SUM(subtotal) as revenue
-        FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL GROUP BY country_code
+        FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL GROUP BY country_code
       `).all(store, startDate, endDate);
       dataSource = 'Salla';
     } else {
@@ -500,9 +1308,10 @@ function getDynamicCountries(db, store, startDate, endDate, params = {}) {
 // ============================================================================
 function getTrends(store, startDate, endDate, params = {}) {
   const db = getDb();
-  const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const { clause: platformClause, value: platformValue } = buildPublisherPlatformFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
+  const platformArgs = platformValue ? [platformValue] : [];
   const allDates = [];
   const start = new Date(startDate);
   const end = new Date(endDate);
@@ -511,13 +1320,18 @@ function getTrends(store, startDate, endDate, params = {}) {
   }
 
   let salesData = [];
-  if (store === 'shawq' && !campaignValue) {
-    salesData = db.prepare(`SELECT date, COUNT(*) as orders, SUM(subtotal) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date`).all(store, startDate, endDate);
+  if (store === 'shawq' && !campaignValue && !platformValue) {
+    salesData = db.prepare(`SELECT date, COUNT(*) as orders, SUM(${SHOPIFY_REVENUE_SQL}) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 GROUP BY date`).all(store, startDate, endDate);
   } else {
-    salesData = db.prepare(`SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause} GROUP BY date`).all(store, startDate, endDate, ...campaignArgs);
+    salesData = db.prepare(`SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${campaignClause}${platformClause} GROUP BY date`).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
   }
 
-  const spendData = db.prepare(`SELECT date, SUM(spend) as spend FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause} GROUP BY date`).all(store, startDate, endDate, ...campaignArgs);
+  const spendData = db.prepare(`
+    SELECT date, SUM(spend) as spend
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${campaignClause}${platformClause}
+    GROUP BY date
+  `).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
 
   const map = new Map();
   allDates.forEach(d => map.set(d, { date: d, orders: 0, revenue: 0, spend: 0 }));
@@ -537,7 +1351,9 @@ function getMetaTrends(store, startDate, endDate, params = {}) {
   const db = getDb();
   const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const { clause: platformClause, value: platformValue } = buildPublisherPlatformFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
+  const platformArgs = platformValue ? [platformValue] : [];
   const allDates = [];
   const start = new Date(startDate);
   const end = new Date(endDate);
@@ -548,16 +1364,16 @@ function getMetaTrends(store, startDate, endDate, params = {}) {
   const salesData = db.prepare(`
     SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
     GROUP BY date
-  `).all(store, startDate, endDate, ...campaignArgs);
+  `).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
 
   const spendData = db.prepare(`
     SELECT date, SUM(spend) as spend
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
     GROUP BY date
-  `).all(store, startDate, endDate, ...campaignArgs);
+  `).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
 
   const map = new Map();
   allDates.forEach(d => map.set(d, { date: d, orders: 0, revenue: 0, spend: 0 }));
@@ -571,6 +1387,150 @@ function getMetaTrends(store, startDate, endDate, params = {}) {
     cac: d.orders > 0 ? d.spend / d.orders : 0,
     roas: d.spend > 0 ? d.revenue / d.spend : 0
   }));
+}
+
+// ============================================================================
+// CTR TRENDS (Link CTR)
+// ============================================================================
+export function getCtrTrends(store, params = {}) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  const campaignId = params.campaignId || null;
+  const adId = params.adId || null;
+  const country = params.country || null;
+
+  try {
+    const table = adId ? 'meta_ad_metrics' : 'meta_daily_metrics';
+    const statusColumn = adId ? 'ad_effective_status' : 'effective_status';
+    const statusFilter = buildStatusFilterForColumn(params, statusColumn);
+
+    let where = 'WHERE store = ? AND date BETWEEN ? AND ?';
+    const args = [store, startDate, endDate];
+
+    if (campaignId) {
+      where += ' AND campaign_id = ?';
+      args.push(campaignId);
+    }
+    if (adId) {
+      where += ' AND ad_id = ?';
+      args.push(adId);
+    }
+    if (country) {
+      where += ' AND country = ?';
+      args.push(country);
+    }
+
+    const query = `
+      SELECT
+        date,
+        SUM(impressions) as impressions,
+        SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(clicks) as clicks
+      FROM ${table}
+      ${where}${statusFilter}
+      GROUP BY date
+      ORDER BY date ASC
+    `;
+
+    const rows = db.prepare(query).all(...args);
+
+    const allDates = [];
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      allDates.push(formatDateAsGmt3(d));
+    }
+
+    const map = new Map();
+    allDates.forEach(date => map.set(date, { date, impressions: 0, inline_link_clicks: 0, clicks: 0 }));
+
+    rows.forEach(row => {
+      if (!map.has(row.date)) {
+        map.set(row.date, { date: row.date, impressions: 0, inline_link_clicks: 0, clicks: 0 });
+      }
+      const entry = map.get(row.date);
+      entry.impressions = parseInt(row.impressions || 0);
+      entry.inline_link_clicks = parseInt(row.inline_link_clicks || 0);
+      entry.clicks = parseInt(row.clicks || 0);
+    });
+
+    const series = Array.from(map.values())
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map(row => {
+        const impressions = row.impressions || 0;
+        const inlineClicks = row.inline_link_clicks || 0;
+        const clicks = row.clicks || 0;
+        const linkClicks = inlineClicks > 0 ? inlineClicks : clicks;
+        return {
+          date: row.date,
+          impressions,
+          link_clicks: linkClicks,
+          ctr: impressions > 0 ? (linkClicks / impressions) * 100 : null
+        };
+      });
+
+    let campaignName = null;
+    if (campaignId) {
+      const row = db.prepare(`
+        SELECT campaign_name FROM meta_daily_metrics WHERE store = ? AND campaign_id = ? LIMIT 1
+      `).get(store, campaignId);
+      campaignName = row?.campaign_name || null;
+    }
+
+    let adName = null;
+    let adCampaignName = null;
+    if (adId) {
+      const row = db.prepare(`
+        SELECT ad_name, campaign_name FROM meta_ad_metrics WHERE store = ? AND ad_id = ? LIMIT 1
+      `).get(store, adId);
+      adName = row?.ad_name || null;
+      adCampaignName = row?.campaign_name || null;
+    }
+
+    const countryInfo = country ? getCountryInfo(country) : null;
+    const countryLabel = country ? (countryInfo?.name || country) : null;
+
+    let label = 'All Campaigns';
+    if (campaignId) {
+      label = campaignName || 'Campaign';
+    }
+    if (adId) {
+      label = adName || 'Ad';
+      const campaignLabel = adCampaignName || campaignName;
+      if (campaignLabel) {
+        label = `${label} • ${campaignLabel}`;
+      }
+    }
+    if (countryLabel) {
+      label = `${label} • ${countryLabel}`;
+    }
+
+    return {
+      label,
+      series,
+      meta: {
+        startDate,
+        endDate,
+        campaignId,
+        adId,
+        country
+      }
+    };
+  } catch (error) {
+    console.error('[Analytics] Error getting CTR trends:', error);
+    return {
+      label: 'CTR',
+      series: [],
+      meta: {
+        startDate,
+        endDate,
+        campaignId,
+        adId,
+        country
+      },
+      error: error?.message || 'CTR trends unavailable'
+    };
+  }
 }
 
 // ============================================================================
@@ -593,9 +1553,9 @@ export function getCountryTrends(store, params) {
           date,
           country_code as countryCode,
           COUNT(*) as orders,
-          SUM(subtotal) as revenue
+          SUM(${SHOPIFY_REVENUE_SQL}) as revenue
         FROM shopify_orders
-        WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL
+        WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL
         GROUP BY date, country_code
         ORDER BY date ASC, country_code ASC
       `).all(store, startDate, endDate);
@@ -612,7 +1572,7 @@ export function getCountryTrends(store, params) {
             COUNT(*) as orders,
             SUM(total_price) as revenue
           FROM salla_orders
-          WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL
+          WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL
           GROUP BY date, country_code
           ORDER BY date ASC, country_code ASC
         `).all(store, startDate, endDate);
@@ -698,10 +1658,11 @@ export function getNewYorkTrends(store, params) {
       SELECT
         date,
         COUNT(*) as orders,
-        SUM(subtotal) as revenue
+        SUM(${SHOPIFY_REVENUE_SQL}) as revenue
       FROM shopify_orders
       WHERE store = ?
         AND date BETWEEN ? AND ?
+        AND COALESCE(is_excluded, 0) = 0
         AND country_code = 'US'
         AND city IS NOT NULL
         AND (LOWER(city) LIKE '%new york%' OR city = 'NYC' OR city = 'Brooklyn' OR city = 'Queens' OR city = 'Bronx' OR city = 'Manhattan' OR city = 'Staten Island')
@@ -723,10 +1684,11 @@ export function getNewYorkTrends(store, params) {
       SELECT
         city,
         COUNT(*) as orders,
-        SUM(subtotal) as revenue
+        SUM(${SHOPIFY_REVENUE_SQL}) as revenue
       FROM shopify_orders
       WHERE store = ?
         AND date BETWEEN ? AND ?
+        AND COALESCE(is_excluded, 0) = 0
         AND country_code = 'US'
         AND city IS NOT NULL
         AND (LOWER(city) LIKE '%new york%' OR city = 'NYC' OR city = 'Brooklyn' OR city = 'Queens' OR city = 'Bronx' OR city = 'Manhattan' OR city = 'Staten Island')
@@ -830,60 +1792,180 @@ export function getCampaignTrends(store, params = {}) {
 // ===========================================================================
 // TIME OF DAY (with timezone logic)
 // ============================================================================
+const TIME_OF_DAY_DEFAULT_DAYS = 14;
+const TIME_OF_DAY_MIN_DAYS = 1;
+const TIME_OF_DAY_MAX_DAYS = 90;
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
+
+const TIME_OF_DAY_REGION_CONFIG = {
+  us: {
+    timezone: 'America/Chicago',
+    countryCodes: ['US', 'CA'],
+    offsetHours: -6,
+    usesTimezoneConversion: false
+  },
+  europe: {
+    timezone: 'Europe/London',
+    countryCodes: ['GB', 'DE', 'FR', 'IT', 'ES', 'NL', 'BE', 'AT', 'CH', 'SE', 'NO', 'DK', 'IE', 'PT', 'GR', 'PL', 'FI', 'CZ', 'HU', 'RO'],
+    offsetHours: 0,
+    usesTimezoneConversion: false
+  },
+  australia: {
+    timezone: 'Australia/Sydney',
+    countryCodes: ['AU'],
+    offsetHours: 0,
+    usesTimezoneConversion: true
+  },
+  all: {
+    timezone: 'UTC',
+    countryCodes: null,
+    offsetHours: 0,
+    usesTimezoneConversion: false
+  }
+};
+
+const TIME_OF_DAY_COUNTRY_ALIASES = {
+  USA: 'US',
+  'UNITED STATES': 'US',
+  'UNITED STATES OF AMERICA': 'US',
+  CANADA: 'CA',
+  UK: 'GB',
+  'UNITED KINGDOM': 'GB',
+  'GREAT BRITAIN': 'GB',
+  ENGLAND: 'GB',
+  AUSTRALIA: 'AU'
+};
+const TIME_OF_DAY_COUNTRY_NAME_TO_CODE = new Map(
+  getAllCountries().map((country) => [String(country?.name || '').trim().toUpperCase(), country.code])
+);
+
+const TIME_OF_DAY_HOUR_LABELS = {
+  0: '12 AM', 1: '1 AM', 2: '2 AM', 3: '3 AM', 4: '4 AM', 5: '5 AM',
+  6: '6 AM', 7: '7 AM', 8: '8 AM', 9: '9 AM', 10: '10 AM', 11: '11 AM',
+  12: '12 PM', 13: '1 PM', 14: '2 PM', 15: '3 PM', 16: '4 PM', 17: '5 PM',
+  18: '6 PM', 19: '7 PM', 20: '8 PM', 21: '9 PM', 22: '10 PM', 23: '11 PM'
+};
+
+const timeOfDayHourFormatterCache = new Map();
+
+function parseTimeOfDayDays(params = {}) {
+  const parsedDays = Number.parseInt(params?.days, 10);
+  if (!Number.isFinite(parsedDays)) return TIME_OF_DAY_DEFAULT_DAYS;
+  return Math.max(TIME_OF_DAY_MIN_DAYS, Math.min(TIME_OF_DAY_MAX_DAYS, parsedDays));
+}
+
+function resolveTimeOfDayRegion(region) {
+  const normalized = String(region || 'all').trim().toLowerCase();
+  return TIME_OF_DAY_REGION_CONFIG[normalized] ? normalized : 'all';
+}
+
+function getTimeOfDayHourFormatter(timezone) {
+  if (!timeOfDayHourFormatterCache.has(timezone)) {
+    timeOfDayHourFormatterCache.set(
+      timezone,
+      new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        hour: '2-digit',
+        hour12: false
+      })
+    );
+  }
+
+  return timeOfDayHourFormatterCache.get(timezone);
+}
+
+function getHourInTimezone(orderDate, timezone) {
+  try {
+    const parts = getTimeOfDayHourFormatter(timezone).formatToParts(orderDate);
+    const hourPart = parts.find((part) => part.type === 'hour')?.value;
+    const parsedHour = Number.parseInt(hourPart, 10);
+    if (Number.isFinite(parsedHour)) return parsedHour % 24;
+  } catch (error) {
+    console.error('[Analytics] Failed to get hour in timezone "' + timezone + '". Falling back to UTC.', error);
+  }
+
+  const utcHour = orderDate.getUTCHours();
+  return Number.isFinite(utcHour) ? Math.max(0, Math.min(23, utcHour)) : null;
+}
+
+function getHourByRegion(orderDate, regionConfig) {
+  if (regionConfig?.usesTimezoneConversion) {
+    return getHourInTimezone(orderDate, regionConfig.timezone);
+  }
+
+  const offsetHours = Number(regionConfig?.offsetHours || 0);
+  let hour = orderDate.getUTCHours() + offsetHours;
+  if (hour < 0) hour += 24;
+  if (hour >= 24) hour -= 24;
+  return hour;
+}
+
+function normalizeCountryCode(rawCountry) {
+  const normalized = String(rawCountry || '').trim().toUpperCase();
+  if (!normalized || normalized === 'ALL') return null;
+  if (/^[A-Z]{2}$/u.test(normalized)) return normalized;
+  if (TIME_OF_DAY_COUNTRY_ALIASES[normalized]) return TIME_OF_DAY_COUNTRY_ALIASES[normalized];
+  if (TIME_OF_DAY_COUNTRY_NAME_TO_CODE.has(normalized)) {
+    return TIME_OF_DAY_COUNTRY_NAME_TO_CODE.get(normalized);
+  }
+  return null;
+}
+
 export function getShopifyTimeOfDay(store, params) {
+  const lookbackDays = parseTimeOfDayDays(params);
+
   if (store !== 'shawq') {
-    return { data: [], timezone: 'UTC', region: 'all', sampleTimestamps: [], message: 'Time of day requires Shopify data' };
+    return {
+      data: [],
+      timezone: 'UTC',
+      region: 'all',
+      windowDays: lookbackDays,
+      sampleTimestamps: [],
+      message: 'Time of day requires Shopify data'
+    };
   }
 
   const db = getDb();
-  // Use 14 days for better distribution
   const endDate = formatDateAsGmt3(new Date());
-  const startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
-  const region = params.region || 'all';
-
-  const timezoneOffsets = {
-    'us': -6,      // Chicago (CST)
-    'europe': 0,   // London (GMT)
-    'all': 0       // UTC
-  };
-  const offset = timezoneOffsets[region] || 0;
-
-  const timezoneMap = {
-    'us': 'America/Chicago',
-    'europe': 'Europe/London',
-    'all': 'UTC'
-  };
-  const timezone = timezoneMap[region] || 'UTC';
-
-  const hourLabels = {
-    0: '12 AM', 1: '1 AM', 2: '2 AM', 3: '3 AM', 4: '4 AM', 5: '5 AM',
-    6: '6 AM', 7: '7 AM', 8: '8 AM', 9: '9 AM', 10: '10 AM', 11: '11 AM',
-    12: '12 PM', 13: '1 PM', 14: '2 PM', 15: '3 PM', 16: '4 PM', 17: '5 PM',
-    18: '6 PM', 19: '7 PM', 20: '8 PM', 21: '9 PM', 22: '10 PM', 23: '11 PM'
-  };
+  const startDate = formatDateAsGmt3(new Date(Date.now() - (lookbackDays - 1) * MILLISECONDS_PER_DAY));
+  const region = resolveTimeOfDayRegion(params?.region);
+  const regionConfig = TIME_OF_DAY_REGION_CONFIG[region];
+  const timezone = regionConfig.timezone;
 
   try {
     let query = `
       SELECT
         order_created_at,
         country_code,
-        subtotal as revenue
+        ${SHOPIFY_REVENUE_SQL} as revenue
       FROM shopify_orders
       WHERE store = ? AND date BETWEEN ? AND ?
+      AND COALESCE(is_excluded, 0) = 0
       AND order_created_at IS NOT NULL
     `;
 
     const queryParams = [store, startDate, endDate];
 
-    if (region === 'us') {
-      query += ` AND country_code IN ('US', 'CA')`;
-    } else if (region === 'europe') {
-      query += ` AND country_code IN ('GB', 'DE', 'FR', 'IT', 'ES', 'NL', 'BE', 'AT', 'CH', 'SE', 'NO', 'DK', 'IE', 'PT', 'GR', 'PL', 'FI', 'CZ', 'HU', 'RO')`;
+    if (Array.isArray(regionConfig.countryCodes) && regionConfig.countryCodes.length > 0) {
+      const placeholders = regionConfig.countryCodes.map(() => '?').join(', ');
+      query += ` AND UPPER(country_code) IN (${placeholders})`;
+      queryParams.push(...regionConfig.countryCodes);
     }
 
     const rawData = db.prepare(query).all(...queryParams);
+    const statusFilter = buildStatusFilter(params);
+    const spendRows = db.prepare(`
+      SELECT
+        country,
+        SUM(spend) as spend
+      FROM meta_daily_metrics
+      WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'${statusFilter}
+      GROUP BY country
+    `).all(store, startDate, endDate);
 
     const hourBuckets = {};
+    const countryHourBuckets = new Map();
+    const countryOrderTotals = new Map();
     for (let h = 0; h < 24; h++) {
       hourBuckets[h] = { orders: 0, revenue: 0 };
     }
@@ -894,23 +1976,70 @@ export function getShopifyTimeOfDay(store, params) {
       const orderDate = new Date(order.order_created_at);
       if (isNaN(orderDate.getTime())) continue;
 
-      let hour = orderDate.getUTCHours() + offset;
-      if (hour < 0) hour += 24;
-      if (hour >= 24) hour -= 24;
+      const hour = getHourByRegion(orderDate, regionConfig);
+      if (hour == null) continue;
 
       hourBuckets[hour].orders += 1;
       hourBuckets[hour].revenue += order.revenue || 0;
+
+      const countryCode = normalizeCountryCode(order.country_code);
+      if (countryCode) {
+        if (!countryHourBuckets.has(countryCode)) {
+          countryHourBuckets.set(countryCode, new Array(24).fill(0));
+        }
+        countryHourBuckets.get(countryCode)[hour] += 1;
+        countryOrderTotals.set(countryCode, (countryOrderTotals.get(countryCode) || 0) + 1);
+      }
+    }
+
+    const zoneSpendByCountry = new Map();
+    for (const row of spendRows) {
+      const countryCode = normalizeCountryCode(row.country);
+      if (!countryCode) continue;
+      if (Array.isArray(regionConfig.countryCodes) && !regionConfig.countryCodes.includes(countryCode)) continue;
+      zoneSpendByCountry.set(countryCode, (zoneSpendByCountry.get(countryCode) || 0) + (row.spend || 0));
+    }
+
+    const totalZoneSpend = Array.from(zoneSpendByCountry.values()).reduce((sum, value) => sum + (value || 0), 0);
+    const totalZoneOrders = Object.values(hourBuckets).reduce((sum, bucket) => sum + (bucket.orders || 0), 0);
+    const zoneFallbackProfile = totalZoneOrders > 0
+      ? new Array(24).fill(0).map((_, hour) => (hourBuckets[hour].orders || 0) / totalZoneOrders)
+      : new Array(24).fill(1 / 24);
+    const budgetSpendByHour = new Array(24).fill(0);
+
+    if (totalZoneSpend > 0) {
+      for (const [countryCode, countrySpend] of zoneSpendByCountry.entries()) {
+        const countryTotalOrders = countryOrderTotals.get(countryCode) || 0;
+        const countryProfile = countryTotalOrders > 0
+          ? countryHourBuckets.get(countryCode).map((count) => count / countryTotalOrders)
+          : zoneFallbackProfile;
+
+        for (let hour = 0; hour < 24; hour += 1) {
+          budgetSpendByHour[hour] += countrySpend * (countryProfile[hour] || 0);
+        }
+      }
     }
 
     const formattedData = [];
+    let cumulativeBudgetSpend = 0;
     for (let hour = 0; hour < 24; hour++) {
       const stats = hourBuckets[hour];
+      const budgetSpend = totalZoneSpend > 0 ? (budgetSpendByHour[hour] || 0) : 0;
+      let budgetPacingPercent = null;
+
+      if (totalZoneSpend > 0) {
+        cumulativeBudgetSpend += budgetSpend;
+        budgetPacingPercent = (cumulativeBudgetSpend / totalZoneSpend) * 100;
+      }
+
       formattedData.push({
         hour,
-        label: hourLabels[hour],
+        label: TIME_OF_DAY_HOUR_LABELS[hour],
         orders: stats.orders,
         revenue: stats.revenue,
-        aov: stats.orders > 0 ? stats.revenue / stats.orders : 0
+        aov: stats.orders > 0 ? stats.revenue / stats.orders : 0,
+        budgetSpend,
+        budgetPacingPercent
       });
     }
 
@@ -918,13 +2047,26 @@ export function getShopifyTimeOfDay(store, params) {
       data: formattedData,
       timezone,
       region,
+      windowDays: lookbackDays,
       totalOrders: rawData.length,
+      totalBudgetSpend: totalZoneSpend,
+      hasBudgetPacing: totalZoneSpend > 0,
+      budgetPacingSource: totalZoneSpend > 0
+        ? 'meta_country_spend_weighted_by_shopify_order_timing'
+        : 'meta_spend_unavailable',
       sampleTimestamps: [],
       source: 'Shopify'
     };
   } catch (error) {
     console.error('[Analytics] Error getting time of day:', error);
-    return { data: [], timezone: 'UTC', region: 'all', sampleTimestamps: [], source: 'error' };
+    return {
+      data: [],
+      timezone: 'UTC',
+      region: 'all',
+      windowDays: lookbackDays,
+      sampleTimestamps: [],
+      source: 'error'
+    };
   }
 }
 
@@ -933,20 +2075,11 @@ export function getShopifyTimeOfDay(store, params) {
 // ============================================================================
 export function getSallaTimeOfDay(store, params) {
   const db = getDb();
-  // Use 14 days for better distribution
+  const lookbackDays = parseTimeOfDayDays(params);
   const endDate = formatDateAsGmt3(new Date());
-  const startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
+  const startDate = formatDateAsGmt3(new Date(Date.now() - (lookbackDays - 1) * MILLISECONDS_PER_DAY));
 
-  // Riyadh timezone is GMT+3
   const timezone = 'Asia/Riyadh';
-  const offset = 3;
-
-  const hourLabels = {
-    0: '12 AM', 1: '1 AM', 2: '2 AM', 3: '3 AM', 4: '4 AM', 5: '5 AM',
-    6: '6 AM', 7: '7 AM', 8: '8 AM', 9: '9 AM', 10: '10 AM', 11: '11 AM',
-    12: '12 PM', 13: '1 PM', 14: '2 PM', 15: '3 PM', 16: '4 PM', 17: '5 PM',
-    18: '6 PM', 19: '7 PM', 20: '8 PM', 21: '9 PM', 22: '10 PM', 23: '11 PM'
-  };
 
   try {
     // Check if salla_orders table has created_at with time info
@@ -956,12 +2089,20 @@ export function getSallaTimeOfDay(store, params) {
         country_code,
         subtotal as revenue
       FROM salla_orders
-      WHERE store = ? AND date BETWEEN ? AND ?
+      WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
       AND created_at IS NOT NULL
     `).all(store, startDate, endDate);
 
     if (!rawData || rawData.length === 0) {
-      return { data: [], timezone, totalOrders: 0, sampleTimestamps: [], source: 'Salla', message: 'No Salla order data with timestamps' };
+      return {
+        data: [],
+        timezone,
+        windowDays: lookbackDays,
+        totalOrders: 0,
+        sampleTimestamps: [],
+        source: 'Salla',
+        message: 'No Salla order data with timestamps'
+      };
     }
 
     const hourBuckets = {};
@@ -975,10 +2116,8 @@ export function getSallaTimeOfDay(store, params) {
       const orderDate = new Date(order.created_at);
       if (isNaN(orderDate.getTime())) continue;
 
-      // Convert UTC to Riyadh time (GMT+3)
-      let hour = orderDate.getUTCHours() + offset;
-      if (hour >= 24) hour -= 24;
-      if (hour < 0) hour += 24;
+      const hour = getHourInTimezone(orderDate, timezone);
+      if (hour == null) continue;
 
       hourBuckets[hour].orders += 1;
       hourBuckets[hour].revenue += order.revenue || 0;
@@ -989,7 +2128,7 @@ export function getSallaTimeOfDay(store, params) {
       const stats = hourBuckets[hour];
       formattedData.push({
         hour,
-        label: hourLabels[hour],
+        label: TIME_OF_DAY_HOUR_LABELS[hour],
         orders: stats.orders,
         revenue: stats.revenue,
         aov: stats.orders > 0 ? stats.revenue / stats.orders : 0
@@ -999,13 +2138,20 @@ export function getSallaTimeOfDay(store, params) {
     return {
       data: formattedData,
       timezone,
+      windowDays: lookbackDays,
       totalOrders: rawData.length,
       sampleTimestamps: [],
       source: 'Salla'
     };
   } catch (error) {
     console.error('[Analytics] Error getting Salla time of day:', error);
-    return { data: [], timezone: 'Asia/Riyadh', sampleTimestamps: [], source: 'error' };
+    return {
+      data: [],
+      timezone: 'Asia/Riyadh',
+      windowDays: lookbackDays,
+      sampleTimestamps: [],
+      source: 'error'
+    };
   }
 }
 
@@ -1013,6 +2159,8 @@ export function getSallaTimeOfDay(store, params) {
 // COMBINED TIME OF DAY (supports both stores)
 // ============================================================================
 export function getTimeOfDay(store, params) {
+  const lookbackDays = parseTimeOfDayDays(params);
+
   if (store === 'shawq') {
     return getShopifyTimeOfDay(store, params);
   }
@@ -1031,6 +2179,7 @@ export function getTimeOfDay(store, params) {
     return {
       data: [],
       timezone: 'Asia/Riyadh',
+      windowDays: lookbackDays,
       totalOrders: 0,
       sampleTimestamps: [],
       source: 'none',
@@ -1039,7 +2188,15 @@ export function getTimeOfDay(store, params) {
     };
   }
 
-  return { data: [], timezone: 'UTC', totalOrders: 0, sampleTimestamps: [], source: 'none', message: 'Unknown store' };
+  return {
+    data: [],
+    timezone: 'UTC',
+    windowDays: lookbackDays,
+    totalOrders: 0,
+    sampleTimestamps: [],
+    source: 'none',
+    message: 'Unknown store'
+  };
 }
 
 // ============================================================================
@@ -1068,12 +2225,12 @@ export function getOrdersByDayOfWeek(store, params) {
     let source = '';
 
     if (store === 'shawq') {
-      orders = db.prepare(`SELECT date FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ?`).all(store, startDate, endDate);
+      orders = db.prepare(`SELECT date FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0`).all(store, startDate, endDate);
       source = 'Shopify';
     } else if (store === 'vironax') {
       // Check if Salla token exists (not database - avoids demo data issues)
       if (isSallaActive()) {
-        orders = db.prepare(`SELECT date FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ?`).all(store, startDate, endDate);
+        orders = db.prepare(`SELECT date FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0`).all(store, startDate, endDate);
         source = 'Salla';
       } else {
         // Salla NOT connected - use Meta conversions
@@ -1119,7 +2276,9 @@ export function getEfficiency(store, params) {
   const prevRange = getPreviousDateRange(startDate, endDate);
   const statusFilter = buildStatusFilter(params);
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const { clause: platformClause, value: platformValue } = buildPublisherPlatformFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
+  const platformArgs = platformValue ? [platformValue] : [];
 
   const current = getMetaTotalsForRange(db, store, startDate, endDate, params);
   const previous = getMetaTotalsForRange(db, store, prevRange.startDate, prevRange.endDate, params);
@@ -1142,13 +2301,91 @@ export function getEfficiency(store, params) {
     status = 'red';
   }
 
+  const aggregateStats = db.prepare(`
+    SELECT
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(conversions) as purchases
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
+  `).get(store, startDate, endDate, ...campaignArgs, ...platformArgs) || {};
+
+  const prevAggregateStats = db.prepare(`
+    SELECT
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(conversions) as purchases
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
+  `).get(store, prevRange.startDate, prevRange.endDate, ...campaignArgs, ...platformArgs) || {};
+
+  const toSafeNumber = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+  const toRate = (num, den) => den > 0 ? (num / den) * 100 : 0;
+  const toPctChange = (curr, prev) => prev > 0 ? ((curr - prev) / prev) * 100 : 0;
+
+  const currentReach = toSafeNumber(aggregateStats.reach);
+  const previousReach = toSafeNumber(prevAggregateStats.reach);
+  const currentClicks = toSafeNumber(aggregateStats.clicks);
+  const previousClicks = toSafeNumber(prevAggregateStats.clicks);
+  const currentImpressions = toSafeNumber(aggregateStats.impressions);
+  const previousImpressions = toSafeNumber(prevAggregateStats.impressions);
+  const currentLpv = toSafeNumber(aggregateStats.lpv);
+  const previousLpv = toSafeNumber(prevAggregateStats.lpv);
+  const currentPurchases = toSafeNumber(aggregateStats.purchases);
+  const previousPurchases = toSafeNumber(prevAggregateStats.purchases);
+  const currentAtc = toSafeNumber(aggregateStats.atc);
+  const previousAtc = toSafeNumber(prevAggregateStats.atc);
+
+  const currentCtr = toRate(currentClicks, currentImpressions);
+  const previousCtr = toRate(previousClicks, previousImpressions);
+  const currentLpvRate = toRate(currentLpv, currentClicks);
+  const previousLpvRate = toRate(previousLpv, previousClicks);
+  const currentCvr = toRate(currentPurchases, currentClicks);
+  const previousCvr = toRate(previousPurchases, previousClicks);
+  const currentPurchaseRate = toRate(currentPurchases, currentImpressions);
+  const previousPurchaseRate = toRate(previousPurchases, previousImpressions);
+  const currentAtcRate = toRate(currentAtc, currentClicks);
+  const previousAtcRate = toRate(previousAtc, previousClicks);
+
+  const sparklineData = db.prepare(`
+    SELECT
+      date,
+      SUM(impressions) as impressions,
+      SUM(clicks) as clicks,
+      SUM(reach) as reach,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(conversions) as purchases,
+      SUM(spend) as spend
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}${platformClause}
+    GROUP BY date
+    ORDER BY date ASC
+  `).all(store, startDate, endDate, ...campaignArgs, ...platformArgs)
+    .map((row) => ({
+      date: row.date,
+      impressions: toSafeNumber(row.impressions),
+      clicks: toSafeNumber(row.clicks),
+      reach: toSafeNumber(row.reach),
+      lpv: toSafeNumber(row.lpv),
+      atc: toSafeNumber(row.atc),
+      purchases: toSafeNumber(row.purchases),
+      spend: toSafeNumber(row.spend)
+    }));
+
   const countryRows = db.prepare(`
     SELECT country, SUM(spend) as spend, SUM(conversions) as orders, SUM(conversion_value) as revenue
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'${statusFilter}${campaignClause}
+    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'${statusFilter}${campaignClause}${platformClause}
     GROUP BY country
     ORDER BY SUM(spend) DESC
-  `).all(store, startDate, endDate, ...campaignArgs);
+  `).all(store, startDate, endDate, ...campaignArgs, ...platformArgs);
 
   const averageCac = current.cac || 0;
   const averageRoas = current.roas || 0;
@@ -1187,14 +2424,35 @@ export function getEfficiency(store, params) {
 
   return {
     status,
-    current,
-    previous,
+    current: {
+      ...current,
+      ctr: currentCtr,
+      lpvRate: currentLpvRate,
+      cvr: currentCvr,
+      purchaseRate: currentPurchaseRate
+    },
+    previous: {
+      ...previous,
+      ctr: previousCtr,
+      lpvRate: previousLpvRate,
+      cvr: previousCvr,
+      purchaseRate: previousPurchaseRate
+    },
     spendChange,
     roasChange,
     efficiencyRatio,
     averageCac: current.cac,
     marginalCac,
     marginalPremium: current.cac > 0 ? ((marginalCac - current.cac) / current.cac) * 100 : 0,
+    changes: {
+      uniqueReach: toPctChange(currentReach, previousReach),
+      lpvRate: toPctChange(currentLpvRate, previousLpvRate),
+      atcRate: toPctChange(currentAtcRate, previousAtcRate),
+      ctr: toPctChange(currentCtr, previousCtr),
+      cvr: toPctChange(currentCvr, previousCvr),
+      purchaseRate: toPctChange(currentPurchaseRate, previousPurchaseRate)
+    },
+    sparklineData,
     countries
   };
 }
@@ -1264,18 +2522,151 @@ export function getAvailableCountries(store) {
   const db = getDb();
   const rows = db.prepare(`
     SELECT DISTINCT country as code FROM meta_daily_metrics WHERE store = ? AND country != 'ALL' AND (spend > 0 OR conversions > 0)
-    UNION SELECT DISTINCT country_code as code FROM shopify_orders WHERE store = ?
-    UNION SELECT DISTINCT country_code as code FROM salla_orders WHERE store = ?
+    UNION SELECT DISTINCT country_code as code FROM shopify_orders WHERE store = ? AND COALESCE(is_excluded, 0) = 0
+    UNION SELECT DISTINCT country_code as code FROM salla_orders WHERE store = ? AND COALESCE(is_excluded, 0) = 0
   `).all(store, store, store);
   return rows.map(r => getCountryInfo(r.code)).filter(c => c && c.name);
 }
 
-export function getCampaignsByCountry(store, params) { return []; }
-export function getCampaignsByAge(store, params) { return []; }
-export function getCampaignsByGender(store, params) { return []; }
-export function getCampaignsByPlacement(store, params) { return []; }
-export function getCampaignsByAgeGender(store, params) { return []; }
-export function getMetaBreakdowns(store, params) { return []; }
+const META_BREAKDOWN_LIMIT = 250;
+const META_BREAKDOWN_DIMENSIONS = Object.freeze({
+  country: Object.freeze({
+    whereClause: "country IS NOT NULL AND country != '' AND country != 'ALL'",
+    selectClause: 'country as key_primary',
+    extraSelectClause: "NULL as key_secondary"
+  }),
+  age: Object.freeze({
+    whereClause: "age IS NOT NULL AND age != ''",
+    selectClause: 'age as key_primary',
+    extraSelectClause: "NULL as key_secondary"
+  }),
+  gender: Object.freeze({
+    whereClause: "gender IS NOT NULL AND gender != ''",
+    selectClause: 'gender as key_primary',
+    extraSelectClause: "NULL as key_secondary"
+  }),
+  placement: Object.freeze({
+    whereClause: "publisher_platform IS NOT NULL AND publisher_platform != ''",
+    selectClause: "publisher_platform as key_primary",
+    extraSelectClause: "COALESCE(NULLIF(platform_position, ''), 'unknown') as key_secondary"
+  }),
+  age_gender: Object.freeze({
+    whereClause: "age IS NOT NULL AND age != '' AND gender IS NOT NULL AND gender != ''",
+    selectClause: 'age as key_primary',
+    extraSelectClause: 'gender as key_secondary'
+  })
+});
+
+function normalizeBreakdownMetricRow(row) {
+  const spend = row?.spend || 0;
+  const orders = row?.orders || 0;
+  const revenue = row?.revenue || 0;
+  const impressions = row?.impressions || 0;
+  const clicks = row?.clicks || 0;
+  const lpv = row?.lpv || 0;
+  const atc = row?.atc || 0;
+  const checkout = row?.checkout || 0;
+
+  return {
+    spend,
+    impressions,
+    clicks,
+    orders,
+    conversions: orders,
+    revenue,
+    roas: spend > 0 ? revenue / spend : 0,
+    cac: orders > 0 ? spend / orders : 0,
+    cpm: impressions > 0 ? (spend / impressions) * 1000 : 0,
+    ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,
+    cpc: clicks > 0 ? spend / clicks : 0,
+    lpv,
+    atc,
+    checkout
+  };
+}
+
+function getMetaBreakdowns(store, params = {}, breakdownKey) {
+  const breakdownConfig = META_BREAKDOWN_DIMENSIONS[breakdownKey];
+  if (!breakdownConfig) return [];
+
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  const statusFilter = buildStatusFilter(params);
+  const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const { clause: platformClause, value: platformValue } = buildPublisherPlatformFilter(params);
+  const campaignArgs = campaignValue ? [campaignValue] : [];
+  const platformArgs = platformValue ? [platformValue] : [];
+
+  const rows = db.prepare(`
+    SELECT
+      ${breakdownConfig.selectClause},
+      ${breakdownConfig.extraSelectClause},
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(inline_link_clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as orders,
+      SUM(conversion_value) as revenue
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? AND ${breakdownConfig.whereClause}${statusFilter}${campaignClause}${platformClause}
+    GROUP BY key_primary, key_secondary
+    ORDER BY spend DESC
+    LIMIT ?
+  `).all(store, startDate, endDate, ...campaignArgs, ...platformArgs, META_BREAKDOWN_LIMIT);
+
+  return rows
+    .map((row) => {
+      const normalized = normalizeBreakdownMetricRow(row);
+      if (breakdownKey === 'country') {
+        const info = getCountryInfo(row.key_primary);
+        return {
+          key: row.key_primary || 'UNKNOWN',
+          country: row.key_primary || 'UNKNOWN',
+          name: info?.name || row.key_primary || 'Unknown',
+          code: info?.code || row.key_primary || 'UNKNOWN',
+          ...normalized
+        };
+      }
+
+      if (breakdownKey === 'placement') {
+        const platform = row.key_primary || 'unknown';
+        const position = row.key_secondary || 'unknown';
+        return {
+          key: `${platform}-${position}`,
+          publisher_platform: platform,
+          platform_position: position,
+          placement: `${platform} / ${position}`,
+          ...normalized
+        };
+      }
+
+      if (breakdownKey === 'age_gender') {
+        const age = row.key_primary || 'unknown';
+        const gender = row.key_secondary || 'unknown';
+        return {
+          key: `${age}-${gender}`,
+          age,
+          gender,
+          ...normalized
+        };
+      }
+
+      return {
+        key: row.key_primary || 'unknown',
+        [breakdownKey]: row.key_primary || 'unknown',
+        ...normalized
+      };
+    })
+    .filter((row) => row.spend > 0 || row.orders > 0 || row.revenue > 0);
+}
+
+export function getCampaignsByCountry(store, params) { return getMetaBreakdowns(store, params, 'country'); }
+export function getCampaignsByAge(store, params) { return getMetaBreakdowns(store, params, 'age'); }
+export function getCampaignsByGender(store, params) { return getMetaBreakdowns(store, params, 'gender'); }
+export function getCampaignsByPlacement(store, params) { return getMetaBreakdowns(store, params, 'placement'); }
+export function getCampaignsByAgeGender(store, params) { return getMetaBreakdowns(store, params, 'age_gender'); }
 
 // ============================================================================
 // HIERARCHICAL META AD MANAGER DATA
@@ -1360,9 +2751,54 @@ function buildAdCountryBreakdown(db, store, startDate, endDate, statusFilter) {
   return adCountryMap;
 }
 
+function sortHierarchyBySpend(rows = []) {
+  return [...rows].sort((a, b) => (b?.spend || 0) - (a?.spend || 0));
+}
+
+async function mergeMetaAndGoogleHierarchy({
+  store,
+  params,
+  startDate,
+  endDate,
+  breakdown,
+  includeInactive,
+  metaHierarchy
+}) {
+  const metaRows = Array.isArray(metaHierarchy) ? metaHierarchy : [];
+  const noticeParts = [];
+  let googleRows = [];
+
+  try {
+    const googleResult = await fetchGoogleCampaignHierarchy({
+      store,
+      startDate,
+      endDate,
+      breakdown,
+      includeInactive,
+      campaignId: params?.campaignId || null
+    });
+
+    if (Array.isArray(googleResult?.data) && googleResult.data.length > 0) {
+      googleRows = googleResult.data;
+    }
+
+    if (googleResult?.notice) {
+      noticeParts.push(googleResult.notice);
+    }
+  } catch (error) {
+    console.warn(`[Analytics] Google campaign merge skipped for ${store}: ${error?.message || error}`);
+    noticeParts.push('Google Ads data is temporarily unavailable.');
+  }
+
+  return {
+    data: sortHierarchyBySpend([...metaRows, ...googleRows]),
+    notice: noticeParts.join(' ').trim()
+  };
+}
+
 // Get hierarchical Meta Ad Manager data with optional breakdown
 // REDESIGNED: Country breakdown now shows as nested rows under each campaign
-export function getMetaAdManagerHierarchy(store, params) {
+export async function getMetaAdManagerHierarchy(store, params) {
   const db = getDb();
   const { startDate, endDate } = getDateRange(params);
   const breakdown = params.breakdown || 'none'; // none, country, age, gender, age_gender, placement
@@ -1545,14 +2981,26 @@ export function getMetaAdManagerHierarchy(store, params) {
       isActive: campaign.effective_status === 'ACTIVE',
       ...calculateMetrics(campaign),
       level: 'campaign',
+      data_source: 'Meta Ads',
       country_breakdowns: countryMap.get(campaign.campaign_id) || [],
       adsets: adsetMap.get(campaign.campaign_id) || []
     }));
 
-    return {
-      data: hierarchy,
+    const mergedHierarchy = await mergeMetaAndGoogleHierarchy({
+      store,
+      params,
+      startDate,
+      endDate,
+      breakdown,
       includeInactive,
-      dateRange: { startDate, endDate }
+      metaHierarchy: hierarchy
+    });
+
+    return {
+      data: mergedHierarchy.data,
+      includeInactive,
+      dateRange: { startDate, endDate },
+      ...(mergedHierarchy.notice ? { notice: mergedHierarchy.notice } : {})
     };
   }
 
@@ -1733,15 +3181,27 @@ export function getMetaAdManagerHierarchy(store, params) {
 
     return {
       ...campaign,
+      data_source: 'Meta Ads',
       adsets: campaignAdsets,
       country_breakdowns: [] // Empty for non-country breakdowns
     };
   });
 
-  return {
-    data: hierarchy,
+  const mergedHierarchy = await mergeMetaAndGoogleHierarchy({
+    store,
+    params,
+    startDate,
+    endDate,
+    breakdown,
     includeInactive,
-    dateRange: { startDate, endDate }
+    metaHierarchy: hierarchy
+  });
+
+  return {
+    data: mergedHierarchy.data,
+    includeInactive,
+    dateRange: { startDate, endDate },
+    ...(mergedHierarchy.notice ? { notice: mergedHierarchy.notice } : {})
   };
 }
 
@@ -1838,22 +3298,96 @@ export function getFunnelDiagnostics(store, params) {
   const { startDate, endDate } = getDateRange(params);
   const campaignId = params.campaignId || null; // Optional campaign filter
   const statusFilter = buildStatusFilter(params);
+  const FUNNEL_BASELINE_MODES = {
+    week: {
+      days: 7,
+      label: '1W Baseline',
+      description: 'Uses the 7 days immediately before your current range.',
+      direction: 'Short-term momentum signal.'
+    },
+    month: {
+      days: 30,
+      label: '1M Baseline',
+      description: 'Uses the 30 days immediately before your current range.',
+      direction: 'Balanced near-term direction.'
+    },
+    '3months': {
+      days: 90,
+      label: '3M Baseline',
+      description: 'Uses the 90 days immediately before your current range.',
+      direction: 'Broader trend direction.'
+    },
+    historical: {
+      days: null,
+      label: 'Historical Baseline',
+      description: 'Uses all historical data before your current range.',
+      direction: 'Long-run anchor direction.'
+    }
+  };
+  const DEFAULT_FUNNEL_BASELINE_MODE = 'month';
 
-  // Calculate previous period for comparison
-  const daysDiff = Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)) + 1;
-  const prevEndDate = new Date(new Date(startDate).getTime() - (1000 * 60 * 60 * 24));
-  const prevStartDate = new Date(prevEndDate.getTime() - ((daysDiff - 1) * 1000 * 60 * 60 * 24));
-  const prevStartStr = formatDateAsGmt3(prevStartDate);
-  const prevEndStr = formatDateAsGmt3(prevEndDate);
+  const resolveBaselineMode = (rawMode) => {
+    if (typeof rawMode !== 'string') return DEFAULT_FUNNEL_BASELINE_MODE;
+    const normalized = rawMode.trim().toLowerCase();
+    return FUNNEL_BASELINE_MODES[normalized] ? normalized : DEFAULT_FUNNEL_BASELINE_MODE;
+  };
+
+  const baselineMode = resolveBaselineMode(params.baselineMode);
+  const baselineConfig = FUNNEL_BASELINE_MODES[baselineMode];
+
+  const baselineEndDate = new Date(new Date(startDate).getTime() - MILLISECONDS_PER_DAY);
+  const baselineEndStr = formatDateAsGmt3(baselineEndDate);
+
+  const resolveHistoricalBaselineStart = () => {
+    const campaignFilter = campaignId ? ' AND campaign_id = ?' : '';
+    const queryParams = campaignId
+      ? [store, baselineEndStr, campaignId]
+      : [store, baselineEndStr];
+
+    const result = db.prepare(`
+      SELECT MIN(date) AS startDate
+      FROM meta_daily_metrics
+      WHERE store = ? AND date <= ?${campaignFilter}${statusFilter}
+    `).get(...queryParams);
+
+    return result?.startDate || null;
+  };
+
+  const resolveBaselineRange = () => {
+    if (baselineMode === 'historical') {
+      const historicalStartDate = resolveHistoricalBaselineStart();
+      if (!historicalStartDate) {
+        return { startDate: null, endDate: null };
+      }
+      return { startDate: historicalStartDate, endDate: baselineEndStr };
+    }
+
+    const baselineDays = baselineConfig.days;
+    const baselineStartDate = new Date(
+      baselineEndDate.getTime() - (baselineDays - 1) * MILLISECONDS_PER_DAY
+    );
+    return {
+      startDate: formatDateAsGmt3(baselineStartDate),
+      endDate: baselineEndStr
+    };
+  };
+
+  const baselineRange = resolveBaselineRange();
+  const baselineStartStr = baselineRange.startDate;
+  const baselineEndDateStr = baselineRange.endDate;
 
   // Build WHERE clause with optional campaign filter
   const campaignFilter = campaignId ? ' AND campaign_id = ?' : '';
   const queryParams = campaignId
     ? [store, startDate, endDate, campaignId]
     : [store, startDate, endDate];
-  const prevQueryParams = campaignId
-    ? [store, prevStartStr, prevEndStr, campaignId]
-    : [store, prevStartStr, prevEndStr];
+  const baselineQueryParams = baselineStartStr && baselineEndDateStr
+    ? (
+      campaignId
+        ? [store, baselineStartStr, baselineEndDateStr, campaignId]
+        : [store, baselineStartStr, baselineEndDateStr]
+    )
+    : null;
 
   // Get current period metrics
   const currentQuery = `
@@ -1872,7 +3406,7 @@ export function getFunnelDiagnostics(store, params) {
   `;
 
   const current = db.prepare(currentQuery).get(...queryParams);
-  const previous = db.prepare(currentQuery).get(...prevQueryParams);
+  const previous = baselineQueryParams ? db.prepare(currentQuery).get(...baselineQueryParams) : null;
 
   // Get daily data for sparklines (last 7 days of current period)
   const dailyQuery = `
@@ -1900,8 +3434,8 @@ export function getFunnelDiagnostics(store, params) {
   let campaignName = null;
   if (campaignId) {
     const campaignInfo = db.prepare(
-      'SELECT campaign_name FROM meta_daily_metrics WHERE campaign_id = ? LIMIT 1'
-    ).get(campaignId);
+      'SELECT campaign_name FROM meta_daily_metrics WHERE store = ? AND campaign_id = ? LIMIT 1'
+    ).get(store, campaignId);
     campaignName = campaignInfo?.campaign_name || null;
   }
 
@@ -1918,13 +3452,12 @@ export function getFunnelDiagnostics(store, params) {
     const purchases = d.purchases || 0;
     const revenue = d.revenue || 0;
 
-    if (impressions === 0) return null;
-
     return {
       ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,
       cpc: clicks > 0 ? spend / clicks : 0,
       cpm: impressions > 0 ? (spend / impressions) * 1000 : 0,
       frequency: reach > 0 ? impressions / reach : 0,
+      uniqueReach: reach,
       lpvRate: clicks > 0 ? (lpv / clicks) * 100 : 0,
       atcRate: lpv > 0 ? (atc / lpv) * 100 : 0,
       checkoutRate: atc > 0 ? (checkout / atc) * 100 : 0,
@@ -1955,6 +3488,7 @@ export function getFunnelDiagnostics(store, params) {
   };
 
   const changes = currentMetrics && previousMetrics ? {
+    uniqueReach: calcChange(currentMetrics.uniqueReach, previousMetrics.uniqueReach),
     ctr: calcChange(currentMetrics.ctr, previousMetrics.ctr),
     cpc: calcChange(currentMetrics.cpc, previousMetrics.cpc),
     cpm: calcChange(currentMetrics.cpm, previousMetrics.cpm),
@@ -1975,6 +3509,19 @@ export function getFunnelDiagnostics(store, params) {
     sparklineData,
     campaignId,
     campaignName,
-    period: { startDate, endDate, prevStartDate: prevStartStr, prevEndDate: prevEndStr }
+    period: {
+      startDate,
+      endDate,
+      prevStartDate: baselineStartStr,
+      prevEndDate: baselineEndDateStr
+    },
+    baseline: {
+      mode: baselineMode,
+      label: baselineConfig.label,
+      description: baselineConfig.description,
+      direction: baselineConfig.direction,
+      startDate: baselineStartStr,
+      endDate: baselineEndDateStr
+    }
   };
 }

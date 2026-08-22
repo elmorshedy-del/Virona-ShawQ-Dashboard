@@ -3,6 +3,142 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { Bell, Check, Volume2, VolumeX, Trash2 } from 'lucide-react';
 import { getTimeAgo as calculateTimeAgo } from '../utils/timestampUtils';
 
+const DEFAULT_CURRENCY_BY_STORE = {
+  shawq: 'USD',
+  vironax: 'SAR'
+};
+
+const DEFAULT_UI_LOCALE = 'en-US';
+const ORDER_AMOUNT_DECIMAL_PLACES = 2;
+const ORDER_AMOUNT_FORMATTER = new Intl.NumberFormat(DEFAULT_UI_LOCALE, {
+  minimumFractionDigits: ORDER_AMOUNT_DECIMAL_PLACES,
+  maximumFractionDigits: ORDER_AMOUNT_DECIMAL_PLACES,
+  useGrouping: true
+});
+const ORDER_AMOUNT_INTEGER_FORMATTER = new Intl.NumberFormat(DEFAULT_UI_LOCALE, {
+  maximumFractionDigits: 0,
+  useGrouping: true
+});
+
+const DEFAULT_UNKNOWN_CAMPAIGN = 'Unattributed (yet)';
+const MESSAGE_SEPARATOR = ' • ';
+
+function normalizeWhitespace(value) {
+  if (typeof value !== 'string') return '';
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function formatOrderAmount(amount, { source }) {
+  if (!Number.isFinite(amount)) return '';
+  if (source === 'meta') {
+    return ORDER_AMOUNT_INTEGER_FORMATTER.format(Math.round(amount));
+  }
+  return ORDER_AMOUNT_FORMATTER.format(amount);
+}
+
+function getNotificationSource(notification) {
+  return normalizeWhitespace(notification?.source || notification?.metadata?.source).toLowerCase();
+}
+
+function getSourceLabel(source) {
+  if (!source) return '';
+  return source.charAt(0).toUpperCase() + source.slice(1);
+}
+
+function parseAmount(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numericValue = typeof value === 'string' ? Number(value.replace(/,/g, '')) : Number(value);
+  return Number.isFinite(numericValue) ? numericValue : null;
+}
+
+function getNotificationCampaignName(notification) {
+  const metadata = notification?.metadata || {};
+  const campaignCandidates = [
+    metadata.campaign_name,
+    metadata.campaignName,
+    metadata.campaign,
+    metadata.campaign_id,
+    metadata.campaignId,
+    notification?.campaign_name,
+    notification?.campaignName
+  ];
+
+  for (const candidate of campaignCandidates) {
+    const campaignName = normalizeWhitespace(candidate);
+    if (campaignName) {
+      return campaignName;
+    }
+  }
+
+  const source = getNotificationSource(notification);
+  const normalizedMessage = normalizeWhitespace(notification?.message || '');
+  const messageParts = normalizedMessage
+    .split(/\s*•\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (source === 'meta' && messageParts.length >= 4) {
+    return messageParts[0];
+  }
+
+  return null;
+}
+
+function getAttributionLabel(notification) {
+  const metadata = notification?.metadata || {};
+  const campaign = normalizeWhitespace(
+    metadata.campaign_name ||
+    metadata.campaignName ||
+    metadata.campaign ||
+    metadata.campaign_id ||
+    metadata.campaignId ||
+    ''
+  );
+  const adset = normalizeWhitespace(metadata.adset_name || metadata.adsetName || '');
+  const ad = normalizeWhitespace(metadata.ad_name || metadata.adName || '');
+
+  const parts = [];
+  if (campaign) parts.push(campaign);
+  if (adset) parts.push(adset);
+  if (ad) parts.push(ad);
+
+  if (parts.length === 0) {
+    return DEFAULT_UNKNOWN_CAMPAIGN;
+  }
+
+  return parts.join(' • ');
+}
+
+function formatNotificationTitle(notification) {
+  const metadata = notification?.metadata || {};
+  const source = getNotificationSource(notification);
+  const sourceLabel = getSourceLabel(source);
+  const countryLabel = normalizeWhitespace(metadata.country || notification?.country || '');
+  const fallbackCurrency = DEFAULT_CURRENCY_BY_STORE[notification?.store] || 'USD';
+  const currency = normalizeWhitespace(metadata.currency || '').toUpperCase() || fallbackCurrency;
+  const amount = parseAmount(metadata.value ?? notification?.value);
+
+  let amountLabel = '';
+  if (amount !== null) {
+    const formattedAmount = formatOrderAmount(amount, { source });
+    amountLabel = source === 'meta'
+      ? `${formattedAmount} ${currency}`
+      : `${currency} ${formattedAmount}`;
+  }
+
+  const structuredParts = [countryLabel, amountLabel, sourceLabel].filter(Boolean);
+  if (notification?.type === 'order' && structuredParts.length >= 2) {
+    return structuredParts.join(MESSAGE_SEPARATOR);
+  }
+
+  const normalizedMessage = normalizeWhitespace(notification?.message || '');
+  if (normalizedMessage) {
+    return normalizedMessage;
+  }
+
+  return sourceLabel ? `New ${sourceLabel} notification` : 'New notification';
+}
+
 // ============================================================================
 // NotificationRow Component (was missing!)
 // ============================================================================
@@ -14,7 +150,7 @@ function NotificationRow({
   formatNotificationMessage,
   currentTime 
 }) {
-  const source = notification?.source || notification?.metadata?.source;
+  const source = getNotificationSource(notification);
   const useCreatedTimestamp = source === 'meta' && notification?.store === 'vironax';
   const timestamp = useCreatedTimestamp
     ? notification?.timestamp || notification?.createdAt || notification?.created_at
@@ -30,13 +166,9 @@ function NotificationRow({
   // Determine store logo based on notification.store
   const storeLogo = notification.store === 'shawq' ? '/shawq-logo.svg' : '/virona-logo.svg';
   const storeLabel = notification.store === 'shawq' ? 'Shawq' : 'Virona';
-  const campaignName = notification?.metadata?.campaign_name
-    || notification?.metadata?.campaignName
-    || notification?.metadata?.campaign
-    || notification?.metadata?.campaign_id
-    || notification?.metadata?.campaignId;
-  const showCampaignDetails = notification.type === 'order' && campaignName
-    && (notification.store === 'shawq' || (notification.store === 'vironax' && source === 'meta'));
+  const formattedMessage = formatNotificationMessage(notification);
+  const attributionLabel = getAttributionLabel(notification);
+  const showCampaignDetails = notification.type === 'order';
 
   return (
     <div 
@@ -57,20 +189,23 @@ function NotificationRow({
 
         <div className="flex-1 min-w-0">
           {/* Message */}
-          <p className={`text-sm ${!notification.is_read ? 'font-semibold text-gray-900' : 'text-gray-700'}`}>
-            {formatNotificationMessage(notification)}
+          <p
+            className={`text-sm leading-5 truncate ${!notification.is_read ? 'font-semibold text-gray-900' : 'text-gray-700'}`}
+            title={formattedMessage}
+          >
+            {formattedMessage}
           </p>
 
           {/* Campaign source - smaller font */}
           {showCampaignDetails && (
-            <p className="text-[10px] text-gray-400 mt-0.5 truncate" title={campaignName}>
-              🎯 Campaign: {campaignName}
+            <p className="text-xs text-gray-500 mt-1 truncate" title={attributionLabel}>
+              Attribution: {attributionLabel}
             </p>
           )}
           
           {/* Meta row: source badge + time */}
           <div className="flex items-center gap-2 mt-1.5">
-            {getSourceBadge(notification.source || notification.metadata?.source)}
+            {getSourceBadge(source)}
             <span className="text-xs text-gray-500">
               {timeAgoDisplay}
             </span>
@@ -340,8 +475,8 @@ export default function NotificationCenter({ currentStore }) {
     };
 
     notifications.forEach(notification => {
-      const source = notification.source || notification.metadata?.source;
-      if (counts.hasOwnProperty(source)) {
+      const source = getNotificationSource(notification);
+      if (Object.prototype.hasOwnProperty.call(counts, source)) {
         counts[source]++;
       }
     });
@@ -362,8 +497,9 @@ export default function NotificationCenter({ currentStore }) {
       manual: { label: 'Manual', color: 'bg-purple-100 text-purple-700' }
     };
 
-    const badge = badges[source] || { label: source || 'Unknown', color: 'bg-gray-100 text-gray-700' };
-    const count = notificationCounts[source] || 0;
+    const normalizedSource = normalizeWhitespace(source).toLowerCase();
+    const badge = badges[normalizedSource] || { label: normalizedSource || 'Unknown', color: 'bg-gray-100 text-gray-700' };
+    const count = notificationCounts[normalizedSource] || 0;
 
     return (
       <span className={`px-2 py-0.5 rounded text-xs font-medium ${badge.color} inline-flex items-center gap-1`}>
@@ -381,8 +517,7 @@ export default function NotificationCenter({ currentStore }) {
   // Format message for display (store logo already shows which store)
   // ============================================================================
   const formatNotificationMessage = (notification) => {
-    // No need to add store name - the logo already shows which store
-    return notification.message;
+    return formatNotificationTitle(notification);
   };
 
   // ============================================================================

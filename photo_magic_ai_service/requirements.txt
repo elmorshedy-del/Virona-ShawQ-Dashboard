@@ -1,0 +1,20 @@
+# Core API
+flask>=3.0.0
+flask-cors>=4.0.0
+
+# Image processing
+numpy==1.26.4
+scipy==1.11.4
+# simple-lama-inpainting==0.1.2 requires Pillow<10
+Pillow>=9.5.0,<10.0.0
+opencv-python-headless>=4.8.0
+
+# Torch (CPU)
+torch>=2.0.0
+
+# Segmentation model (RMBG 1.4 or BiRefNet via HuggingFace)
+transformers==4.54.1
+kornia>=0.8.0
+
+# LaMa inpainting
+simple-lama-inpainting==0.1.2

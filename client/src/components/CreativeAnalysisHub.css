@@ -1,0 +1,238 @@
+.creative-analysis-hub,
+.creative-ops-hub {
+  --ops-bg: #f8fafc;
+  --ops-bg-2: #fafaf9;
+  --ops-panel: #ffffff;
+  --ops-ink: #1e293b;
+  --ops-muted: #64748b;
+  --ops-muted-2: #94a3b8;
+  --ops-line: #e2e8f0;
+  --ops-line-light: #f1f5f9;
+  --ops-accent: #111827;
+  --ops-accent-hover: #0b1220;
+  --ops-accent-soft: #f3f4f6;
+  --ops-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.03);
+  --ops-shadow-strong: 0 1px 2px rgba(17, 24, 39, 0.14), 0 4px 12px rgba(17, 24, 39, 0.16);
+  color: var(--ops-ink);
+}
+
+.creative-analysis-hub {
+  gap: 1.35rem;
+}
+
+.creative-analysis-hub__panel,
+.creative-ops-hub > section,
+.creative-ops-hub article {
+  background: var(--ops-panel);
+  border-color: var(--ops-line) !important;
+  border-radius: 18px !important;
+  box-shadow: var(--ops-shadow);
+}
+
+.creative-analysis-hub__panel {
+  overflow: hidden;
+}
+
+.creative-analysis-hub__tabs,
+.creative-ops-hub__tabs {
+  gap: 0.45rem !important;
+  border-color: var(--ops-line) !important;
+  border-radius: 14px !important;
+  padding: 0.25rem !important;
+}
+
+.creative-analysis-hub__tab,
+.creative-ops-hub__tab {
+  border-radius: 12px !important;
+  color: #374151 !important;
+  font-size: 0.84rem !important;
+  font-weight: 600 !important;
+  line-height: 1.2 !important;
+  padding: 0.48rem 0.82rem !important;
+  transition:
+    background-color 0.2s ease,
+    box-shadow 0.2s ease,
+    color 0.2s ease;
+}
+
+.creative-analysis-hub__tab:hover,
+.creative-ops-hub__tab:hover {
+  background: var(--ops-accent-soft) !important;
+}
+
+.creative-analysis-hub__tab--active,
+.creative-ops-hub__tab--active {
+  background: var(--ops-accent) !important;
+  box-shadow: var(--ops-shadow-strong);
+  color: #ffffff !important;
+}
+
+.creative-analysis-hub__kicker,
+.creative-ops-hub label,
+.creative-ops-hub .creative-ops-hub__eyebrow,
+.creative-ops-hub .creative-ops-hub__meta {
+  color: var(--ops-muted-2) !important;
+  letter-spacing: 0.07em;
+}
+
+.creative-analysis-hub__title,
+.creative-ops-hub h2,
+.creative-ops-hub h3 {
+  color: var(--ops-ink) !important;
+  letter-spacing: -0.01em;
+}
+
+.creative-analysis-hub__subtitle,
+.creative-ops-hub p {
+  color: var(--ops-muted);
+}
+
+.creative-ops-hub input:not([type='checkbox']),
+.creative-ops-hub select {
+  background: var(--ops-bg) !important;
+  border-color: var(--ops-line) !important;
+  border-radius: 12px !important;
+  color: var(--ops-ink) !important;
+  font-size: 0.9rem !important;
+  padding: 0.56rem 0.74rem !important;
+}
+
+.creative-ops-hub input:not([type='checkbox']):focus,
+.creative-ops-hub select:focus {
+  border-color: #cbd5e1 !important;
+  box-shadow: none !important;
+  outline: none;
+}
+
+.creative-ops-hub button.bg-gray-900,
+.creative-ops-hub button[class*='bg-gray-900'] {
+  background: var(--ops-accent) !important;
+  border-radius: 10px !important;
+  box-shadow: var(--ops-shadow-strong);
+  padding: 0.56rem 0.9rem !important;
+}
+
+.creative-ops-hub button.bg-gray-900:hover,
+.creative-ops-hub button[class*='bg-gray-900']:hover {
+  background: var(--ops-accent-hover) !important;
+}
+
+.creative-ops-hub button.border:not(.creative-ops-hub__chip),
+.creative-ops-hub button[class*='border-gray-300']:not(.creative-ops-hub__chip) {
+  background: #ffffff !important;
+  border-color: var(--ops-line) !important;
+  border-radius: 10px !important;
+  box-shadow: none !important;
+  color: var(--ops-ink) !important;
+  padding: 0.56rem 0.82rem !important;
+}
+
+.creative-ops-hub button.border:not(.creative-ops-hub__chip):hover,
+.creative-ops-hub button[class*='border-gray-300']:not(.creative-ops-hub__chip):hover {
+  background: #f9fafb !important;
+}
+
+.creative-ops-hub__metric-card,
+.creative-ops-hub .creative-ops-hub__detail-stat,
+.creative-ops-hub .bg-gray-50.border,
+.creative-ops-hub .bg-gray-100.border {
+  background: var(--ops-bg) !important;
+  border-color: var(--ops-line) !important;
+  border-radius: 16px !important;
+}
+
+.creative-ops-hub__metric-card p:first-child,
+.creative-ops-hub .creative-ops-hub__detail-stat p:first-child {
+  color: var(--ops-muted) !important;
+  font-size: 0.72rem !important;
+  letter-spacing: 0.07em;
+}
+
+.creative-ops-hub__metric-card p:last-child,
+.creative-ops-hub .creative-ops-hub__detail-stat p:last-child {
+  color: var(--ops-ink) !important;
+  font-size: 1rem !important;
+  font-weight: 600 !important;
+}
+
+.creative-ops-hub__table {
+  border-collapse: collapse;
+  font-size: 0.84rem !important;
+  width: 100%;
+}
+
+.creative-ops-hub__table thead th {
+  border-bottom: 1px solid var(--ops-line) !important;
+  color: var(--ops-ink) !important;
+  font-size: 0.75rem !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.04em;
+  padding: 0.48rem 0.75rem 0.48rem 0 !important;
+  text-transform: none !important;
+}
+
+.creative-ops-hub__table tbody td {
+  border-bottom: 1px solid var(--ops-line-light) !important;
+  color: var(--ops-ink);
+  padding: 0.48rem 0.75rem 0.48rem 0 !important;
+  vertical-align: top;
+  white-space: normal !important;
+}
+
+.creative-ops-hub__row {
+  transition: background-color 0.15s ease;
+}
+
+.creative-ops-hub__row:hover {
+  background: var(--ops-bg) !important;
+}
+
+.creative-ops-hub__row.is-active {
+  background: rgba(17, 24, 39, 0.06) !important;
+}
+
+.creative-ops-hub__chip {
+  background: var(--ops-bg) !important;
+  border-color: var(--ops-line) !important;
+  border-radius: 999px !important;
+  color: var(--ops-muted) !important;
+  font-size: 0.75rem !important;
+  padding: 0.22rem 0.56rem !important;
+}
+
+.creative-ops-hub__codeblock {
+  background: var(--ops-bg) !important;
+  border: 1px solid var(--ops-line);
+  border-radius: 14px;
+  color: var(--ops-ink) !important;
+  font-size: 0.78rem !important;
+  line-height: 1.55 !important;
+  margin: 0;
+  overflow: auto;
+  padding: 0.82rem !important;
+}
+
+.creative-ops-hub img {
+  border-color: var(--ops-line) !important;
+}
+
+@media (max-width: 900px) {
+  .creative-analysis-hub,
+  .creative-ops-hub {
+    gap: 1rem;
+  }
+}
+
+@media (max-width: 720px) {
+  .creative-analysis-hub__panel,
+  .creative-ops-hub > section,
+  .creative-ops-hub article {
+    border-radius: 16px !important;
+  }
+
+  .creative-analysis-hub__tab,
+  .creative-ops-hub__tab {
+    justify-content: center;
+    width: 100%;
+  }
+}

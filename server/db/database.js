@@ -1,24 +1,172 @@
 import Database from 'better-sqlite3';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const LOCAL_DASHBOARD_DB_FILENAME = 'dashboard.db';
+const DEVELOPMENT_SHARED_DB_DISCOVERY = Object.freeze({
+  siblingWorktreePrefix: 'creative-os-',
+  metricTables: Object.freeze([
+    'meta_daily_metrics',
+    'meta_adset_metrics',
+    'meta_ad_metrics'
+  ])
+});
 
 let db = null;
+let dbPath = null;
+let metaReadDb = null;
+let metaReadDbPath = null;
+let loggedDevelopmentMetaDbPath = null;
+
+function inspectDashboardDb(candidatePath) {
+  const summary = {
+    path: candidatePath,
+    sizeBytes: 0,
+    metricRowCount: 0
+  };
+
+  if (!candidatePath || !fs.existsSync(candidatePath)) {
+    return summary;
+  }
+
+  try {
+    summary.sizeBytes = fs.statSync(candidatePath).size;
+  } catch (_error) {
+    return summary;
+  }
+
+  let probeDb = null;
+  try {
+    probeDb = new Database(candidatePath, { readonly: true, fileMustExist: true });
+    let totalRowCount = 0;
+    for (const tableName of DEVELOPMENT_SHARED_DB_DISCOVERY.metricTables) {
+      const tableExists = probeDb
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .get(tableName);
+      if (!tableExists) continue;
+      const row = probeDb.prepare(`SELECT COUNT(*) as count FROM ${tableName}`).get();
+      totalRowCount += Number(row?.count || 0);
+    }
+    summary.metricRowCount = totalRowCount;
+  } catch (_error) {
+    summary.metricRowCount = 0;
+  } finally {
+    try {
+      probeDb?.close();
+    } catch (_error) {
+      // Read-only probe cleanup; ignore.
+    }
+  }
+
+  return summary;
+}
+
+function resolveDevelopmentSharedDatabasePath(localDbPath) {
+  if (process.env.NODE_ENV === 'production') {
+    return null;
+  }
+
+  const worktreeRoot = path.resolve(__dirname, '../..');
+  const worktreeName = path.basename(worktreeRoot);
+  if (!worktreeName.startsWith(DEVELOPMENT_SHARED_DB_DISCOVERY.siblingWorktreePrefix)) {
+    return null;
+  }
+
+  const localSummary = inspectDashboardDb(localDbPath);
+  if (localSummary.metricRowCount > 0) {
+    return null;
+  }
+
+  const siblingRoot = path.dirname(worktreeRoot);
+  let bestCandidate = null;
+
+  for (const entry of fs.readdirSync(siblingRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name === worktreeName) continue;
+    if (!entry.name.startsWith(DEVELOPMENT_SHARED_DB_DISCOVERY.siblingWorktreePrefix)) continue;
+
+    const candidatePath = path.join(siblingRoot, entry.name, 'data', LOCAL_DASHBOARD_DB_FILENAME);
+    const candidateSummary = inspectDashboardDb(candidatePath);
+    if (candidateSummary.metricRowCount <= 0) continue;
+
+    const isBetterCandidate = !bestCandidate
+      || candidateSummary.metricRowCount > bestCandidate.metricRowCount
+      || (
+        candidateSummary.metricRowCount === bestCandidate.metricRowCount
+        && candidateSummary.sizeBytes > bestCandidate.sizeBytes
+      );
+
+    if (isBetterCandidate) {
+      bestCandidate = candidateSummary;
+    }
+  }
+
+  if (!bestCandidate) {
+    return null;
+  }
+
+  console.warn(
+    `[DB] Local dashboard DB at ${localDbPath} has no populated Meta metrics; using sibling DB at ${bestCandidate.path} for development`
+  );
+  return bestCandidate.path;
+}
+
+function resolveDatabasePath() {
+  const explicit = process.env.DATABASE_PATH;
+  if (explicit && typeof explicit === 'string' && explicit.trim()) {
+    return explicit.trim();
+  }
+
+  // Prefer a mounted persistent volume when available (Railway/Render/etc.).
+  // This keeps SQLite data across deploys when the platform supports volumes.
+  const candidateDirs = [
+    process.env.PERSISTENT_DATA_DIR,
+    process.env.RAILWAY_VOLUME_MOUNT_PATH,
+    process.env.RENDER_DISK_PATH,
+    // Common convention: volume mounted at /data.
+    '/data'
+  ]
+    .filter((value) => typeof value === 'string')
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  for (const dir of candidateDirs) {
+    const isDbFile = dir.toLowerCase().endsWith('.db');
+    const candidate = isDbFile ? dir : path.join(dir, 'dashboard.db');
+    try {
+      const parent = path.dirname(candidate);
+      fs.mkdirSync(parent, { recursive: true });
+      fs.accessSync(parent, fs.constants.W_OK);
+      return candidate;
+    } catch (_error) {
+      // Try next candidate.
+    }
+  }
+
+  const localDbPath = path.join(__dirname, `../../data/${LOCAL_DASHBOARD_DB_FILENAME}`);
+  return localDbPath;
+}
+
+function resolveMetaReadDatabasePath() {
+  const primaryDbPath = dbPath || resolveDatabasePath();
+  const sharedDevelopmentDbPath = resolveDevelopmentSharedDatabasePath(primaryDbPath);
+  return sharedDevelopmentDbPath || primaryDbPath;
+}
 
 export function initDb() {
-  const dbPath = process.env.DATABASE_PATH || path.join(__dirname, '../../data/dashboard.db');
+  dbPath = resolveDatabasePath();
 
   // Ensure data directory exists
   const dataDir = path.dirname(dbPath);
-  import('fs').then(fs => {
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
-  });
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
 
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+  console.log(`[DB] Using SQLite database at ${dbPath}`);
 
   // Meta daily metrics - with store column and breakdown fields
   db.exec(`
@@ -37,6 +185,7 @@ export function initDb() {
       impressions INTEGER DEFAULT 0,
       reach INTEGER DEFAULT 0,
       clicks INTEGER DEFAULT 0,
+      video_views INTEGER DEFAULT 0,
       landing_page_views INTEGER DEFAULT 0,
       add_to_cart INTEGER DEFAULT 0,
       checkouts_initiated INTEGER DEFAULT 0,
@@ -75,6 +224,12 @@ export function initDb() {
     db.exec(`ALTER TABLE salla_orders ADD COLUMN state TEXT`);
   } catch (e) { /* column exists */ }
   try {
+    db.exec(`ALTER TABLE salla_orders ADD COLUMN is_excluded INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE salla_orders ADD COLUMN exclusion_reason TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
     db.exec(`ALTER TABLE shopify_orders ADD COLUMN city TEXT`);
   } catch (e) { /* column exists */ }
   try {
@@ -83,6 +238,62 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE shopify_orders ADD COLUMN order_created_at TEXT`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN attribution_json TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN customer_id TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN customer_email TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN is_excluded INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN exclusion_reason TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_order_items ADD COLUMN net_price REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_order_items ADD COLUMN is_excluded INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_order_items ADD COLUMN exclusion_reason TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`
+      UPDATE shopify_order_items
+      SET net_price = (COALESCE(quantity, 1) * COALESCE(price, 0) - COALESCE(discount, 0))
+      WHERE net_price IS NULL
+    `);
+  } catch (e) {
+    console.warn('[DB] Non-blocking migration: failed to backfill shopify_order_items.net_price', e?.message || e);
+  }
+  try {
+    db.exec(`
+      UPDATE shopify_order_items
+      SET is_excluded = 1,
+          exclusion_reason = COALESCE(exclusion_reason, 'legacy_non_revenue_zero_net')
+      WHERE COALESCE(is_excluded, 0) = 0
+        AND (COALESCE(quantity, 1) * COALESCE(price, 0) - COALESCE(discount, 0)) <= 0
+    `);
+  } catch (e) {
+    console.warn('[DB] Non-blocking migration: failed to backfill shopify_order_items.is_excluded', e?.message || e);
+  }
+  try {
+    db.exec(`
+      UPDATE shopify_orders
+      SET is_excluded = 1,
+          exclusion_reason = COALESCE(exclusion_reason, 'legacy_non_revenue_non_positive_total')
+      WHERE COALESCE(is_excluded, 0) = 0
+        AND COALESCE(order_total, 0) <= 0
+        AND COALESCE(subtotal, 0) <= 0
+    `);
+  } catch (e) {
+    console.warn('[DB] Non-blocking migration: failed to backfill shopify_orders.is_excluded', e?.message || e);
+  }
   // Notifications table
   db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
@@ -99,6 +310,346 @@ export function initDb() {
       metadata TEXT,
       event_key TEXT
     )
+  `);
+
+  // Campaign intelligence persistent learning state (tenant + scope scoped).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_learning_state (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      state_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key)
+    )
+  `);
+
+  // Campaign intelligence feature store (daily training features by scoped entity).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_feature_store (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      level TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      country TEXT NOT NULL DEFAULT 'ALL',
+      date TEXT NOT NULL,
+      spend REAL DEFAULT 0,
+      impressions INTEGER DEFAULT 0,
+      reach INTEGER DEFAULT 0,
+      clicks INTEGER DEFAULT 0,
+      video_views INTEGER DEFAULT 0,
+      landing_page_views INTEGER DEFAULT 0,
+      add_to_cart INTEGER DEFAULT 0,
+      checkouts_initiated INTEGER DEFAULT 0,
+      conversions INTEGER DEFAULT 0,
+      orders INTEGER DEFAULT 0,
+      revenue REAL DEFAULT 0,
+      ctr REAL DEFAULT 0,
+      cvr REAL DEFAULT 0,
+      cpm REAL DEFAULT 0,
+      lpv_rate REAL DEFAULT 0,
+      orders_per_spend REAL DEFAULT 0,
+      roas REAL DEFAULT 0,
+      shock_max_z REAL DEFAULT 0,
+      generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, level, entity_id, country, date)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_model_priors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      prior_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, model_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_model_regime_state (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      regime_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, model_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_model_calibration_bins (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      bin_index INTEGER NOT NULL,
+      expected_confidence REAL DEFAULT 0,
+      observed_success_proxy REAL DEFAULT 0,
+      sample_count INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, model_id, bin_index)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_model_uncertainty_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      reliability REAL DEFAULT 0,
+      calibration_error REAL DEFAULT 0,
+      uncertainty REAL DEFAULT 0,
+      confidence REAL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, model_id, date)
+    )
+  `);
+  try {
+    db.exec(`
+      DELETE FROM campaign_intelligence_model_uncertainty_history
+      WHERE id NOT IN (
+        SELECT MAX(id)
+        FROM campaign_intelligence_model_uncertainty_history
+        GROUP BY store, scope_key, model_id, date
+      )
+    `);
+  } catch (error) {
+    console.warn('[DB] Failed to deduplicate campaign_intelligence_model_uncertainty_history', error?.message || error);
+  }
+  try {
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ci_uncertainty_unique
+      ON campaign_intelligence_model_uncertainty_history (store, scope_key, model_id, date)
+    `);
+  } catch (error) {
+    console.warn('[DB] Failed to enforce unique uncertainty index', error?.message || error);
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_model_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      model_version INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 0,
+      trained_at TEXT NOT NULL,
+      artifact_json TEXT NOT NULL,
+      metrics_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, model_id, model_version)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_training_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_date TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      status TEXT NOT NULL,
+      stores_scanned INTEGER DEFAULT 0,
+      scopes_scanned INTEGER DEFAULT 0,
+      models_scanned INTEGER DEFAULT 0,
+      versions_promoted INTEGER DEFAULT 0,
+      versions_rejected INTEGER DEFAULT 0,
+      summary_json TEXT,
+      error_message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_brief_settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      schedule_mode TEXT NOT NULL DEFAULT 'manual',
+      provider TEXT NOT NULL DEFAULT 'openai',
+      model TEXT NOT NULL DEFAULT 'gpt-5.2',
+      reasoning_effort TEXT NOT NULL DEFAULT 'medium',
+      verbosity TEXT NOT NULL DEFAULT 'low',
+      scope_level TEXT NOT NULL DEFAULT 'campaign',
+      scope_entity_id TEXT,
+      scope_country TEXT NOT NULL DEFAULT 'ALL',
+      scope_start_date TEXT,
+      scope_end_date TEXT,
+      scope_anchor_days INTEGER NOT NULL DEFAULT 21,
+      scope_anchor_start_date TEXT,
+      scope_anchor_end_date TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_llm_briefs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      brief_date TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'manual',
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      estimated_input_tokens INTEGER DEFAULT 0,
+      estimated_output_tokens INTEGER DEFAULT 0,
+      estimated_cost_usd REAL DEFAULT 0,
+      prompt_json TEXT NOT NULL,
+      brief_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_ci_llm_briefs_scope_date
+    ON campaign_intelligence_llm_briefs(store, scope_key, brief_date, created_at)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dashboard_daily_briefs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      brief_date TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'daily',
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      reasoning_effort TEXT NOT NULL DEFAULT 'xhigh',
+      estimated_input_tokens INTEGER DEFAULT 0,
+      estimated_output_tokens INTEGER DEFAULT 0,
+      estimated_cost_usd REAL DEFAULT 0,
+      packet_json TEXT NOT NULL,
+      brief_markdown TEXT NOT NULL,
+      metadata_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, brief_date)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_dashboard_daily_briefs_store_date
+    ON dashboard_daily_briefs(store, brief_date, created_at)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dashboard_daily_account_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      snapshot_date TEXT NOT NULL,
+      spend REAL DEFAULT 0,
+      impressions INTEGER DEFAULT 0,
+      clicks INTEGER DEFAULT 0,
+      landing_page_views INTEGER DEFAULT 0,
+      add_to_cart INTEGER DEFAULT 0,
+      checkouts_initiated INTEGER DEFAULT 0,
+      meta_purchases INTEGER DEFAULT 0,
+      shopify_orders INTEGER DEFAULT 0,
+      revenue REAL DEFAULT 0,
+      ctr REAL DEFAULT 0,
+      lpv_click REAL DEFAULT 0,
+      atc_lpv REAL DEFAULT 0,
+      ic_atc REAL DEFAULT 0,
+      purchase_ic REAL DEFAULT 0,
+      roas REAL DEFAULT 0,
+      aov REAL DEFAULT 0,
+      cac REAL DEFAULT 0,
+      metadata_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, snapshot_date)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_dashboard_daily_account_snapshots_store_date
+    ON dashboard_daily_account_snapshots(store, scope_key, snapshot_date)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dashboard_daily_entity_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      snapshot_date TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      entity_name TEXT NOT NULL,
+      parent_entity_id TEXT,
+      parent_entity_name TEXT,
+      grandparent_entity_id TEXT,
+      grandparent_entity_name TEXT,
+      status TEXT DEFAULT 'UNKNOWN',
+      effective_status TEXT DEFAULT 'UNKNOWN',
+      spend REAL DEFAULT 0,
+      impressions INTEGER DEFAULT 0,
+      reach INTEGER DEFAULT 0,
+      clicks INTEGER DEFAULT 0,
+      landing_page_views INTEGER DEFAULT 0,
+      add_to_cart INTEGER DEFAULT 0,
+      checkouts_initiated INTEGER DEFAULT 0,
+      meta_purchases INTEGER DEFAULT 0,
+      shopify_orders INTEGER DEFAULT 0,
+      revenue REAL DEFAULT 0,
+      ctr REAL DEFAULT 0,
+      lpv_click REAL DEFAULT 0,
+      atc_lpv REAL DEFAULT 0,
+      ic_atc REAL DEFAULT 0,
+      purchase_ic REAL DEFAULT 0,
+      roas REAL DEFAULT 0,
+      aov REAL DEFAULT 0,
+      cac REAL DEFAULT 0,
+      cpm REAL DEFAULT 0,
+      cpc REAL DEFAULT 0,
+      frequency REAL DEFAULT 0,
+      metadata_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, snapshot_date, entity_type, entity_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_dashboard_daily_entity_snapshots_lookup
+    ON dashboard_daily_entity_snapshots(store, scope_key, snapshot_date, entity_type)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_dashboard_daily_entity_snapshots_parent
+    ON dashboard_daily_entity_snapshots(store, scope_key, entity_type, parent_entity_id, snapshot_date)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dashboard_daily_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      event_date TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT,
+      entity_name TEXT,
+      event_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      detail TEXT,
+      metadata_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_dashboard_daily_events_store_date
+    ON dashboard_daily_events(store, scope_key, event_date, entity_type)
   `);
 
   // Backfill missing notification columns for existing databases
@@ -141,6 +692,8 @@ export function initDb() {
       status TEXT,
       payment_method TEXT,
       currency TEXT DEFAULT 'SAR',
+      is_excluded INTEGER DEFAULT 0,
+      exclusion_reason TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -168,9 +721,239 @@ export function initDb() {
       payment_method TEXT,
       currency TEXT DEFAULT 'USD',
       order_created_at TEXT,
+      attribution_json TEXT,
+      customer_id TEXT,
+      customer_email TEXT,
+      is_excluded INTEGER DEFAULT 0,
+      exclusion_reason TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(store, order_id)
     )
+  `);
+
+  
+  // Shopify order items (line items)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_order_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'shawq',
+      order_id TEXT NOT NULL,
+      line_item_id TEXT,
+      product_id TEXT,
+      variant_id TEXT,
+      sku TEXT,
+      title TEXT,
+      image_url TEXT,
+      quantity INTEGER DEFAULT 1,
+      price REAL DEFAULT 0,
+      discount REAL DEFAULT 0,
+      net_price REAL DEFAULT 0,
+      is_excluded INTEGER DEFAULT 0,
+      exclusion_reason TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, order_id, line_item_id)
+    )
+  `);
+
+  // Ensure the schema uses a stable unique key (Shopify line_item_id).
+  try {
+    const columns = db
+      .prepare("PRAGMA table_info('shopify_order_items')")
+      .all()
+      .map((col) => col.name);
+
+    const hasLineItemId = columns.includes('line_item_id');
+
+    const desiredUniqueColumns = ['store', 'order_id', 'line_item_id'];
+    const indexList = db.prepare("PRAGMA index_list('shopify_order_items')").all();
+    const uniqueIndexes = indexList.filter((idx) => idx.unique);
+
+    const hasDesiredUnique = uniqueIndexes.some((idx) => {
+      const cols = db
+        .prepare(`PRAGMA index_info('${idx.name}')`)
+        .all()
+        .map((col) => col.name);
+      return (
+        cols.length === desiredUniqueColumns.length &&
+        cols.every((col, i) => col === desiredUniqueColumns[i])
+      );
+    });
+
+    if (!hasLineItemId || !hasDesiredUnique) {
+      const backupTable = `shopify_order_items_backup_${Date.now()}`;
+
+      db.exec('BEGIN');
+
+      db.exec(`ALTER TABLE shopify_order_items RENAME TO "${backupTable}"`);
+
+      db.exec(`
+        CREATE TABLE shopify_order_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          store TEXT NOT NULL DEFAULT 'shawq',
+          order_id TEXT NOT NULL,
+          line_item_id TEXT,
+          product_id TEXT,
+          variant_id TEXT,
+          sku TEXT,
+          title TEXT,
+          image_url TEXT,
+          quantity INTEGER DEFAULT 1,
+          price REAL DEFAULT 0,
+          discount REAL DEFAULT 0,
+          net_price REAL DEFAULT 0,
+          is_excluded INTEGER DEFAULT 0,
+          exclusion_reason TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(store, order_id, line_item_id)
+        )
+      `);
+
+      const lineItemSelect = hasLineItemId ? 'line_item_id' : 'NULL AS line_item_id';
+      const imageUrlSelect = columns.includes('image_url') ? 'image_url' : 'NULL AS image_url';
+      const netPriceSelect = columns.includes('net_price')
+        ? 'net_price'
+        : '(COALESCE(quantity, 1) * COALESCE(price, 0) - COALESCE(discount, 0)) AS net_price';
+      const itemExcludedSelect = columns.includes('is_excluded') ? 'is_excluded' : '0 AS is_excluded';
+      const itemExclusionReasonSelect = columns.includes('exclusion_reason')
+        ? 'exclusion_reason'
+        : 'NULL AS exclusion_reason';
+
+      db.exec(`
+        INSERT INTO shopify_order_items
+          (store, order_id, line_item_id, product_id, variant_id, sku, title, image_url, quantity, price, discount, net_price, is_excluded, exclusion_reason, created_at)
+        SELECT
+          store,
+          order_id,
+          ${lineItemSelect},
+          product_id,
+          variant_id,
+          sku,
+          title,
+          ${imageUrlSelect},
+          quantity,
+          price,
+          discount,
+          ${netPriceSelect},
+          ${itemExcludedSelect},
+          ${itemExclusionReasonSelect},
+          created_at
+        FROM "${backupTable}"
+      `);
+
+      db.exec(`DROP TABLE "${backupTable}"`);
+
+      db.exec('COMMIT');
+    }
+  } catch (e) {
+    try {
+      db.exec('ROLLBACK');
+    } catch (_) {
+      /* noop */
+    }
+  }
+
+  try {
+    db.exec(`ALTER TABLE shopify_order_items ADD COLUMN image_url TEXT`);
+  } catch (e) { /* column exists */ }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_shopify_order_items_order
+    ON shopify_order_items(store, order_id)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_shopify_order_items_product
+    ON shopify_order_items(store, product_id)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_products_cache (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'shawq',
+      product_id TEXT NOT NULL,
+      title TEXT,
+      image_url TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, product_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_shopify_products_cache_store_product
+    ON shopify_products_cache(store, product_id)
+  `);
+
+// Shopify pixel events (session-level / live behavior)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_pixel_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'shawq',
+      event_type TEXT NOT NULL,
+      event_ts TEXT NOT NULL,
+      payload_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_shopify_pixel_events_store_created_at
+    ON shopify_pixel_events(store, created_at)
+  `);
+
+  // Checkout Blackbox events (standalone diagnostics stream)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS blackbox_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'shawq',
+      event_name TEXT NOT NULL,
+      event_ts TEXT NOT NULL,
+      source TEXT,
+      channel TEXT,
+      session_id TEXT,
+      client_id TEXT,
+      event_id TEXT,
+      order_id TEXT,
+      cart_token TEXT,
+      checkout_token TEXT,
+      checkout_button TEXT,
+      checkout_source TEXT,
+      page_url TEXT,
+      page_path TEXT,
+      referrer TEXT,
+      landing_page TEXT,
+      event_source_url TEXT,
+      country_code TEXT,
+      region_code TEXT,
+      ip_hash TEXT,
+      user_agent TEXT,
+      utm_source TEXT,
+      utm_medium TEXT,
+      utm_campaign TEXT,
+      payload_json TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_blackbox_events_store_event_ts
+    ON blackbox_events(store, event_ts)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_blackbox_events_store_event_name_ts
+    ON blackbox_events(store, event_name, event_ts)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_blackbox_events_store_session_ts
+    ON blackbox_events(store, session_id, event_ts)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_blackbox_events_store_order_id
+    ON blackbox_events(store, order_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_blackbox_events_store_created_at
+    ON blackbox_events(store, created_at)
   `);
 
   // Manual orders - with store column
@@ -241,6 +1024,7 @@ export function initDb() {
       impressions INTEGER DEFAULT 0,
       reach INTEGER DEFAULT 0,
       clicks INTEGER DEFAULT 0,
+      video_views INTEGER DEFAULT 0,
       landing_page_views INTEGER DEFAULT 0,
       add_to_cart INTEGER DEFAULT 0,
       checkouts_initiated INTEGER DEFAULT 0,
@@ -313,6 +1097,23 @@ export function initDb() {
     db.exec('ALTER TABLE exchange_rates ADD COLUMN fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP');
   } catch (e) { /* column exists */ }
 
+  // Exchange rate API usage log (tracks actual external calls; not number of rows inserted)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS exchange_rate_api_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      date TEXT,
+      start_date TEXT,
+      end_date TEXT,
+      status TEXT NOT NULL,
+      http_status INTEGER,
+      error_code TEXT,
+      error_message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Notifications table
   db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
@@ -374,6 +1175,59 @@ export function initDb() {
     )
   `);
 
+  // Meta OAuth tokens - stores encrypted user access token for Ad Library
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_auth_tokens (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      access_token_encrypted TEXT,
+      access_token_iv TEXT,
+      access_token_tag TEXT,
+      is_encrypted INTEGER DEFAULT 0,
+      token_type TEXT,
+      scopes TEXT,
+      expires_at TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_api_status TEXT,
+      last_api_error TEXT,
+      last_api_at TEXT,
+      last_fbtrace_id TEXT
+    )
+  `);
+
+  // OAuth state storage for CSRF protection
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_oauth_states (
+      state TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      return_to TEXT
+    )
+  `);
+
+  // Shopify OAuth tokens
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_auth_tokens (
+      shop TEXT PRIMARY KEY,
+      access_token_encrypted TEXT,
+      access_token_iv TEXT,
+      access_token_tag TEXT,
+      is_encrypted INTEGER DEFAULT 0,
+      scopes TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    )
+  `);
+
+  // Shopify OAuth state storage
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_oauth_states (
+      state TEXT PRIMARY KEY,
+      shop TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      return_to TEXT
+    )
+  `);
+
   // Add status columns to meta_daily_metrics if they don't exist
   try {
     db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN status TEXT DEFAULT 'UNKNOWN'`);
@@ -400,6 +1254,9 @@ export function initDb() {
   } catch (e) { /* column exists */ }
   try {
     db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN unique_outbound_clicks_ctr REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN video_views INTEGER DEFAULT 0`);
   } catch (e) { /* column exists */ }
 
   // Add original currency columns to meta_daily_metrics
@@ -449,6 +1306,9 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN unique_outbound_clicks_ctr REAL DEFAULT 0`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN video_views INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
 
   // Add original currency columns to meta_adset_metrics
   try {
@@ -497,6 +1357,9 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN unique_outbound_clicks_ctr REAL DEFAULT 0`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN video_views INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
 
   // Add original currency columns to meta_ad_metrics
   try {
@@ -518,6 +1381,8 @@ export function initDb() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_ad_store_date ON meta_ad_metrics(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_salla_store_date ON salla_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_shopify_store_date ON shopify_orders(store, date)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_shopify_store_date_excluded ON shopify_orders(store, date, is_excluded)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_shopify_items_store_order_excluded ON shopify_order_items(store, order_id, is_excluded)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_store_date ON manual_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_spend_store_date ON manual_spend_overrides(store, date)`);
 
@@ -556,6 +1421,37 @@ export function initDb() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation ON ai_messages(conversation_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ai_conversations_store ON ai_conversations(store)`);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS creative_funnel_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      verbosity TEXT NOT NULL DEFAULT 'low',
+      content TEXT NOT NULL,
+      model TEXT,
+      start_date TEXT,
+      end_date TEXT,
+      source TEXT DEFAULT 'manual',
+      period TEXT DEFAULT 'custom',
+      generated_at TEXT DEFAULT (datetime('now')),
+      dismissed_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS creative_funnel_summary_settings (
+      store TEXT PRIMARY KEY,
+      auto_enabled INTEGER DEFAULT 1,
+      analyze_prompt TEXT,
+      summarize_prompt TEXT,
+      analyze_verbosity TEXT DEFAULT 'low',
+      summarize_verbosity TEXT DEFAULT 'low',
+      updated_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
   console.log('✅ Database initialized');
   return db;
 }
@@ -565,4 +1461,35 @@ export function getDb() {
     initDb();
   }
   return db;
+}
+
+export function getMetaReadDb() {
+  const primaryDb = getDb();
+  const preferredMetaDbPath = resolveMetaReadDatabasePath();
+
+  if (!preferredMetaDbPath || preferredMetaDbPath === dbPath) {
+    return primaryDb;
+  }
+
+  if (metaReadDb && metaReadDbPath === preferredMetaDbPath) {
+    return metaReadDb;
+  }
+
+  if (metaReadDb && metaReadDb !== primaryDb) {
+    try {
+      metaReadDb.close();
+    } catch (_error) {
+      // Best-effort cleanup for dev-only read replica handle.
+    }
+  }
+
+  metaReadDb = new Database(preferredMetaDbPath, { readonly: true, fileMustExist: true });
+  metaReadDbPath = preferredMetaDbPath;
+
+  if (loggedDevelopmentMetaDbPath !== preferredMetaDbPath) {
+    console.log(`[DB] Using Meta read SQLite database at ${preferredMetaDbPath}`);
+    loggedDevelopmentMetaDbPath = preferredMetaDbPath;
+  }
+
+  return metaReadDb;
 }

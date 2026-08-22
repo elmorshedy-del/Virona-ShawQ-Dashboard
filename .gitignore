@@ -3,5 +3,11 @@ client/node_modules/
 server/node_modules/
 client/dist/
 data/
+__pycache__/
+*.py[cod]
 .DS_Store
 npm-debug.log*
+full_code.txt
+.env
+.env.*
+!.env.example
