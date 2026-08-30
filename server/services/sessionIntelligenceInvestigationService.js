@@ -297,10 +297,7 @@ function normalizeFormSignature(fieldType, fieldName) {
 
 function normalizeScrollSignature(entry) {
   const page = normalizePath(entry?.page);
-  const totalSessions = Math.max(0, Number(entry?.total_sessions) || 0);
-  const reached75 = Math.max(0, Number(entry?.reached_75) || 0);
-  const missed75 = Math.max(0, totalSessions - reached75);
-  return `scroll_depth_under_75:${page}:${missed75}`.slice(0, MAX_SIGNATURE_LENGTH);
+  return `scroll_depth_under_75:${page}`.slice(0, MAX_SIGNATURE_LENGTH);
 }
 
 function stableIssueKey(issueType, normalizedPage, normalizedSignature) {
@@ -1368,15 +1365,6 @@ async function executeVerificationJob(db, jobRow) {
   }
 
   const issueType = safeString(snapshot.issue_type).trim().toLowerCase();
-  if (!AUTO_VERIFIABLE_ISSUE_TYPES.includes(issueType)) {
-    return {
-      ok: true,
-      status: normalizeIssueState(snapshot.lifecycle_state),
-      reason: 'Issue type is not auto-verifiable in this runner version.',
-      skipped: true
-    };
-  }
-
   const history = fetchIssueHistoryStats(db, {
     store,
     issueKey,
