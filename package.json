@@ -11,6 +11,7 @@
     "campaign-intelligence:learning-health": "node server/scripts/campaignIntelligenceLearningHealth.js"
   },
   "dependencies": {
+    "@fal-ai/client": "^1.9.4",
     "@anthropic-ai/sdk": "^0.39.0",
     "@google/generative-ai": "^0.24.1",
     "@resvg/resvg-js": "^2.6.2",

@@ -56,6 +56,12 @@ import {
   removeVideoBackgroundBria,
   replaceBackgroundFluxFill
 } from '../services/photoMagicReplicateClient.js';
+import {
+  getPhotoMagicFalSelectionConfig,
+  getPhotoMagicFalSelectionHealth,
+  isPhotoMagicFalConfigured,
+  selectPhotoMagicMaskWithFal
+} from '../services/photoMagicFalClient.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -330,6 +336,10 @@ const PHOTO_MAGIC_TMP_DIR = path.join(os.tmpdir(), 'creative-studio', 'photo-mag
 const PHOTO_MAGIC_DEFAULT_STORE = 'vironax';
 const GEMINI_COORDINATE_SCALE = 1000;
 const DEFAULT_SELECTION_CONFIDENCE = 0.72;
+const PHOTO_MAGIC_FAL_CLICK_SELECTION_CONFIDENCE = 0.9;
+const PHOTO_MAGIC_SELECTION_DEFAULT_CLICK_LABEL = 'Selected object';
+const PHOTO_MAGIC_SELECTION_FOREGROUND_POINT_LABEL = 1;
+const PHOTO_MAGIC_SELECTION_BOX_VALUE_COUNT = 4;
 const PHOTO_MAGIC_SELECTION_PREVIEW_MAX_SIDE = 2048;
 const PHOTO_MAGIC_SELECTION_MAX_VARIANTS = 4;
 const PHOTO_MAGIC_SELECTION_PARSE_RETRIES = 2;
@@ -776,6 +786,142 @@ function parseHexColor(hex) {
 
 function getPhotoMagicSelectionModelName() {
   return String(process.env.PHOTO_MAGIC_SELECTION_MODEL || process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash').trim();
+}
+
+function buildPhotoMagicSelectionGeometry(boxXyxy, width, height) {
+  const resolvedWidth = Math.max(1, Math.round(safeParseNumber(width, 1)));
+  const resolvedHeight = Math.max(1, Math.round(safeParseNumber(height, 1)));
+  const [rawX1, rawY1, rawX2, rawY2] = Array.isArray(boxXyxy) ? boxXyxy : [0, 0, resolvedWidth, resolvedHeight];
+  const x1 = Math.max(0, Math.min(resolvedWidth - 1, Math.round(Math.min(rawX1, rawX2))));
+  const y1 = Math.max(0, Math.min(resolvedHeight - 1, Math.round(Math.min(rawY1, rawY2))));
+  const x2 = Math.max(x1 + 1, Math.min(resolvedWidth, Math.round(Math.max(rawX1, rawX2))));
+  const y2 = Math.max(y1 + 1, Math.min(resolvedHeight, Math.round(Math.max(rawY1, rawY2))));
+  const normalizedBox = [
+    clampNumber((y1 / resolvedHeight) * GEMINI_COORDINATE_SCALE, 0, GEMINI_COORDINATE_SCALE),
+    clampNumber((x1 / resolvedWidth) * GEMINI_COORDINATE_SCALE, 0, GEMINI_COORDINATE_SCALE),
+    clampNumber((y2 / resolvedHeight) * GEMINI_COORDINATE_SCALE, 0, GEMINI_COORDINATE_SCALE),
+    clampNumber((x2 / resolvedWidth) * GEMINI_COORDINATE_SCALE, 0, GEMINI_COORDINATE_SCALE)
+  ];
+  const centerPoint = {
+    x_norm: clampNumber((((x1 + x2) / 2) / resolvedWidth), 0, 1),
+    y_norm: clampNumber((((y1 + y2) / 2) / resolvedHeight), 0, 1),
+    label: PHOTO_MAGIC_SELECTION_FOREGROUND_POINT_LABEL
+  };
+
+  return {
+    box_xyxy: [x1, y1, x2, y2],
+    normalized_box: normalizedBox,
+    center_point: centerPoint
+  };
+}
+
+function normalizePhotoMagicPointSelection({
+  pointXNorm,
+  pointYNorm,
+  width,
+  height
+}) {
+  const xNorm = clampNumber(pointXNorm, 0, 1);
+  const yNorm = clampNumber(pointYNorm, 0, 1);
+  const resolvedWidth = Math.max(1, Math.round(safeParseNumber(width, 1)));
+  const resolvedHeight = Math.max(1, Math.round(safeParseNumber(height, 1)));
+
+  return {
+    x_norm: xNorm,
+    y_norm: yNorm,
+    label: PHOTO_MAGIC_SELECTION_FOREGROUND_POINT_LABEL,
+    x_px: Math.max(0, Math.min(resolvedWidth - 1, Math.round(xNorm * resolvedWidth))),
+    y_px: Math.max(0, Math.min(resolvedHeight - 1, Math.round(yNorm * resolvedHeight)))
+  };
+}
+
+function convertFalBoxToSelectionGeometry(box, width, height) {
+  if (!Array.isArray(box) || box.length !== PHOTO_MAGIC_SELECTION_BOX_VALUE_COUNT) return null;
+  const [rawCenterX, rawCenterY, rawWidth, rawHeight] = box.map((value) => safeParseNumber(value, null));
+  if (![rawCenterX, rawCenterY, rawWidth, rawHeight].every(Number.isFinite)) return null;
+
+  const resolvedWidth = Math.max(1, Math.round(safeParseNumber(width, 1)));
+  const resolvedHeight = Math.max(1, Math.round(safeParseNumber(height, 1)));
+  const normalized = Math.max(rawCenterX, rawCenterY, rawWidth, rawHeight) <= 1.5;
+  const centerX = normalized ? rawCenterX * resolvedWidth : rawCenterX;
+  const centerY = normalized ? rawCenterY * resolvedHeight : rawCenterY;
+  const boxWidth = normalized ? rawWidth * resolvedWidth : rawWidth;
+  const boxHeight = normalized ? rawHeight * resolvedHeight : rawHeight;
+
+  return buildPhotoMagicSelectionGeometry([
+    centerX - (boxWidth / 2),
+    centerY - (boxHeight / 2),
+    centerX + (boxWidth / 2),
+    centerY + (boxHeight / 2)
+  ], resolvedWidth, resolvedHeight);
+}
+
+async function buildPhotoMagicFalSelection({
+  sourceBuffer,
+  prompt,
+  pointSelection = null,
+  width,
+  height,
+  maskDilatePx = 0,
+  maskFeatherPx = 0
+}) {
+  const falSelection = await selectPhotoMagicMaskWithFal({
+    imageBuffer: sourceBuffer,
+    prompt,
+    pointPrompt: pointSelection ? { x: pointSelection.x_px, y: pointSelection.y_px } : null
+  });
+
+  const normalizedMask = await normalizeReplicateMaskBuffer(falSelection.maskBuffer, {
+    width,
+    height,
+    dilatePx: maskDilatePx,
+    featherPx: maskFeatherPx
+  });
+  const cutoutBuffer = await sharp(sourceBuffer)
+    .ensureAlpha()
+    .composite([{ input: normalizedMask.buffer, blend: 'dest-in' }])
+    .png()
+    .toBuffer();
+
+  const geometry = convertFalBoxToSelectionGeometry(falSelection.box, width, height)
+    || (normalizedMask.bounds
+      ? buildPhotoMagicSelectionGeometry([
+          normalizedMask.bounds.left,
+          normalizedMask.bounds.top,
+          normalizedMask.bounds.left + normalizedMask.bounds.width,
+          normalizedMask.bounds.top + normalizedMask.bounds.height
+        ], width, height)
+      : buildPhotoMagicSelectionGeometry([0, 0, width, height], width, height));
+
+  const resolvedPrompt = String(prompt || '').trim();
+  const selectionLabel = resolvedPrompt || PHOTO_MAGIC_SELECTION_DEFAULT_CLICK_LABEL;
+  const selectionConfidence = clampNumber(
+    falSelection.score ?? (resolvedPrompt ? DEFAULT_SELECTION_CONFIDENCE : PHOTO_MAGIC_FAL_CLICK_SELECTION_CONFIDENCE),
+    0,
+    1
+  );
+
+  return {
+    selection: {
+      provider: 'fal',
+      model: getPhotoMagicFalSelectionConfig().model,
+      label: selectionLabel,
+      notes: resolvedPrompt ? 'Selection resolved via fal SAM prompt segmentation.' : 'Selection resolved via fal SAM click segmentation.',
+      confidence: selectionConfidence,
+      box_xyxy: geometry.box_xyxy,
+      normalized_box: geometry.normalized_box,
+      points: pointSelection ? [pointSelection] : [geometry.center_point],
+      requested_prompt: resolvedPrompt || null,
+      matched_prompt: resolvedPrompt || null
+    },
+    result: {
+      mask_png: normalizedMask.buffer.toString('base64'),
+      cutout_png: cutoutBuffer.toString('base64'),
+      width,
+      height,
+      provider: 'fal'
+    }
+  };
 }
 
 function dedupePhotoMagicSelectionPrompts(prompts) {
@@ -5292,10 +5438,20 @@ router.get('/photo-magic/health', async (req, res) => {
       ? await getPhotoMagicAiHealth().catch((e) => ({ ok: false, status: 0, payload: { error: e?.message || String(e) } }))
       : null;
     const aiHealthPayload = aiHealth?.payload || {};
+    const aiModels = aiHealthPayload?.models || {};
 
     const hqConfigured = isPhotoMagicHqConfigured();
     const hqHealth = hqConfigured
       ? await getPhotoMagicHqHealth().catch((e) => ({ ok: false, status: 0, payload: { error: e?.message || String(e) } }))
+      : null;
+    const hqHealthPayload = hqHealth?.payload || {};
+    const hqModels = hqHealthPayload?.models || {};
+    const hqOk = Boolean(hqHealth?.ok);
+    const hqReason = hqHealthPayload?.errors?.sdxl_inpaint || hqHealthPayload?.error || null;
+    const geminiConfigured = Boolean(String(process.env.GEMINI_API_KEY || '').trim());
+    const falSelectionConfig = getPhotoMagicFalSelectionConfig();
+    const falSelectionHealth = isPhotoMagicFalConfigured()
+      ? await getPhotoMagicFalSelectionHealth().catch((e) => ({ ok: false, status: 0, payload: { error: e?.message || String(e) } }))
       : null;
     const replicateConfig = getPhotoMagicReplicateConfig();
     const replicateExpandConfig = getPhotoMagicReplicateExpandConfig();
@@ -5310,6 +5466,29 @@ router.get('/photo-magic/health', async (req, res) => {
     const replicateReady = Boolean(replicateBaseUrl && replicateHealth?.ok);
     const replicateEnhanceReady = Boolean(replicateBaseUrl && replicateEnhanceHealth?.ok);
     const replicateBackgroundConfig = getPhotoMagicReplicateBackgroundConfig();
+    const selectionState = isPhotoMagicFalConfigured()
+      ? {
+          configured: true,
+          ready: Boolean(falSelectionHealth?.ok),
+          provider: 'fal',
+          model: falSelectionConfig.model,
+          supported_modes: falSelectionConfig.supported_modes,
+          timeout_ms: falSelectionConfig.timeout_ms,
+          health: falSelectionHealth,
+          error: falSelectionHealth?.ok
+            ? null
+            : (falSelectionHealth?.payload?.detail || falSelectionHealth?.payload?.error || 'fal Magic Lift selection is not ready.')
+        }
+      : {
+          configured: geminiConfigured,
+          ready: geminiConfigured,
+          provider: aiModels?.sam2 ? 'gemini-sam2' : 'gemini',
+          model: aiModels?.sam2 ? 'Gemini Vision + SAM2' : getPhotoMagicSelectionModelName(),
+          supported_modes: ['prompt'],
+          timeout_ms: Number(process.env.PHOTO_MAGIC_AI_TIMEOUT_MS || 240000),
+          health: null,
+          error: geminiConfigured ? null : 'GEMINI_API_KEY is not configured for Magic Lift prompt selection.'
+        };
     const standardErase = isPhotoMagicReplicateConfigured()
       ? {
           configured: true,
@@ -5438,10 +5617,11 @@ router.get('/photo-magic/health', async (req, res) => {
         },
         guidance: {
           gemini: {
-            configured: Boolean(String(process.env.GEMINI_API_KEY || '').trim()),
+            configured: geminiConfigured,
             model: getPhotoMagicSelectionModelName()
           }
         },
+        selection: selectionState,
         standard_erase: standardErase,
         background: backgroundState,
         expand: expandState,
@@ -5734,30 +5914,21 @@ router.post('/photo-magic/select', async (req, res) => {
     const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
     await ensurePhotoMagicDirs(store);
 
-    if (!isPhotoMagicAiConfigured()) {
-      return res.status(503).json({
-        success: false,
-        error: 'PHOTO_MAGIC_AI_URL is not configured. Deploy the Photo Magic AI service and set PHOTO_MAGIC_AI_URL.'
-      });
-    }
-    if (!String(process.env.GEMINI_API_KEY || '').trim()) {
-      return res.status(503).json({
-        success: false,
-        error: 'GEMINI_API_KEY is not configured. Prompt selection requires Gemini Vision.'
-      });
-    }
-
     const imageId = String(req.body?.image_id || '').trim();
     const prompt = String(req.body?.prompt || '').trim();
+    const pointXNorm = safeParseNumber(req.body?.point_x_norm ?? req.body?.pointXNorm, null);
+    const pointYNorm = safeParseNumber(req.body?.point_y_norm ?? req.body?.pointYNorm, null);
     const maxSide = clampNumber(req.body?.max_side ?? req.body?.maxSide ?? 2048, 256, 8192);
     const maskDilatePx = clampNumber(req.body?.mask_dilate_px ?? req.body?.maskDilatePx ?? 4, 0, 64);
     const maskFeatherPx = clampNumber(req.body?.mask_feather_px ?? req.body?.maskFeatherPx ?? 8, 0, 64);
+    const hasPointSelection = Number.isFinite(pointXNorm) && Number.isFinite(pointYNorm);
+    const hasPromptSelection = Boolean(prompt);
 
     if (!imageId || !isSafeTmpId(imageId)) {
       return res.status(400).json({ success: false, error: 'image_id is required' });
     }
-    if (!prompt) {
-      return res.status(400).json({ success: false, error: 'prompt is required' });
+    if (!hasPromptSelection && !hasPointSelection) {
+      return res.status(400).json({ success: false, error: 'Provide either a prompt or a click point for Magic Lift.' });
     }
 
     const imagePath = getUploadedPhotoPath(store, imageId);
@@ -5766,13 +5937,74 @@ router.post('/photo-magic/select', async (req, res) => {
     }
 
     const buf = await fs.promises.readFile(imagePath);
-    const imageBase64 = buf.toString('base64');
-    const meta = await sharp(buf).metadata().catch(() => null);
-    const imageWidth = Math.max(1, Math.round(safeParseNumber(meta?.width, 1)));
-    const imageHeight = Math.max(1, Math.round(safeParseNumber(meta?.height, 1)));
+    const preparedSource = await prepareReplicateSourceImageBuffer(buf, maxSide);
+    const imageBase64 = preparedSource.buffer.toString('base64');
+    const imageWidth = preparedSource.width;
+    const imageHeight = preparedSource.height;
+    const pointSelection = hasPointSelection
+      ? normalizePhotoMagicPointSelection({
+          pointXNorm,
+          pointYNorm,
+          width: imageWidth,
+          height: imageHeight
+        })
+      : null;
 
-    const previewBuffer = await sharp(buf)
-      .rotate()
+    if (isPhotoMagicFalConfigured()) {
+      const { selection, result } = await buildPhotoMagicFalSelection({
+        sourceBuffer: preparedSource.buffer,
+        prompt,
+        pointSelection,
+        width: imageWidth,
+        height: imageHeight,
+        maskDilatePx,
+        maskFeatherPx
+      });
+
+      const cutoutId = crypto.randomUUID();
+      const maskId = crypto.randomUUID();
+      const cutoutPath = getPhotoMagicOutputPath(store, cutoutId, 'png');
+      const maskPath = getPhotoMagicOutputPath(store, maskId, 'png');
+
+      await fs.promises.writeFile(cutoutPath, Buffer.from(String(result?.cutout_png || ''), 'base64'));
+      await fs.promises.writeFile(maskPath, Buffer.from(String(result?.mask_png || ''), 'base64'));
+
+      return res.json({
+        success: true,
+        selection,
+        width: result?.width ?? imageWidth,
+        height: result?.height ?? imageHeight,
+        cutout: {
+          output_id: cutoutId,
+          url: withStoreParam(
+            `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(cutoutId)}&filename=${encodeURIComponent('selection.png')}`,
+            store
+          )
+        },
+        mask: {
+          output_id: maskId,
+          url: withStoreParam(
+            `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(maskId)}&filename=${encodeURIComponent('selection-mask.png')}`,
+            store
+          )
+        }
+      });
+    }
+
+    if (hasPointSelection) {
+      return res.status(503).json({
+        success: false,
+        error: 'FAL_KEY is required for click-based Magic Lift.'
+      });
+    }
+    if (!String(process.env.GEMINI_API_KEY || '').trim()) {
+      return res.status(503).json({
+        success: false,
+        error: 'GEMINI_API_KEY is required for prompt-based Magic Lift when fal.ai is not configured.'
+      });
+    }
+
+    const previewBuffer = await sharp(preparedSource.buffer)
       .resize({
         width: PHOTO_MAGIC_SELECTION_PREVIEW_MAX_SIDE,
         height: PHOTO_MAGIC_SELECTION_PREVIEW_MAX_SIDE,
@@ -5814,7 +6046,7 @@ router.post('/photo-magic/select', async (req, res) => {
     } catch (sam2Error) {
       console.warn('Photo magic select: SAM2 refine unavailable, falling back to Gemini box mask:', sam2Error?.message || sam2Error);
       result = await buildPhotoMagicSelectionBoxFallback({
-        sourceBuffer: buf,
+        sourceBuffer: preparedSource.buffer,
         boxXyxy: selection.box_xyxy,
         width: imageWidth,
         height: imageHeight,
