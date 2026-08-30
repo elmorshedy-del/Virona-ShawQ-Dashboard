@@ -1743,6 +1743,8 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   const [claritySignals, setClaritySignals] = useState(null);
   const [clarityLoading, setClarityLoading] = useState(false);
   const [clarityError, setClarityError] = useState('');
+  const [clarityVerifyLoading, setClarityVerifyLoading] = useState(false);
+  const [clarityVerifyNotice, setClarityVerifyNotice] = useState('');
 
   const [storyOpen, setStoryOpen] = useState(false);
   const [storySession, setStorySession] = useState(null);
@@ -1921,8 +1923,13 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     }
   }, [storeId]);
 
-  const loadClarity = useCallback(async (day, mode) => {
-    if (!day) return;
+  const loadClarity = useCallback(async (day, mode, options = {}) => {
+    if (!day) return null;
+
+    const shouldVerify = options.verify === true || options.verify === 'wait' || options.verify === '1';
+    const waitForVerify = options.verify === 'wait' || options.wait === true;
+    const forceVerify = options.force === true;
+
     setClarityLoading(true);
     setClarityError('');
     try {
@@ -1932,16 +1939,66 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
         mode: mode || 'high_intent_no_purchase',
         limitSessions: '5000'
       });
+      if (shouldVerify) {
+        params.set('verify', waitForVerify ? 'wait' : '1');
+      }
+      if (waitForVerify) {
+        params.set('verifyWait', '1');
+      }
+      if (forceVerify) {
+        params.set('force', '1');
+      }
+
       const payload = await fetchJson(`/api/session-intelligence/clarity?${params.toString()}`);
-      setClaritySignals(payload?.data || null);
+      const data = payload?.data || null;
+      setClaritySignals(data);
+      return data;
     } catch (error) {
       console.error('[SessionIntelligenceTab] clarity load failed:', error);
       setClarityError(error?.message || 'Failed to load clarity signals');
       setClaritySignals(null);
+      return null;
     } finally {
       setClarityLoading(false);
     }
   }, [storeId]);
+
+  const runClarityInvestigation = useCallback(async () => {
+    if (!libraryDay || clarityVerifyLoading) return;
+
+    setClarityVerifyLoading(true);
+    setClarityVerifyNotice('');
+
+    try {
+      const data = await loadClarity(libraryDay, ISSUE_SCOPE_MODE, {
+        verify: 'wait',
+        force: true
+      });
+
+      if (!data) return;
+
+      const verification = data?.verification;
+      if (!verification) {
+        setClarityVerifyNotice('Investigation request completed.');
+        return;
+      }
+
+      if (verification.success === true) {
+        setClarityVerifyNotice(
+          `Investigation complete: ${formatNumber(verification.verified)} checked, ${formatNumber(verification.skipped)} skipped.`
+        );
+      } else {
+        const reason = (verification.reason || '').toString().trim();
+        setClarityVerifyNotice(
+          reason
+            ? `Investigation finished with warning: ${reason}`
+            : 'Investigation request completed.'
+        );
+      }
+    } finally {
+      setClarityVerifyLoading(false);
+    }
+  }, [clarityVerifyLoading, libraryDay, loadClarity]);
 
   const loadJourneyReports = useCallback(async () => {
     const requestId = journeyRequestIdRef.current + 1;
@@ -2321,6 +2378,10 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
       clearInterval(journeyTimer);
     };
   }, [loadBrief, loadDayPulse, loadEvents, loadJourneyReports, loadLibraryDays, loadOverview, loadRealtime, loadSessions, loadSurveyData]);
+
+  useEffect(() => {
+    setClarityVerifyNotice('');
+  }, [libraryDay]);
 
   useEffect(() => {
     setLibraryError('');
@@ -3311,10 +3372,22 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
           >
             Confirmed
           </button>
+          <button
+            className="si-button si-button-small"
+            type="button"
+            onClick={runClarityInvestigation}
+            disabled={!libraryDay || clarityLoading || clarityVerifyLoading}
+            title={libraryDay ? 'Run automated verification on top issue clusters for this day.' : 'Select a day first.'}
+          >
+            {clarityVerifyLoading ? 'Investigating…' : 'Run investigation now'}
+          </button>
           {verificationSummary?.total > 0 ? (
             <span className="si-muted">
               Verifier: {formatNumber(verificationSummary.confirmed)} confirmed, {formatNumber(verificationSummary.false_positive)} false alerts, {formatNumber(verificationSummary.unverified)} under review
             </span>
+          ) : null}
+          {clarityVerifyNotice ? (
+            <span className="si-muted">{clarityVerifyNotice}</span>
           ) : null}
         </div>
 
